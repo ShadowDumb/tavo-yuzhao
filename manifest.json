@@ -1,0 +1,46 @@
+{
+  "specVersion": 2,
+  "id": "com.shadowdumb.yu-zhao",
+  "name": { "$t": "plugin.name" },
+  "version": "2.1.0",
+  "entry": "entry.js",
+  "author": "ShadowDumb",
+  "description": { "$t": "plugin.description" },
+  "releaseNotes": { "$t": "releaseNotes.2_1_0" },
+  "cover": "cover.png",
+  "minAppVersion": "0.93.0",
+  "localization": {
+    "defaultLocale": "zh-CN",
+    "resources": {
+      "zh-CN": "locales/zh-CN.json",
+      "en": "locales/en.json"
+    }
+  },
+  "permissions": ["message", "generate", "variable"],
+  "contributes": {
+    "inputActions": [
+      { "id": "open-jade", "label": { "$t": "actions.openJade" } }
+    ],
+    "sidebar": [
+      { "id": "open-jade", "label": { "$t": "actions.openJade" } },
+      { "id": "resync-history", "label": { "$t": "actions.resyncHistory" } }
+    ],
+    "settings": {
+      "schema": [
+        { "type": "info", "text": { "$t": "settings.info" }, "icon": "info" },
+        { "key": "enabled", "type": "switch", "label": { "$t": "settings.enabled" }, "default": true },
+        { "key": "auto_strip", "type": "switch", "label": { "$t": "settings.autoStrip" }, "default": true },
+        {
+          "key": "lang",
+          "type": "select",
+          "label": { "$t": "settings.promptLang" },
+          "default": "zh",
+          "options": [
+            { "value": "zh", "label": { "$t": "settings.langZh" } },
+            { "value": "en", "label": { "$t": "settings.langEn" } }
+          ]
+        }
+      ]
+    }
+  }
+}
