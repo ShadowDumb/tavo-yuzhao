@@ -1392,6 +1392,192 @@ console.log('# P3 · 版本迁移与备份恢复');
   eq(eh.lorebooks().length, 0, '零同步数据聊天不建快照书');
 }
 
+// ---------- 双玉兆 · 玩家域与传讯通道（一期核心）----------
+console.log('# 双玉兆 · 玩家域与传讯通道');
+{
+  // CORE：玩家域空白/归一结构——无模型域字段、无论坛（公开数据不入玩家域存储）
+  const ps = M.CORE.blankPlayerState('pc1');
+  eq(ps.chatId, 'pc1', '空白玩家域带聊天标识');
+  ok(!('sync' in ps) && !('revision' in ps) && !('processedTurns' in ps) && !('hydration' in ps) && !('forum' in ps), '玩家域无模型域字段与论坛');
+  const pn = M.CORE.normalizePlayerState({
+    sync: { status: 'complete' }, revision: 99, processedTurns: ['x'], pendingFull: true,
+    chats: { contacts: [{ id: M.CORE.PLAYER_THREAD_ID, name: '李逍遥', messages: [{ id: 'pm-1', side: 'self', time: '2026-08-29', text: '在吗' }] }], groups: [] },
+    market: { orders: [{ id: 'o1', name: '灵丹', status: '已拍下', price: '5', time: 'x', side: 'buy' }] },
+    forum: { posts: [{ id: 'p1', author: 'a', title: 't', body: 'b' }] }
+  }, 'pc2');
+  eq(pn.chatId, 'pc2', '玩家域归一保留聊天标识');
+  ok(!('sync' in pn) && !('revision' in pn) && !('processedTurns' in pn) && !('hydration' in pn) && !('pendingFull' in pn) && !('forum' in pn), '玩家域归一剥离模型域字段与论坛');
+  ok(!('forum' in pn), '玩家域归一剥离论坛');
+  eq(pn.chats.contacts[0].id, M.CORE.PLAYER_THREAD_ID, '玩家线程联系人保留');
+  eq(pn.market.orders.length, 1, '玩家域坊市订单归一');
+
+  // assessMsg 豁免：玩家联系人（单消息线程）不拉低角色域达标度，也不凑联系人数
+  const playerContact = { id: M.CORE.PLAYER_CONTACT_ID, name: '道友', messages: [{ id: 'pm-1', side: 'other', time: 'x', text: '在吗' }], preview: '', unread: 1 };
+  const contact2 = (id, msgs) => ({ id, name: id, messages: msgs.map((m, i) => ({ id, side: 'other', time: 'x', text: m + i })), preview: '' });
+  const exemptChats = {
+    contacts: [playerContact, contact2('c1', ['a', 'b']), contact2('c2', ['c', 'd'])],
+    groups: [{ id: 'g1', name: '青云内门', members: 3, messages: [{ id: 'gm1', side: 'other', text: 'a' }, { id: 'gm2', side: 'other', text: 'b' }] }]
+  };
+  eq(M.CORE.assess({ version: 1, turn: { id: 't1', roleName: 'r', summary: 's' }, chats: exemptChats }, {}).msg.contacts, true, '玩家联系人豁免：单消息线程不破坏联系人达标');
+  const onlyOne = { contacts: [playerContact, contact2('c1', ['a', 'b'])], groups: exemptChats.groups };
+  eq(M.CORE.assess({ version: 1, turn: { id: 't2', roleName: 'r', summary: 's' }, chats: onlyOne }, {}).msg.contacts, false, '玩家联系人不凑联系人数（真实缺口仍暴露）');
+}
+
+{
+  // Runtime：发讯 → 玩家线程 + 角色域 yz-player 联系人；幂等；注入即已读；回复镜像
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-1');
+  await rt.applyText(jade('t1', TABLET_OK + MSG_MIN), 'chat-1', 'test');
+
+  const sent = rt.sendPlayerMessage('chat-1', '道友可在？');
+  ok(sent && /^pm-\d+$/.test(sent.id), '发送返回玩家消息 id');
+  await rt.syncPlayerChannel('chat-1');
+  const player = rt.playerCurrent();
+  eq(player.chats.contacts.length, 1, '玩家域创建固定角色会话');
+  eq(player.chats.contacts[0].id, M.CORE.PLAYER_THREAD_ID, '玩家线程 id 固定');
+  const pc = rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID);
+  ok(pc, '角色域创建 yz-player 联系人');
+  eq(pc.messages.length, 1, '玩家消息投递角色域');
+  eq(pc.messages[0].id, sent.id, '消息 id 跨域一致（幂等）');
+  eq(pc.messages[0].side, 'other', '角色视角为收到的消息');
+  eq(pc.unread, 1, '未读数 = 已投递未读消息数');
+
+  await rt.syncPlayerChannel('chat-1');
+  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).messages.length, 1, '重复同步幂等（无副本）');
+
+  rt.markPlayerRead('chat-1');
+  eq(rt.current().sync.playerReadCursor, 1, '已读游标推进到 seq 1');
+  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).unread, 0, '注入即已读，未读清零');
+
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t2｜李逍遥｜回复｜diff\n</yz_meta><yz_msg>\n+msg｜yz-player｜r1｜self｜丙午年五月十二 午时｜在的\n</yz_msg></yz_jade>', 'chat-1', 'test');
+  const thread = rt.playerThread(rt.playerCurrent());
+  eq(thread.messages.length, 2, '角色回复镜像回玩家线程');
+  ok(thread.messages.some((m) => m.id === 'r1' && m.side === 'other' && m.reply === true), '回复以角色消息形态出现');
+  const pv = M.VIEWS.renderMsgPlayer(rt.current(), rt.playerCurrent(), { app: 'msg', view: 'chat', params: { id: M.CORE.PLAYER_THREAD_ID }, stack: [] }, '');
+  ok(pv.includes(zhCatalog['runtime.player.statusReplied']), '已回状态渲染');
+  ok(pv.includes('data-msg-input') && pv.includes('data-action="send-msg"'), '会话页渲染传讯输入框');
+  ok(pv.includes('丙午年五月十二 午时'), '回复时间渲染');
+
+  rt.sendPlayerMessage('chat-1', '第二句');
+  await rt.syncPlayerChannel('chat-1');
+  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).unread, 1, '新消息未读数为 1');
+  const pv2 = M.VIEWS.renderMsgPlayer(rt.current(), rt.playerCurrent(), { app: 'msg', view: 'chat', params: { id: M.CORE.PLAYER_THREAD_ID }, stack: [] }, '');
+  ok(pv2.includes(zhCatalog['runtime.player.statusSent']), '未读未回消息显示已送达');
+
+  // 历史重建（角色域从协议历史重建）→ 玩家传讯重新投递，玩家线程保留
+  host.setHistory([{ id: 'm1', role: 'assistant', content: jade('h1', TABLET_OK) }]);
+  await rt.rebuildFromHistory('chat-1');
+  const pc2 = rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID);
+  ok(pc2 && pc2.messages.length === 2, '历史重建后玩家传讯重新投递角色域');
+  eq(rt.playerThread(rt.playerCurrent()).messages.length, 3, '玩家线程数据在重建后完整保留');
+}
+
+{
+  // Runtime：玩家域三层存储（宿主/镜像/备份），宿主清空后可恢复，不涉及世界书
+  const host = fakeHost();
+  host.current.chat = 'chat-s';
+  const store = new Map();
+  const local = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) };
+  const rt = M.createRuntime(host.api, local, () => ({}));
+  await rt.switchChat('chat-s');
+  rt.sendPlayerMessage('chat-s', '存储测试');
+  await rt.syncPlayerChannel('chat-s');
+  await flushQueue();
+  ok(store.has(rt.PLAYER_LOCAL_PREFIX + 'chat-s'), '玩家域写入本地镜像');
+  ok(!!host.api.get(rt.PLAYER_STATE_KEY, 'chat'), '玩家域写入宿主 chat 键');
+  ok(!!host.api.get(rt.PLAYER_BACKUP_PREFIX + 'chat-s', 'global'), '玩家域写入全局备份');
+  eq(host.lorebooks().length, 0, '玩家域数据不进世界书');
+  host.clearChat();
+  host.clearGlobal();
+  const rt2 = M.createRuntime(host.api, local, () => ({}));
+  await rt2.switchChat('chat-s');
+  eq(rt2.playerThread(rt2.playerCurrent()).messages.length, 1, '宿主清空后玩家域从本地镜像恢复');
+}
+
+{
+  // buildCurrent：未读行注入上限 + 已读窗口 + 未读行预算优先级
+  const st = M.CORE.blankState('w5');
+  st.chats = { contacts: [{ id: M.CORE.PLAYER_CONTACT_ID, name: '道友', relation: '外界', unread: 7, preview: 'x', messages: [] }], groups: [] };
+  for (let i = 1; i <= 7; i += 1) st.chats.contacts[0].messages.push({ id: 'pm-' + i, side: 'other', time: 'x', text: '消息' + i });
+  st.sync.playerReadCursor = 2;
+  const cur = M.PROMPT.buildCurrent(st, {});
+  eq(cur.filter((r) => r.startsWith('msg｜yz-player｜')).length, 7, '已读 2 条 + 未读 5 条共 7 行全注入');
+  eq(cur.filter((r) => /msg｜yz-player｜pm-[3-7]/.test(r)).length, 5, '未读 5 条全注入（≤ 上限 5）');
+  ok(!cur.some((r) => r.startsWith('unread｜yz-player｜')), '未读未超上限无摘要行');
+  st.chats.contacts[0].messages.push({ id: 'pm-8', side: 'other', time: 'x', text: '八' });
+  const cur2 = M.PROMPT.buildCurrent(st, {});
+  eq(cur2.filter((r) => r.startsWith('msg｜yz-player｜')).length, 7, '已读窗口 2 条 + 未读上限 5 条');
+  eq(cur2.filter((r) => r.startsWith('msg｜yz-player｜pm-8')).length, 1, '超限时最新未读仍全行注入');
+  ok(cur2.some((r) => r.startsWith('unread｜yz-player｜')), '超上限生成未读摘要行');
+  st.sync.playerReadCursor = 99;
+  const cur3 = M.PROMPT.buildCurrent(st, {});
+  eq(cur3.filter((r) => r.startsWith('msg｜yz-player｜')).length, 6, '全部已读后按最近窗口 6 条注入');
+  ok(cur3.some((r) => r.startsWith('archived｜msg｜yz-player｜')), '已读超窗出归档行');
+
+  // 未读行预算优先级：长未读消息在明细行被淘汰后仍保留
+  const big = M.CORE.blankState('w6');
+  big.chats = {
+    contacts: [
+      { id: M.CORE.PLAYER_CONTACT_ID, name: '道友', unread: 1, preview: '', messages: [{ id: 'pm-1', side: 'other', time: 'x', text: '未读'.repeat(1500) }] },
+      { id: 'c1', name: '林月如', preview: '', messages: Array.from({ length: 20 }, (_, j) => ({ id: 'm' + j, side: 'other', time: 'x', text: '字'.repeat(500) })) }
+    ],
+    groups: []
+  };
+  const curBig = M.PROMPT.buildCurrent(big, {});
+  ok(curBig.some((r) => r.startsWith('msg｜yz-player｜pm-1')), '未读行不被预算淘汰');
+  ok(curBig.join('\n').length < 9500, '未读行保留时总注入仍受上限约束');
+
+  // 提示词：玩家通道规则（zh/en/full/封印）
+  const pChan = M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [] });
+  ok(pChan.includes('yz-player') && pChan.includes('+msg｜yz-player｜新消息id'), 'zh 提示词含玩家通道回复格式');
+  const pChanFull = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
+  ok(pChanFull.includes('yz-player'), 'full 轮同样含玩家通道规则');
+  const pChanEn = M.PROMPT.buildPrompt('en', {}, { forceFull: false, current: [] });
+  ok(pChanEn.includes('yz-player') && pChanEn.includes('+msg｜yz-player｜new-message-id'), 'en 提示词含玩家通道规则');
+  const pSealed = M.PROMPT.buildPrompt('zh', { msg: false }, { forceFull: false, current: [] });
+  ok(!pSealed.includes('yz-player'), '封印 msg 后无玩家通道规则');
+}
+
+{
+  // 视图：域切换、公开数据标识、玩家域页面、{{user}} 解析
+  const cs = M.CORE.blankState('c1');
+  cs.sync = { status: 'complete', roleName: '李逍遥', summary: 's', applied: [], appliedSeen: [], issues: [], updatedAt: 1 };
+  const ps = M.CORE.blankPlayerState('c1');
+  const home = M.VIEWS.renderHome(cs, {}, { domain: 'player', playerState: ps, playerName: '悦琳' });
+  ok(home.includes('悦琳') && home.includes(zhCatalog['runtime.player.homeInfo']), '玩家域主界面展示玩家名与说明');
+  ok(home.includes(zhCatalog['runtime.player.sentWord']), '玩家域主界面展示传讯状态行');
+  ok(/sealed[^>]{0,200}data-feature="manage"/.test(home), '玩家域管理卦位封印');
+  const charHome = M.VIEWS.renderHome(cs, {}, {});
+  ok(charHome.includes('data-action="sync-detail"'), '角色域主界面保留同步入口');
+  const manageSealed = M.VIEWS.renderNodes({}, cs, { manage: true });
+  ok(manageSealed.includes('t-rock sealed'), 'renderNodes 支持玩家域锁定封印');
+
+  const pTablet = M.VIEWS.renderPage(cs, { app: 'tablet' }, {}, {}, 'player', ps);
+  ok(pTablet.includes('data-marker="tablet"'), '玩家域玉牌页正常渲染');
+  ok(pTablet.includes(zhCatalog['runtime.player.emptyPrivate']), '玩家域玉牌空态用本机维护文案');
+  const pTabletChar = M.VIEWS.renderPage(cs, { app: 'tablet' }, {}, {}, 'character', ps);
+  ok(!pTabletChar.includes(zhCatalog['runtime.player.emptyPrivate']), '角色域玉牌空态不受玩家域文案影响');
+  const pForum = M.VIEWS.renderPage(cs, { app: 'forum' }, {}, {}, 'player', ps);
+  ok(pForum.includes('data-marker="forum-list"') && pForum.includes(zhCatalog['runtime.player.publicTag']), '论坛跨域渲染角色数据并带公开标识');
+  const pOrders = M.VIEWS.renderPage(cs, { app: 'market', view: 'orders' }, {}, {}, 'player', ps);
+  ok(!pOrders.includes(zhCatalog['runtime.player.publicTag']), '坊市订单是私有数据无公开标识');
+  const pListings = M.VIEWS.renderPage(cs, { app: 'market', view: 'listings' }, {}, {}, 'player', ps);
+  ok(pListings.includes(zhCatalog['runtime.player.publicTag']), '坊市行情是公开数据带标识');
+  const pMsg = M.VIEWS.renderPage(cs, { app: 'msg' }, {}, {}, 'player', ps);
+  ok(pMsg.includes(zhCatalog['runtime.player.startThread']) && pMsg.includes('data-marker="player-chats"'), '未建立会话时显示首讯入口');
+
+  const noPersonaHost = fakeHost();
+  const noPersona = M.createRuntime(noPersonaHost.api, null, () => ({}));
+  await noPersona.switchChat('c1');
+  eq(await noPersona.resolvePlayerName(), zhCatalog['runtime.player.fallbackName'], '无用户身份时回退 catalog 文案');
+  const personaHost = fakeHost();
+  personaHost.api.chat.current = async () => ({ id: personaHost.current.chat, persona: { name: '悦琳' } });
+  const withPersona = M.createRuntime(personaHost.api, null, () => ({}));
+  await withPersona.switchChat('c1');
+  eq(await withPersona.resolvePlayerName(), '悦琳', '{{user}} 解析为宿主用户身份名');
+}
+
 // ---------- 结果 ----------
 console.log('');
 if (failures.length) {

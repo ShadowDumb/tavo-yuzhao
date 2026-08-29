@@ -143,6 +143,30 @@
     };
   }
 
+  // 玩家域与角色域之间的固定传讯通道：角色域中的玩家联系人（模型在此线程自然回复）
+  // 与玩家域中的角色联系人（玩家自己的会话线程，镜像角色回复）。
+  var PLAYER_CONTACT_ID = 'yz-player';
+  var PLAYER_THREAD_ID = 'yz-character';
+  // 每轮基线最多注入的未读传讯行数；超出部分只给一条摘要行（计入 9000 预算但不可淘汰）。
+  var MAX_PLAYER_UNREAD_ROWS = 5;
+
+  // 玩家域状态：与角色域同构的私有数据容器，但完全不参与模型评估。
+  // 没有 revision/processedTurns/指纹/hydration——数据由玩家或本机写入，不经模型。
+  function blankPlayerState(chatId) {
+    return {
+      schemaVersion: 1,
+      chatId: cleanText(chatId || 'unknown', 160),
+      updatedAt: 0,
+      tablet: blankTablet(),
+      chats: { contacts: [], groups: [] },
+      notes: { folders: [], notes: [] },
+      market: { listings: [], auctions: [], orders: [] },
+      space: { currencies: [], items: [] },
+      map: { current: { place: '', domain: '', desc: '' }, tracks: [] },
+      pluginVersion: ''
+    };
+  }
+
   function normalizeSide(value) {
     return /^(self|me|自己|我)$/i.test(String(value || '')) ? 'self' : 'other';
   }
@@ -334,6 +358,22 @@
     return base;
   }
 
+  // 玩家域归一：复用各分区归一器，但剥离一切模型域字段（sync/revision/processedTurns/
+  // hydration/pendingFull）——玩家域不经模型评估，持久化只需本机可读的数据。
+  function normalizePlayerState(raw, chatId) {
+    var base = blankPlayerState(chatId || (raw && raw.chatId));
+    raw = sanitize(safeObject(raw));
+    base.tablet = normalizeTablet(raw.tablet);
+    base.chats = normalizeChats(raw.chats);
+    base.notes = normalizeNotes(raw.notes);
+    base.market = normalizeMarket(raw.market);
+    base.space = normalizeSpace(raw.space);
+    base.map = normalizeMap(raw.map);
+    base.updatedAt = Number(raw.updatedAt) || 0;
+    base.pluginVersion = cleanText(raw.pluginVersion, 40);
+    return base;
+  }
+
   // 功能 id 与 state 字段的对应关系：msg 功能的数据存放在 state.chats。
   var FEATURE_FIELDS = { tablet: 'tablet', msg: 'chats', notes: 'notes', forum: 'forum', market: 'market', space: 'space', map: 'map' };
 
@@ -374,7 +414,9 @@
 
   function assessMsg(chats) {
     chats = safeObject(chats);
-    var contacts = safeArray(chats.contacts, 10);
+    // 玩家传讯联系人（yz-player）是跨域通道写入的真实事件，不是剧情数据：
+    // 不参与联系人数与每条消息数底线，避免玩家发讯反而拉低角色域达标度。
+    var contacts = safeArray(chats.contacts, 10).filter(function (c) { return String(c && c.id) !== PLAYER_CONTACT_ID; });
     var groups = safeArray(chats.groups, 6);
     var valid = {};
     valid.contacts = contacts.length >= 2 && contacts.every(function (c) { return safeArray(c.messages, 20).length >= 2; });
@@ -874,6 +916,9 @@
       // 本轮已应用的分区移出 seen：卦位重新点亮「新」徽标，用户查看（openFeature）后再次并入。
       appliedSeen: previousSeen.filter(function (seenId) { return applied.indexOf(seenId) < 0; }),
       issues: assessment.issues.slice(0, 20),
+      // 玩家传讯已读游标是跨轮持久状态：sync 整体重建时必须保留，否则注入即已读的
+      // 游标被下一轮数据覆盖，未读数随之错误反弹。
+      playerReadCursor: Number(state.sync && state.sync.playerReadCursor) || 0,
       updatedAt: state.updatedAt
     };
     return { state: state, duplicate: false, applied: applied, assessment: assessment };
@@ -891,8 +936,13 @@
     groupId: groupId,
     keyId: keyId,
     GROUP_ORDER: GROUP_ORDER,
+    PLAYER_CONTACT_ID: PLAYER_CONTACT_ID,
+    PLAYER_THREAD_ID: PLAYER_THREAD_ID,
+    MAX_PLAYER_UNREAD_ROWS: MAX_PLAYER_UNREAD_ROWS,
     blankTablet: blankTablet,
     blankState: blankState,
+    blankPlayerState: blankPlayerState,
+    normalizePlayerState: normalizePlayerState,
     FEATURE_FIELDS: FEATURE_FIELDS,
     blankFeatureField: blankFeatureField,
     normalizeState: normalizeState,
@@ -1469,6 +1519,29 @@
       searchPlaceholder: tr('runtime.search.placeholder'),
       searchClear: tr('runtime.search.clear'),
       searchNoMatch: tr('runtime.search.noMatch'),
+      playerDomain: tr('runtime.player.domain'),
+      playerCharacterDomain: tr('runtime.player.characterDomain'),
+      playerFallbackName: tr('runtime.player.fallbackName'),
+      playerRelation: tr('runtime.player.relation'),
+      playerThreadRelation: tr('runtime.player.threadRelation'),
+      playerThreadFallback: tr('runtime.player.threadFallback'),
+      playerThreadEmpty: tr('runtime.player.threadEmpty'),
+      playerNoThread: tr('runtime.player.noThread'),
+      playerStartThread: tr('runtime.player.startThread'),
+      playerNoGroups: tr('runtime.player.noGroups'),
+      playerMsgPlaceholder: tr('runtime.player.msgPlaceholder'),
+      playerSend: tr('runtime.player.send'),
+      playerStatusSent: tr('runtime.player.statusSent'),
+      playerStatusRead: tr('runtime.player.statusRead'),
+      playerStatusReplied: tr('runtime.player.statusReplied'),
+      playerSentWord: tr('runtime.player.sentWord'),
+      playerRepliedWord: tr('runtime.player.repliedWord'),
+      playerHomeInfo: tr('runtime.player.homeInfo'),
+      playerManageLocked: tr('runtime.player.manageLocked'),
+      playerPublicTag: tr('runtime.player.publicTag'),
+      playerDomainShort: tr('runtime.player.domainShort'),
+      playerSentToast: tr('runtime.player.sentToast'),
+      playerEmptyPrivate: tr('runtime.player.emptyPrivate'),
       labels: {
         self: tr('runtime.label.self'), locked: tr('runtime.label.locked'), membersUnit: tr('runtime.label.membersUnit'),
         notesWord: tr('runtime.label.notesWord'), resonance: tr('runtime.label.resonance'), commentsWord: tr('runtime.label.commentsWord'),
@@ -1528,6 +1601,11 @@
   var LOCAL_PREFIX = 'yz-jade-v1:';
   // 全局备份键：chat 作用域在插件卸载/更新时可能被宿主清理，global 备份与本地镜像互为兜底。
   var BACKUP_PREFIX = 'yz-jade-v1-backup:';
+  // 玩家域存储：与角色域完全独立的键（三层：宿主 chat 键 + 本地镜像 + 全局备份）。
+  // 玩家域不进世界书——世界书快照/归档只服务角色域（评审结论）。
+  var PLAYER_STATE_KEY = 'yz_jade_player_v1';
+  var PLAYER_LOCAL_PREFIX = 'yz-jade-player-v1:';
+  var PLAYER_BACKUP_PREFIX = 'yz-jade-player-v1-backup:';
   // 插件版本：状态里记录生成时的版本，版本变化置持久化强制全量标记（见 doSwitchChat），
   // 让更新后的第一轮生成按新提示词重写全部数据——旧格式数据不再粘滞。
   var PLUGIN_VERSION = '2.1.0';
@@ -1541,6 +1619,8 @@
     // 重新进入被淘汰的聊天时从宿主/本地存储重新加载。
     var MAX_ACTIVE_CHATS = 5;
     var chats = Object.create(null);
+    // 玩家域与角色域同一生命周期：随 switchChat 加载、随 LRU 一并淘汰。
+    var playerChats = Object.create(null);
     var lru = [];
     var activeChatId = 'unknown';
     var epoch = 0;
@@ -1554,7 +1634,9 @@
 
     function evictChats() {
       while (lru.length > MAX_ACTIVE_CHATS && lru[0] !== activeChatId) {
-        delete chats[lru.shift()];
+        var evicted = lru.shift();
+        delete chats[evicted];
+        delete playerChats[evicted];
       }
     }
 
@@ -1585,35 +1667,40 @@
     // 写入前确认宿主真实当前聊天；读（chat.current）与写（tavoApi.set）在同一个微任务内连续执行，
     // 中间没有 await 让出——若复查本身跨微任务，宿主在读取后、写入前切换聊天时仍会写错键。
     // 拿不到宿主信息（API 缺失/异常）时保守按旧行为写入。
-    function writeHostScoped(chatId, serialized) {
+    function writeHostScoped(chatId, serialized, profile) {
+      profile = profile || {};
+      var stateKey = profile.stateKey || STATE_KEY;
+      var backupPrefix = profile.backupPrefix || BACKUP_PREFIX;
       try {
         if (tavoApi.chat && typeof tavoApi.chat.current === 'function') {
           return Promise.resolve(tavoApi.chat.current()).then(function (chat) {
             var hostChatId = chat && chat.id != null ? String(chat.id) : '';
             if (hostChatId && hostChatId !== chatId) return;
-            return hostSet(STATE_KEY, serialized, 'chat');
+            return hostSet(stateKey, serialized, 'chat');
           }).then(function () {
             // 全局备份：chat 作用域随插件卸载/更新被清理时，global 备份可恢复（load 回退链）。
-            return hostSet(BACKUP_PREFIX + chatId, serialized, 'global');
+            return hostSet(backupPrefix + chatId, serialized, 'global');
           });
         }
       } catch (error) { dbg('chat current failed', error); }
-      return hostSet(STATE_KEY, serialized, 'chat').then(function () {
-        return hostSet(BACKUP_PREFIX + chatId, serialized, 'global');
+      return hostSet(stateKey, serialized, 'chat').then(function () {
+        return hostSet(backupPrefix + chatId, serialized, 'global');
       });
     }
 
     // 落盘走后台串行队列：内存态已同步更新，调用方无需等待写完成，
     // 关键路径（generation:success）因此不被存储 IO 占用预算；同 key 写入按入队顺序生效。
-    function save(chatId, state) {
+    // profile 区分角色域（缺省）与玩家域（独立键，三层存储，不进世界书）。
+    function save(chatId, state, profile) {
+      profile = profile || {};
       var serialized;
       try { serialized = JSON.stringify(state); } catch (error) { dbg('state serialize failed', error); return saveQueue; }
       if (serialized.length > MAX_SNAPSHOT_BYTES) dbg('serialized state exceeds snapshot limit: ' + serialized.length);
       saveQueue = saveQueue.then(function () {
-        localSet(LOCAL_PREFIX + chatId, serialized);
+        localSet((profile.localPrefix || LOCAL_PREFIX) + chatId, serialized);
         // 宿主 chat 作用域绑定的是写入执行时的当前聊天：入队期间若已切换聊天，
         // 把旧聊天数据写进新聊天的宿主键会造成跨聊天污染，执行时复查当前聊天。
-        if (chatId === activeChatId) return writeHostScoped(chatId, serialized);
+        if (chatId === activeChatId) return writeHostScoped(chatId, serialized, profile);
       }).catch(function (error) { dbg('save failed: ' + chatId, error); });
       return saveQueue;
     }
@@ -1672,6 +1759,30 @@
         }
       }
       return CORE.normalizeState(parsed, chatId);
+    }
+
+    // 玩家域存储回退链：宿主 chat 键 → 本地镜像 → 全局备份 → 空白。
+    // 不进世界书（快照/归档只服务角色域）；无 revision 可比，按 updatedAt 取最新。
+    // 任何非宿主来源读到的数据都回写宿主 chat 键与本地镜像，避免每次开聊重走恢复链。
+    async function loadPlayer(chatId) {
+      var raw = await hostGet(PLAYER_STATE_KEY, 'chat');
+      var parsed = parseStored(raw);
+      var fromHost = !!parsed;
+      var mirrored = parseStored(localGet(PLAYER_LOCAL_PREFIX + chatId));
+      if (mirrored && (!parsed || (Number(mirrored.updatedAt) || 0) > (Number(parsed.updatedAt) || 0))) {
+        parsed = mirrored;
+        fromHost = false;
+      }
+      if (!parsed) {
+        parsed = parseStored(await hostGet(PLAYER_BACKUP_PREFIX + chatId, 'global'));
+        fromHost = false;
+      }
+      if (parsed) {
+        var serialized = fromHost && typeof raw === 'string' ? raw : JSON.stringify(parsed);
+        localSet(PLAYER_LOCAL_PREFIX + chatId, serialized);
+        if (chatId === activeChatId && !fromHost) await writeHostScoped(chatId, serialized, { stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      }
+      return CORE.normalizePlayerState(parsed, chatId);
     }
 
     async function findAssistantMessages() {
@@ -1772,10 +1883,20 @@
         state.pendingFull = true;
         await save(chatId, state);
       }
+      // 玩家域与角色域并行加载：同一聊天下两份独立状态，互不共享任何字段。
+      var playerLoaded = await loadPlayer(chatId);
+      if (token !== epoch || chatId !== activeChatId) return current();
+      var playerExisting = playerChats[chatId];
+      var playerTouched = !!playerExisting && (playerExisting.updatedAt > 0 || (playerExisting.chats && safeArray(playerExisting.chats.contacts, 10).length > 0));
+      if (!playerTouched) playerChats[chatId] = playerLoaded;
+      // 跨域通道对齐：把已发送的传讯补回角色域（历史重建/清空后玩家数据仍存续）。
+      if (state.revision > 0) await syncPlayerChannel(chatId);
       var hydrated = await hydrateHistory(chatId, token, state);
       if (hydrated.stale || token !== epoch || chatId !== activeChatId) return current();
       chats[chatId] = hydrated.state;
       if (hydrated.changed || hydrated.marked) await save(chatId, hydrated.state);
+      // 水化可能补入新的角色回复：镜像回玩家域会话线程。
+      if (hydrated.changed) await syncPlayerChannel(chatId);
       return current();
     }
 
@@ -1803,6 +1924,8 @@
       }
       chats[chatId] = rebuilt.state;
       await save(chatId, rebuilt.state);
+      // 历史重建会清掉玩家传讯联系人（正文从不含玩家消息）：通道按玩家域补投回角色域。
+      await syncPlayerChannel(chatId);
       return current();
     }
 
@@ -1813,6 +1936,208 @@
         evictChats();
       }
       return chats[activeChatId];
+    }
+
+    // 玩家域当前聊天态：与角色域完全平行的懒加载容器，绝无字段共享。
+    function playerCurrent() {
+      if (!playerChats[activeChatId]) {
+        playerChats[activeChatId] = CORE.blankPlayerState(activeChatId);
+        rememberChat(activeChatId);
+        evictChats();
+      }
+      return playerChats[activeChatId];
+    }
+
+    // ---------- 双玉兆 · 传讯通道（唯一跨域写入点）----------
+    // 玩家 → 角色：玩家域「与角色会话」的每条 self 消息落为角色域 yz-player 联系人的
+    // other 消息——真实事件，不经模型评估（写什么是什么）。模型在后续轮次以普通
+    // msg 行（self）自然回复。幂等：消息 id = pm-<seq>，双方按 id upsert，重复同步不产生副本。
+    // 玩家名取 {{user}}（宿主用户身份名），拿不到时回退 catalog 文案。
+    function playerThread(playerState) {
+      var contacts = safeArray(playerState && playerState.chats && playerState.chats.contacts, 10);
+      for (var i = 0; i < contacts.length; i += 1) {
+        if (String(contacts[i].id) === CORE.PLAYER_THREAD_ID) return contacts[i];
+      }
+      return null;
+    }
+
+    function characterContact(state) {
+      var contacts = safeArray(state && state.chats && state.chats.contacts, 10);
+      for (var i = 0; i < contacts.length; i += 1) {
+        if (String(contacts[i].id) === CORE.PLAYER_CONTACT_ID) return contacts[i];
+      }
+      return null;
+    }
+
+    // 已读游标 = 角色域已注入基线的最高玩家消息 seq（注入即已读，评审结论）。
+    function playerReadCursor(state) {
+      return Number(state && state.sync && state.sync.playerReadCursor) || 0;
+    }
+
+    function maxPlayerSeq(playerState) {
+      var thread = playerThread(playerState);
+      var max = 0;
+      safeArray(thread && thread.messages, 20).forEach(function (message) {
+        var n = /^pm-(\d+)$/.exec(String(message && message.id) || '');
+        if (n) max = Math.max(max, Number(n[1]) || 0);
+      });
+      return max;
+    }
+
+    // {{user}}：宿主用户身份名（chat.persona.name）；角色名缺失时回退本地化文案。
+    async function resolvePlayerName() {
+      try {
+        if (tavoApi.chat && typeof tavoApi.chat.current === 'function') {
+          var chat = await Promise.resolve(tavoApi.chat.current());
+          var name = chat && chat.persona && chat.persona.name;
+          if (hasText(name)) return cleanText(name, 120);
+        }
+      } catch (error) { dbg('player name resolve failed', error); }
+      return I18N.dict().playerFallbackName;
+    }
+
+    function characterThreadName(state) {
+      return CORE.hasText(state.sync && state.sync.roleName) ? state.sync.roleName : I18N.dict().playerThreadFallback;
+    }
+
+    // 玩家传讯的未读数由客户端维护：seq > 已读游标的 other 消息数。模型输出不得改动。
+    function refreshPlayerContact(state, contact) {
+      var cursor = playerReadCursor(state);
+      var unread = 0;
+      var latest = 0;
+      var last = null;
+      safeArray(contact && contact.messages, 20).forEach(function (message) {
+        if (!message) return;
+        var n = /^pm-(\d+)$/.exec(String(message.id) || '');
+        if (n) {
+          var seq = Number(n[1]) || 0;
+          latest = Math.max(latest, seq);
+          if (seq > cursor) unread += 1;
+        }
+        last = message;
+      });
+      contact.unread = unread;
+      if (last) {
+        contact.preview = last.text || '';
+        contact.time = last.time || '';
+      }
+      return latest;
+    }
+
+    // 双向对齐：① 玩家已发送的传讯补投角色域（幂等，历史重建/清空后数据仍存续）；
+    // ② 角色回复（模型产出的 self 消息）镜像回玩家域会话线程；③ 刷新未读数/预览。
+    // 通道只在消息功能启用时工作——封印 msg 后不再注入/镜像，双方各自保留已有数据。
+    // 并发安全：所有 await 都发生在检查/变更之前——检查联系人是否存在与创建必须
+    // 在同一同步段内完成，否则并发调用（send 的内部调用 + 显式调用）会创建重复联系人。
+    async function syncPlayerChannel(chatId) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (chatId !== activeChatId) return false;
+      var flags = getFlags() || {};
+      if (flags.msg === false) return false;
+      var state = current();
+      var player = playerCurrent();
+      var thread = playerThread(player);
+      if (!thread) return false;
+      // 唯一 await：玩家名解析（{{user}}），必须先于一切状态变更。
+      var name = await resolvePlayerName();
+      var contact = characterContact(state);
+      var changed = false;
+      if (!contact) {
+        contact = { id: CORE.PLAYER_CONTACT_ID, name: name, relation: I18N.dict().playerRelation, time: '', unread: 0, preview: '', messages: [] };
+        state.chats.contacts.push(contact);
+        changed = true;
+      }
+      var contactChanged = false;
+      if (contact.name !== name || (contact.relation || '') !== I18N.dict().playerRelation) {
+        contact.name = name;
+        contact.relation = I18N.dict().playerRelation;
+        contactChanged = true;
+      }
+      var known = {};
+      safeArray(contact.messages, 20).forEach(function (message) { known[String(message && message.id)] = true; });
+      safeArray(thread.messages, 20).forEach(function (message) {
+        if (!message || message.side !== 'self') return;
+        if (known[String(message.id)]) return;
+        contact.messages.push({ id: cleanText(message.id, 160), side: 'other', time: cleanText(message.time, 80), text: cleanText(message.text, 3000) });
+        known[String(message.id)] = true;
+        contactChanged = true;
+      });
+      if (contactChanged) {
+        refreshPlayerContact(state, contact);
+        changed = true;
+      }
+      // 角色 → 玩家：镜像角色回复（回复 = 角色域普通协议数据，玩家域只读展示）。
+      var mirrorKnown = {};
+      safeArray(thread.messages, 20).forEach(function (message) { mirrorKnown[String(message && message.id)] = true; });
+      var mirrored = false;
+      safeArray(contact.messages, 20).forEach(function (message) {
+        if (!message || message.side !== 'self') return;
+        if (mirrorKnown[String(message.id)]) return;
+        thread.messages.push({ id: cleanText(message.id, 160), side: 'other', time: cleanText(message.time, 80), text: cleanText(message.text, 3000), reply: true });
+        mirrorKnown[String(message.id)] = true;
+        mirrored = true;
+      });
+      if (mirrored) {
+        thread.name = characterThreadName(state);
+        if (thread.messages.length) {
+          var lastMessage = thread.messages[thread.messages.length - 1];
+          thread.preview = lastMessage.text || '';
+          thread.time = lastMessage.time || '';
+        }
+        changed = true;
+      }
+
+      if (changed) {
+        player.updatedAt = Date.now();
+        save(chatId, state);
+        save(chatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      }
+      return changed;
+    }
+
+    // 已读游标推进：generation:prepare 注入基线后调用（注入即已读）。
+    // 推进后重算 yz-player 未读数；游标只进不退。
+    function markPlayerRead(chatId) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (chatId !== activeChatId) return;
+      var state = current();
+      var contact = characterContact(state);
+      var cursor = playerReadCursor(state);
+      var latest = cursor;
+      safeArray(contact && contact.messages, 20).forEach(function (message) {
+        var n = /^pm-(\d+)$/.exec(String(message && message.id) || '');
+        if (n) latest = Math.max(latest, Number(n[1]) || 0);
+      });
+      if (latest <= cursor) return;
+      state.sync.playerReadCursor = latest;
+      if (contact) refreshPlayerContact(state, contact);
+      save(chatId, state);
+    }
+
+    // 玩家发讯：写入玩家域会话线程 + 立即投递角色域（异步落盘，不阻塞 UI）。
+    // 返回消息对象；消息 id 幂等，重复调用不产生副本。
+    function sendPlayerMessage(chatId, text) {
+      text = cleanText(String(text == null ? '' : text), 3000);
+      if (!hasText(text)) return null;
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (chatId !== activeChatId) return null;
+      var state = current();
+      var player = playerCurrent();
+      var thread = playerThread(player);
+      if (!thread) {
+        thread = { id: CORE.PLAYER_THREAD_ID, name: characterThreadName(state), relation: '', time: '', unread: 0, preview: '', messages: [] };
+        player.chats.contacts.push(thread);
+      }
+      var seq = maxPlayerSeq(player) + 1;
+      var message = { id: 'pm-' + seq, side: 'self', time: formatDateTime(Date.now()), text: text };
+      thread.messages.push(message);
+      if (thread.messages.length > 20) thread.messages = tail(thread.messages, 20);
+      thread.preview = text;
+      thread.time = message.time;
+      player.updatedAt = Date.now();
+      save(chatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      syncPlayerChannel(chatId);
+      return { id: message.id, seq: seq };
     }
 
     async function applyText(text, chatId, source) {
@@ -1832,6 +2157,8 @@
       chats[chatId] = applied.state;
       // 重复投递的轮次不重复落盘；解析失败标记需持久化，重开后仍可见。
       if (applied.changed || applied.state.sync.lastError === 'parse-error') save(chatId, applied.state);
+      // 跨域通道：角色回复（self 消息）落盘后镜像回玩家域会话线程。
+      if (applied.changed) await syncPlayerChannel(chatId);
       return {
         changed: applied.changed,
         stale: false,
@@ -2073,24 +2400,46 @@
     return {
       STATE_KEY: STATE_KEY,
       LOCAL_PREFIX: LOCAL_PREFIX,
+      PLAYER_STATE_KEY: PLAYER_STATE_KEY,
+      PLAYER_LOCAL_PREFIX: PLAYER_LOCAL_PREFIX,
+      PLAYER_BACKUP_PREFIX: PLAYER_BACKUP_PREFIX,
       switchChat: switchChat,
       settle: settle,
       rebuildFromHistory: rebuildFromHistory,
       current: current,
+      playerCurrent: playerCurrent,
       applyText: applyText,
       importState: importState,
       syncArchive: syncArchive,
       buildArchiveEntries: buildArchiveEntries,
       eventChatId: eventChatId,
       resolveCurrentChatId: resolveCurrentChatId,
+      resolvePlayerName: resolvePlayerName,
+      syncPlayerChannel: syncPlayerChannel,
+      markPlayerRead: markPlayerRead,
+      sendPlayerMessage: sendPlayerMessage,
+      playerThread: playerThread,
+      characterContact: characterContact,
+      playerReadCursor: playerReadCursor,
+      maxPlayerSeq: maxPlayerSeq,
       saveChat: function (chatId) { return save(chatId, current()); },
+      savePlayerChat: function (chatId) { return save(chatId, playerCurrent(), { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX }); },
       cachedChatIds: function () { return lru.slice(); },
       get activeChatId() { return activeChatId; },
       get epoch() { return epoch; }
     };
   }
 
-  var RUNTIME = { createRuntime: createRuntime, STATE_KEY: STATE_KEY, LOCAL_PREFIX: LOCAL_PREFIX, BACKUP_PREFIX: BACKUP_PREFIX, PLUGIN_VERSION: PLUGIN_VERSION };
+  var RUNTIME = {
+    createRuntime: createRuntime,
+    STATE_KEY: STATE_KEY,
+    LOCAL_PREFIX: LOCAL_PREFIX,
+    BACKUP_PREFIX: BACKUP_PREFIX,
+    PLAYER_STATE_KEY: PLAYER_STATE_KEY,
+    PLAYER_LOCAL_PREFIX: PLAYER_LOCAL_PREFIX,
+    PLAYER_BACKUP_PREFIX: PLAYER_BACKUP_PREFIX,
+    PLUGIN_VERSION: PLUGIN_VERSION
+  };
 
   var PROMPT_FEATURES = [
     {
@@ -2238,8 +2587,37 @@
       var chats = safeObject(s.chats);
       safeArray(chats.contacts, 10).forEach(function (contact) {
         if (!contact || !hasText(contact.name) || !contact.id) return;
+        var isPlayerContact = String(contact.id) === CORE.PLAYER_CONTACT_ID;
         m.rows.push({ text: 'contact｜' + v(contact.id, 160) + '｜' + v(contact.name, 120) + '｜' + v(contact.relation, 120) + '｜' + v(contact.time, 80) + '｜' + (Number(contact.unread) || 0) + '｜' + v(contact.preview, 300), drop: false });
         var rows = safeArray(contact.messages, 20);
+        if (isPlayerContact) {
+          // 玩家传讯通道：未读行（seq > 已读游标）最多注入 MAX_PLAYER_UNREAD_ROWS 条全行，
+          // 超出部分给一条摘要行；未读行带 last 标记——计入 9000 预算但淘汰优先级最高
+          // （明细行 → tablet → 归档行 → 未读行，未读行只有前三级全丢仍超限时才让位）。
+          var cursor = Number(state.sync && state.sync.playerReadCursor) || 0;
+          var unreadRows = [];
+          var readRows = [];
+          rows.forEach(function (message) {
+            if (!message || !message.id) return;
+            var seqMatch = /^pm-(\d+)$/.exec(String(message.id));
+            var row = { text: 'msg｜' + v(contact.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text) };
+            if (seqMatch && (Number(seqMatch[1]) || 0) > cursor) {
+              row.last = true;
+              unreadRows.push(row);
+            } else {
+              row.drop = true;
+              readRows.push(row);
+            }
+          });
+          var hiddenRead = readRows.length - RECENT_MSG_ROWS;
+          if (hiddenRead > 0) m.rows.push({ text: archived('msg', v(contact.id, 160), hiddenRead + ' 条旧消息已归档'), drop: false });
+          tail(readRows, RECENT_MSG_ROWS).forEach(function (row) { m.rows.push(row); });
+          if (unreadRows.length > CORE.MAX_PLAYER_UNREAD_ROWS) {
+            m.rows.push({ text: 'unread｜' + v(contact.id, 160) + '｜' + (unreadRows.length - CORE.MAX_PLAYER_UNREAD_ROWS) + ' 条未读传讯未展开', last: true });
+          }
+          unreadRows.slice(-CORE.MAX_PLAYER_UNREAD_ROWS).forEach(function (row) { m.rows.push(row); });
+          return;
+        }
         var hidden = rows.length - RECENT_MSG_ROWS;
         if (hidden > 0) m.rows.push({ text: archived('msg', v(contact.id, 160), hidden + ' 条旧消息已归档'), drop: false });
         tail(rows, RECENT_MSG_ROWS).forEach(function (message) {
@@ -2349,7 +2727,8 @@
       });
     }
     // 发送上限：全部行计入预算。淘汰顺序：① 其它功能明细行（消息/笔记/帖子等，
-    // 世界书对消息有召回）→ ② tablet 字段行（角色设定最重要，排最后）→ ③ 归档摘要行。
+    // 世界书对消息有召回）→ ② tablet 字段行（角色设定最重要，排最后）→ ③ 归档摘要行
+    // → ④ 玩家传讯未读行（真实事件，淘汰优先级最高，只有前三级全丢仍超限才让位）。
     // 实体标识行（contact/group/folder 等存在性与 diff 定位依赖）永不淘汰。
     var total = 0;
     sections.forEach(function (item) {
@@ -2359,7 +2738,7 @@
       sections.forEach(function (item) {
         if (item.tag === 'tablet') return;
         item.rows.forEach(function (r) {
-          if (r.drop && total > MAX_BASELINE_CHARS) {
+          if (r.drop && !r.last && total > MAX_BASELINE_CHARS) {
             total -= r.text.length;
             r.text = '';
           }
@@ -2368,7 +2747,7 @@
       sections.forEach(function (item) {
         if (item.tag !== 'tablet') return;
         item.rows.forEach(function (r) {
-          if (r.drop && total > MAX_BASELINE_CHARS) {
+          if (r.drop && !r.last && total > MAX_BASELINE_CHARS) {
             total -= r.text.length;
             r.text = '';
           }
@@ -2378,7 +2757,18 @@
       if (total > MAX_BASELINE_CHARS) {
         sections.forEach(function (item) {
           item.rows.forEach(function (r) {
-            if (r.text.indexOf('archived｜') === 0 && total > MAX_BASELINE_CHARS) {
+            if (r.text.indexOf('archived｜') === 0 && !r.last && total > MAX_BASELINE_CHARS) {
+              total -= r.text.length;
+              r.text = '';
+            }
+          });
+        });
+      }
+      // 第四轮：归档行也丢光仍超限时，最后丢玩家传讯未读行（真实事件，仅极端场景让位）。
+      if (total > MAX_BASELINE_CHARS) {
+        sections.forEach(function (item) {
+          item.rows.forEach(function (r) {
+            if (r.last && total > MAX_BASELINE_CHARS) {
               total -= r.text.length;
               r.text = '';
             }
@@ -2426,6 +2816,12 @@
       lines.push(pack.constraint);
     });
     lines.push(en ? 'No generic templates, no placeholder people, no empty items; everything must be tied to this turn.' : '不得使用通用模板、陌生占位人或空项；所有内容与本轮剧情强相关。');
+    // 玩家传讯通道规则：yz-player 联系人是真实事件，只读维护，回复用 +msg 追加。
+    if (on('msg')) {
+      lines.push(en
+        ? '- Player channel: the yz-player contact in the baseline is a real player messaging you from outside the world. Its rows and unread count are maintained by the artifact: never rewrite, delete, copy or recreate that contact, and never invent messages from it. To reply, append one +msg｜yz-player｜new-message-id｜self｜absolute date｜your reply.'
+        : '- 传讯通道：基线中 yz-player 联系人是持有玉兆的外界玩家与你的传讯。该联系人的消息与未读数是真实事件，由法器维护：不得改写、删除、复制或新建该联系人，也不得凭空编造其消息。要回复时用 +msg｜yz-player｜新消息id｜self｜绝对时间｜回复内容 追加一行即可。');
+    }
     // issue 回声：当前未达标项（≤3 条，按 lang 选语种），要求模型用 + 行补齐。
     var issueItems = (Array.isArray(ctx.issues) ? ctx.issues : []).slice(0, 3).map(function (issue) {
       var code = issue && issue.code ? String(issue.code) : '';
@@ -2577,14 +2973,17 @@
     return null;
   }
 
-  function renderNodes(disabled, state) {
+  function renderNodes(disabled, state, locked) {
     var t = I18N.dict();
     disabled = disabled || {};
+    locked = locked || {};
     return FEATURES.map(function (feature) {
       var name = t.features[feature.id];
       var off = !!feature.toggleable && disabled[feature.id] === false;
-      var cls = 'yz-node t-' + feature.tone + (off ? ' sealed' : '');
-      var badge = off ? null : nodeBadge(feature, disabled, state);
+      // 玩家域锁定：管理页是角色域本地系统页，玩家域内视觉封印并拦截点击。
+      var lockedNode = !!locked[feature.id];
+      var cls = 'yz-node t-' + feature.tone + (off || lockedNode ? ' sealed' : '');
+      var badge = (off || lockedNode) ? null : nodeBadge(feature, disabled, state);
       var badgeHtml = '';
       var aria = name;
       if (badge) {
@@ -2594,25 +2993,55 @@
         // 新同步只保留 b-new 呼吸光效，不渲染文字角标，避免遮挡卦名。
         else { aria = name + '，' + t.badge.new; }
       }
-      var seal = off ? '<i class="yz-seal">' + CORE.escapeHtml(t.sealGlyph) + '</i>' : '';
+      var seal = (off || lockedNode) ? '<i class="yz-seal">' + CORE.escapeHtml(t.sealGlyph) + '</i>' : '';
       return '<button type="button" class="' + cls + '" data-action="open-feature" data-feature="' + feature.id + '" style="left:' + feature.pos[0] + '%;top:' + feature.pos[1] + '%" aria-label="' + CORE.escapeHtml(aria) + '"><span class="yz-glyph">' + feature.glyph + '</span><b>' + CORE.escapeHtml(name) + '</b><em>' + CORE.escapeHtml(t.gua[feature.id] || '') + '</em>' + seal + badgeHtml + '</button>';
     }).join('');
   }
 
-  function renderHome(state, flags) {
+  // 玩家域主界面信息：已送达/已回统计（玩家域只读会话的状态反馈）。
+  function playerThreadCounts(thread) {
+    var messages = CORE.safeArray(thread && thread.messages, 20);
+    var delivered = 0;
+    var replied = 0;
+    messages.forEach(function (message, index) {
+      if (!message || message.side !== 'self') return;
+      delivered += 1;
+      for (var i = index + 1; i < messages.length; i += 1) {
+        if (messages[i] && messages[i].side === 'other') { replied += 1; break; }
+      }
+    });
+    return { delivered: delivered, replied: replied };
+  }
+
+  function renderHome(state, flags, ui) {
     var t = I18N.dict();
+    ui = ui || {};
+    var isPlayer = ui.domain === 'player';
     var sync = state.sync || {};
     var st = syncStatusOf(state);
-    var hero = CORE.hasText(sync.roleName) ? sync.roleName : t.appName;
+    var hero;
+    var footer;
+    if (isPlayer) {
+      // 玩家域：主界面展示玩家身份与传讯状态（数据只存本机，不经模型）。
+      var pname = ui.playerName || t.playerFallbackName;
+      var counts = playerThreadCounts(CORE.safeArray(ui.playerState && ui.playerState.chats && ui.playerState.chats.contacts, 10).filter(function (c) {
+        return String(c && c.id) === CORE.PLAYER_THREAD_ID;
+      })[0]);
+      hero = '<div class="yz-hero-line"><b>' + CORE.escapeHtml(pname) + '</b><p>' + CORE.escapeHtml(t.playerHomeInfo) + '</p></div>';
+      footer = '<div class="yz-sync complete"><i></i><span>' + CORE.escapeHtml(t.playerSentWord + ' ' + counts.delivered + ' · ' + t.playerRepliedWord + ' ' + counts.replied) + '</span></div>';
+    } else {
+      hero = '<div class="yz-hero-line"><b>' + CORE.escapeHtml(CORE.hasText(sync.roleName) ? sync.roleName : t.appName) + '</b><p>' + CORE.escapeHtml(sync.summary || t.awaitingSync) + '</p></div>';
+      footer = '<button type="button" class="yz-sync ' + CORE.escapeHtml(st.status) + '" data-action="sync-detail" data-sync><i></i><span>' + CORE.escapeHtml(st.text) + '</span></button>';
+    }
     return '<div class="yz-home" data-home>' +
       '<div class="yz-disc">' +
       '<div class="yz-ring"></div>' +
-      renderNodes(flags, state) +
+      renderNodes(flags, state, isPlayer ? { manage: true } : null) +
       '<div class="yz-scroll-ring"></div>' +
       '<button type="button" class="yz-core" data-action="core" aria-label="' + CORE.escapeHtml(t.coreAria) + '"><span class="yz-taiji">☯</span></button>' +
       '</div>' +
-      '<div class="yz-hero-line"><b>' + CORE.escapeHtml(hero) + '</b><p>' + CORE.escapeHtml(sync.summary || t.awaitingSync) + '</p></div>' +
-      '<button type="button" class="yz-sync ' + CORE.escapeHtml(st.status) + '" data-action="sync-detail" data-sync><i></i><span>' + CORE.escapeHtml(st.text) + '</span></button>' +
+      hero +
+      footer +
       '</div>';
   }
 
@@ -2640,7 +3069,7 @@
       '<button type="button" class="yz-search-clear' + (value ? '' : ' hidden') + '" data-action="clear-search" aria-label="' + CORE.escapeHtml(t.searchClear) + '">×</button></div>';
   }
 
-  function renderTablet(state, search) {
+  function renderTablet(state, search, emptyText) {
     var t = I18N.dict();
     var tablet = state.tablet || CORE.blankTablet();
     var kw = searchKw(search);
@@ -2662,7 +3091,7 @@
       });
       if (kw && !groups.some(function (g) { return g.fields.length; })) body += '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
     } else {
-      body = '<div class="yz-empty">' + CORE.escapeHtml(t.emptyTablet) + '</div>';
+      body = '<div class="yz-empty">' + CORE.escapeHtml(emptyText || t.emptyTablet) + '</div>';
     }
     return '<main class="yz-page-inner" data-marker="tablet">' +
       yzHeader(t.features.tablet) + searchBox(search) + body + '</main>';
@@ -2732,6 +3161,82 @@
     return renderChatList(state, nav, search);
   }
 
+  // 玩家域交流讯息：固定「与角色传讯」会话（唯一跨域写入点）。
+  // 玩家消息为右侧气泡，附 已送达/已读/已回 状态；角色回复经通道镜像为左侧气泡。
+  // 已回 = 线程中该消息之后存在角色回复；已读 = seq ≤ 角色域已读游标（注入即已读）。
+  function renderMsgPlayer(characterState, playerState, nav, search) {
+    var t = I18N.dict();
+    var kw = searchKw(search);
+    nav = nav || { app: 'msg', view: 'chats', params: {} };
+    var view = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
+    var thread = null;
+    CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).forEach(function (c) {
+      if (String(c && c.id) === CORE.PLAYER_THREAD_ID) thread = c;
+    });
+    if (view === 'chat' || view === 'gchat') {
+      if (nav.view === 'gchat') {
+        return '<main class="yz-page-inner" data-marker="player-groups">' + yzHeader(t.features.msg, true) +
+          yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + '<div class="yz-empty">' + CORE.escapeHtml(t.playerNoGroups) + '</div></main>';
+      }
+      // 已送达集合：角色域 yz-player 联系人中已存在的玩家消息 id（投递确认）。
+      var delivered = {};
+      var characterContact = null;
+      CORE.safeArray(characterState.chats && characterState.chats.contacts, 10).forEach(function (c) {
+        if (String(c && c.id) === CORE.PLAYER_CONTACT_ID) characterContact = c;
+      });
+      CORE.safeArray(characterContact && characterContact.messages, 20).forEach(function (m) { delivered[String(m && m.id)] = true; });
+      var cursor = Number(characterState.sync && characterState.sync.playerReadCursor) || 0;
+      var bubbles = CORE.safeArray(thread && thread.messages, 20).filter(function (message) {
+        return filterMatch(kw, [message.text, message.time]);
+      }).map(function (message) {
+        if (message.side === 'self') {
+          var seqMatch = /^pm-(\d+)$/.exec(String(message.id) || '');
+          var status = t.playerStatusSent;
+          var replied = false;
+          var idx = CORE.safeArray(thread.messages, 20).indexOf(message);
+          for (var i = idx + 1; i < CORE.safeArray(thread.messages, 20).length; i += 1) {
+            if (thread.messages[i] && thread.messages[i].side === 'other') { replied = true; break; }
+          }
+          if (replied) status = t.playerStatusReplied;
+          else if (seqMatch && (Number(seqMatch[1]) || 0) <= cursor && delivered[String(message.id)]) status = t.playerStatusRead;
+          return '<div class="yz-bubble-row self">' +
+            '<div class="yz-bubble-wrap"><div class="yz-bubble">' + CORE.escapeHtml(message.text) + '</div>' +
+            '<time>' + CORE.escapeHtml(message.time || '') + '<i class="yz-msg-status">' + CORE.escapeHtml(status) + '</i></time></div>' +
+            '</div>';
+        }
+        return '<div class="yz-bubble-row other">' +
+          '<span class="yz-bubble-ava">' + ava(thread && thread.name || '?') + '</span>' +
+          '<div class="yz-bubble-wrap"><b class="yz-sender">' + CORE.escapeHtml(thread && thread.name || '') + '</b>' +
+          '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
+          '</div>';
+      }).join('');
+      if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.playerThreadEmpty) + '</div>';
+      var title = CORE.escapeHtml(thread ? thread.name : t.playerThreadFallback);
+      // 会话输入框：唯一跨域写入点（data-msg-input 由 App 层委托绑定发送）。
+      var composer = '<div class="yz-composer"><input type="text" data-msg-input placeholder="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" maxlength="3000">' +
+        '<button type="button" class="yz-send" data-action="send-msg">' + CORE.escapeHtml(t.playerSend) + '</button></div>';
+      return '<main class="yz-page-inner yz-page-composer" data-marker="player-chat">' +
+        yzHeader(title) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
+    }
+    // 会话列表：未建立线程时给首次传讯入口（固定会话形态，无需选联系人）。
+    if (view === 'groups') {
+      return '<main class="yz-page-inner" data-marker="player-groups">' + yzHeader(t.features.msg, true) +
+        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + '<div class="yz-empty">' + CORE.escapeHtml(t.playerNoGroups) + '</div></main>';
+    }
+    var items = [];
+    if (thread && filterMatch(kw, [thread.name, thread.preview, thread.time])) {
+      items.push(chatRow(t, { id: CORE.PLAYER_THREAD_ID, name: thread.name, relation: t.playerThreadRelation, time: thread.time, preview: thread.preview }, 'chat', ''));
+    }
+    var body;
+    if (items.length) body = '<div class="yz-page-list">' + items.join('') + '</div>';
+    else if (kw) body = '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
+    else body = '<div class="yz-empty">' + CORE.escapeHtml(t.playerNoThread) + '</div>' +
+      button('navigate', t.playerStartThread, { view: 'chat', id: CORE.PLAYER_THREAD_ID }, 'yz-start-thread');
+    return '<main class="yz-page-inner" data-marker="player-chats">' + yzHeader(t.features.msg, true) +
+      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
+  }
+
+
   function renderNotes(state, nav, search) {
     var t = I18N.dict();
     var notes = CORE.safeObject(state.notes);
@@ -2769,7 +3274,7 @@
     return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + searchBox(search) + body + '</main>';
   }
 
-  function renderForum(state, nav, search) {
+  function renderForum(state, nav, search, tag) {
     var t = I18N.dict();
     var forum = CORE.safeObject(state.forum);
     var kw = searchKw(search);
@@ -2802,14 +3307,14 @@
     var list = posts.length ? posts.map(function (post) {
       return button('navigate', '<b>' + CORE.escapeHtml(post.title) + '</b><em>' + CORE.escapeHtml((post.author || '') + (CORE.hasText(post.section) ? ' · ' + post.section : '')) + '</em><time>' + CORE.escapeHtml(post.time || '') + '</time>', { view: 'post', id: post.id }, 'yz-row');
     }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.posts) + '</div>';
-    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum) + searchBox(search) + '<div class="yz-page-list">' + list + '</div></main>';
+    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBox(search) + '<div class="yz-page-list">' + list + '</div></main>';
   }
 
   function marketRow(avatarName, title, sub, meta, foot) {
     return '<div class="yz-row yz-static">' + ava(avatarName) + '<span class="yz-row-copy"><b>' + title + '<i>' + sub + '</i></b><em>' + meta + '</em></span><time>' + foot + '</time></div>';
   }
 
-  function renderMarket(state, nav, search) {
+  function renderMarket(state, nav, search, tag) {
     var t = I18N.dict();
     var market = CORE.safeObject(state.market);
     var kw = searchKw(search);
@@ -2848,7 +3353,7 @@
           CORE.escapeHtml(listing.seller || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(listing.price || '') + '</u>');
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.listings) + '</div>';
     }
-    return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true) +
+    return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true, tag) +
       yzTabs([['listings', t.tabs.listings], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBox(search) + body + '</main>';
   }
 
@@ -2995,15 +3500,36 @@
       '<div class="yz-page-list">' + rows + resetRow + dataRows + '</div>' + panel + '</main>';
   }
 
-  function renderPage(state, nav, flags, ui) {
+  // 域切换与公开数据标识：
+  // 私有数据（玉牌/讯息/玉册/坊市订单/储物/舆图）随域切换数据源；
+  // 公开数据（天下论坛、坊市行情/拍卖）跨域一致，永远渲染角色域数据并带「公开」标识。
+  function headerTagText(domain, isPlayer, nav, t) {
+    if (!isPlayer) return '';
+    if (nav.app === 'forum') return t.playerPublicTag;
+    if (nav.app === 'market') {
+      var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
+      if (view !== 'orders') return t.playerPublicTag;
+    }
+    return t.playerDomainShort;
+  }
+
+  function renderPage(state, nav, flags, ui, domain, playerState) {
     nav = nav || { app: 'home', view: 'root', params: {}, stack: [] };
     ui = ui || {};
     var search = ui.search || '';
-    if (nav.app === 'tablet') return renderTablet(state, search);
-    if (nav.app === 'msg') return renderMsg(state, nav, search);
-    if (nav.app === 'notes') return renderNotes(state, nav, search);
-    if (nav.app === 'forum') return renderForum(state, nav, search);
-    if (nav.app === 'market') return renderMarket(state, nav, search);
+    var isPlayer = domain === 'player';
+    var pstate = isPlayer ? (playerState || state) : state;
+    var t = I18N.dict();
+    var tag = headerTagText(domain, isPlayer, nav, t);
+    if (nav.app === 'tablet') return isPlayer ? renderTablet(pstate, search, t.playerEmptyPrivate) : renderTablet(state, search);
+    if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search) : renderMsg(state, nav, search);
+    if (nav.app === 'notes') return isPlayer ? renderNotes(pstate, nav, search) : renderNotes(state, nav, search);
+    if (nav.app === 'forum') return renderForum(state, nav, search, tag);
+    if (nav.app === 'market') {
+      var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
+      // 坊市订单是私有数据（随域切换）；行情/拍卖是公开数据（跨域一致）。
+      return (isPlayer && view === 'orders') ? renderMarket(pstate, nav, search) : renderMarket(state, nav, search, tag);
+    }
     if (nav.app === 'space') return renderSpace(state, nav, search);
     if (nav.app === 'map') return renderMap(state, search);
     if (nav.app === 'sync') return '<main class="yz-page-inner" data-marker="sync">' + yzHeader(I18N.dict().diag.title) + renderSyncDetail(state) + '</main>';
@@ -3011,8 +3537,10 @@
     return '';
   }
 
-  function yzHeader(title, tabs) {
-    return '<header class="yz-app-header">' + yzBackButton() + '<b>' + (tabs ? title : String(title)) + '</b><span class="yz-spacer"></span></header>';
+  function yzHeader(title, tabs, tag) {
+    return '<header class="yz-app-header">' + yzBackButton() + '<b>' + (tabs ? title : String(title)) + '</b>' +
+      (tag ? '<i class="yz-header-tag">' + CORE.escapeHtml(tag) + '</i>' : '') +
+      '<span class="yz-spacer"></span></header>';
   }
 
   function yzTabs(items, active) {
@@ -3034,7 +3562,9 @@
   function renderShell(state, flags) {
     var t = I18N.dict();
     return '<div id="yz1-overlay" aria-hidden="true"><div id="yz1-jade" role="dialog" tabindex="-1" aria-label="' + CORE.escapeHtml(t.appName) + '">' +
-      '<div class="yz-topbar"><b>' + CORE.escapeHtml(t.brand.title) + '</b><span class="yz-sub">' + CORE.escapeHtml(t.brand.sub) + '</span><button type="button" class="yz-btn" data-action="close" aria-label="' + CORE.escapeHtml(t.closePhone) + '">×</button></div>' +
+      '<div class="yz-topbar"><b>' + CORE.escapeHtml(t.brand.title) + '</b><span class="yz-sub">' + CORE.escapeHtml(t.brand.sub) + '</span>' +
+      '<button type="button" class="yz-btn yz-domain-btn" data-action="toggle-domain" aria-label="' + CORE.escapeHtml(t.playerDomain) + '">' + CORE.escapeHtml(t.playerDomain) + '</button>' +
+      '<button type="button" class="yz-btn" data-action="close" aria-label="' + CORE.escapeHtml(t.closePhone) + '">×</button></div>' +
       '<div class="yz-screen">' + renderHome(state, flags) + '<div class="yz-page" data-page hidden></div></div>' +
       '<div class="yz-toast" data-toast></div>' +
       '</div></div>';
@@ -3046,6 +3576,7 @@
     renderHome: renderHome,
     renderTablet: renderTablet,
     renderMsg: renderMsg,
+    renderMsgPlayer: renderMsgPlayer,
     renderNotes: renderNotes,
     renderForum: renderForum,
     renderMarket: renderMarket,
@@ -3218,6 +3749,20 @@
     '.yz-search .yz-search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:26px;height:26px;border:none;background:none;color:#a7d6c2;font-size:15px;line-height:1;border-radius:50%;display:grid;place-items:center;padding:0;font-family:inherit;cursor:pointer}',
     '.yz-search .yz-search-clear:hover{background:rgba(70,180,140,.25);color:#dff7ec}',
     '.yz-search .yz-search-clear[hidden]{display:none!important}',
+    // —— 双玉兆：顶栏域切换、页头域/公开标识 ——
+    '.yz-domain-btn{min-width:58px;padding:0 10px;border-radius:15px;font-size:11px;letter-spacing:1px;white-space:nowrap}',
+    '.yz-header-tag{font-style:normal;font-size:9px;letter-spacing:1px;color:#9fd8c0;border:1px solid rgba(159,224,143,.4);border-radius:9px;padding:1px 7px;flex:none;margin-left:4px}',
+    // —— 玩家域传讯：输入框固定在页底，气泡区独立滚动 ——
+    '.yz-page-composer{display:flex;flex-direction:column}',
+    '.yz-page-composer .yz-bubbles{flex:1;overflow:auto}',
+    '.yz-composer{display:flex;gap:8px;padding:10px 0 4px;border-top:1px solid rgba(150,255,215,.12)}',
+    '.yz-composer input{flex:1;min-width:0;height:36px;border:1px solid rgba(160,235,205,.3);background:rgba(14,44,36,.6);border-radius:18px;color:#eef9f3;padding:0 14px;font-size:13px;font-family:inherit;letter-spacing:.5px}',
+    '.yz-composer input:focus{outline:1px solid rgba(150,255,215,.45)}',
+    '.yz-composer input::placeholder{color:#7fae9a}',
+    '.yz-send{flex:none;height:36px;border:1px solid rgba(170,255,225,.5);background:rgba(70,180,140,.4);color:#f2fff9;border-radius:18px;padding:0 16px;font-size:12px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
+    '.yz-send:hover{background:rgba(90,210,165,.55)}',
+    '.yz-msg-status{font-style:normal;color:#7fae9a;font-size:9px;letter-spacing:1px;margin-left:6px}',
+    '.yz-start-thread{display:block;width:calc(100% - 24px);margin:0 auto;height:38px;border:1px solid rgba(170,255,225,.45);background:rgba(70,180,140,.3);color:#f2fff9;border-radius:19px;font-size:13px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
     '.yz-manage-info{font-size:11px;color:#a7d6c2;line-height:1.7;margin:0 0 12px;padding:10px 12px;border-radius:12px;background:rgba(14,44,36,.5);border:1px solid rgba(150,255,215,.1)}',
     '.yz-manage-row .yz-glyph-sm{flex:none;width:34px;height:34px;border-radius:50%;border:1px solid rgba(200,255,230,.24);display:grid;place-items:center;font-size:16px;background:rgba(16,46,38,.62);line-height:1}',
     '.yz-glyph-sm svg{width:22px;height:22px}',
@@ -3342,6 +3887,11 @@
     var wipeTimer = 0;
     // 列表页/详情页检索关键词：纯内存过滤瞬态，任何导航（含关闭）都复位。
     var search = '';
+    // 双玉兆域：character = 角色域（模型数据），player = 玩家域（本机数据）。
+    // 域切换只换数据源不换 UI（评审结论）；公开数据（论坛/坊市行情拍卖）跨域一致。
+    var domain = 'character';
+    // {{user}}（宿主用户身份名）解析缓存：chat:opened 时刷新，渲染时兜底 catalog 文案。
+    var playerNameCache = '';
 
     // 界面语言唯一真值源是宿主 locale（tavo.plugin.i18n）；
     // lang 设置仅决定注入提示词的语言（生成内容语言策略，见 settings.info）。
@@ -3473,12 +4023,38 @@
       if (sub) sub.textContent = t.brand.sub;
       var closeBtn = overlay.querySelector('[data-action="close"]');
       if (closeBtn) closeBtn.setAttribute('aria-label', t.closePhone);
+      // 域切换按钮：按钮文案 = 目标域（点击后切换到的域），aria 描述当前域。
+      var domainBtn = overlay.querySelector('[data-action="toggle-domain"]');
+      if (domainBtn) {
+        var target = domain === 'player' ? t.playerCharacterDomain : t.playerDomain;
+        var current = domain === 'player' ? t.playerDomain : t.playerCharacterDomain;
+        domainBtn.textContent = target;
+        domainBtn.setAttribute('aria-label', tr('runtime.player.switchAria', { from: current, to: target }));
+      }
+    }
+
+    // 域切换：只换数据源不换 UI——停留在当前页面，重渲染后即看到另一域的数据。
+    // 公开数据（论坛/坊市行情拍卖）跨域一致不受影响。
+    function toggleDomain() {
+      domain = domain === 'player' ? 'character' : 'player';
+      resetSearch();
+      clearToast();
+      render();
+    }
+
+    // {{user}} 解析（chat.persona.name）：聊天切换时刷新缓存，供玩家域主界面展示。
+    function refreshPlayerName() {
+      runtime.resolvePlayerName().then(function (name) {
+        playerNameCache = name;
+        render();
+      }).catch(function () {});
     }
 
     function render() {
       var overlay = ensureShell();
       renderShellStatic(overlay);
       var state = runtime.current();
+      var playerState = runtime.playerCurrent();
       var fab = hostDocument.getElementById(FAB_ID);
       if (fab) {
         fab.hidden = !enabled() || !chatActive;
@@ -3495,7 +4071,7 @@
         pageNode.hidden = true;
         pageNode.innerHTML = '';
         var homeWrap = hostDocument.createElement('div');
-        homeWrap.innerHTML = VIEWS.renderHome(state, featureFlags);
+        homeWrap.innerHTML = VIEWS.renderHome(state, featureFlags, { domain: domain, playerState: playerState, playerName: playerNameCache });
         home.outerHTML = homeWrap.firstElementChild ? homeWrap.firstElementChild.outerHTML : home.outerHTML;
         var freshHome = overlay.querySelector('[data-home]');
         if (freshHome) {
@@ -3507,7 +4083,7 @@
         // 注意：shell 初始模板中 page 带 hidden 属性（CSS [hidden]{display:none!important}），
         // 必须用 .hidden property 移除属性本身；classList.remove('hidden') 只能移除同名 class。
         pageNode.hidden = false;
-        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search });
+        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search }, domain, playerState);
         // 检索框每次按键都整体重渲染：焦点丢给新的输入框并恢复光标到末尾，
         // 否则输入一个字符后失去焦点、无法连续键入。
         var focused = hostDocument.activeElement;
@@ -3518,6 +4094,9 @@
             try { freshInput.setSelectionRange(search.length, search.length); } catch (_) {}
           }
         }
+        // 玩家域传讯输入框同理：整体重渲染后恢复焦点，支持连续输入。
+        var msgBox = pageNode.querySelector('[data-msg-input]');
+        if (msgBox && focused && focused.getAttribute && focused.getAttribute('data-msg-input') !== null) msgBox.focus();
       }
     }
 
@@ -3565,6 +4144,11 @@
       if (!feature) return;
       if (feature.toggleable && featureFlags[featureId] === false) {
         showToast(tr('runtime.toast.sealed', { name: t.features[feature.id] || featureId }), true);
+        return;
+      }
+      // 玉兆管理是角色域本地系统页：玩家域内封印卦位，点击仅提示不可用。
+      if (featureId === 'manage' && domain === 'player') {
+        showToast(t.playerManageLocked, true);
         return;
       }
       clearToast();
@@ -3764,6 +4348,8 @@
           if (action === 'copy-export') return copyExport();
           if (action === 'import-submit') return submitImport();
           if (action === 'clear-search') { resetSearch(); return render(); }
+          if (action === 'toggle-domain') return toggleDomain();
+          if (action === 'send-msg') return sendPlayerMessage();
           return;
         }
         if (event.target === overlay) close();
@@ -3778,6 +4364,12 @@
       });
       // 模态焦点陷阱：Tab / Shift+Tab 在对话框内的可见按钮间循环，避免焦点移出到背后页面。
       overlay.addEventListener('keydown', function (event) {
+        // 玩家域传讯输入框：回车直接发送（发送后清空输入并重渲染）。
+        if (event.key === 'Enter' && event.target && event.target.getAttribute && event.target.getAttribute('data-msg-input') !== null) {
+          event.preventDefault();
+          sendPlayerMessage();
+          return;
+        }
         if (event.key !== 'Tab') return;
         var focusables = Array.prototype.filter.call(overlay.querySelectorAll('button'), function (el) {
           return !el.disabled && el.offsetParent !== null;
@@ -3794,6 +4386,23 @@
           first.focus();
         }
       });
+    }
+
+    // 玩家发讯（唯一跨域写入点的 UI 侧）：读取输入框 → 写入玩家域 → 投递角色域。
+    function sendPlayerMessage() {
+      if (!enabled() || domain !== 'player') return;
+      var overlay = hostDocument.getElementById(OVERLAY_ID);
+      var box = overlay && overlay.querySelector('[data-msg-input]');
+      if (!box) return;
+      var text = String(box.value || '');
+      if (!CORE.hasText(text.trim())) return;
+      box.value = '';
+      var sent = runtime.sendPlayerMessage(runtime.activeChatId, text);
+      if (!sent) return;
+      showToast(I18N.dict().playerSentToast);
+      // 投递到角色域是异步落盘：等通道同步完成再重渲染（未读/状态标记随之更新）。
+      runtime.syncPlayerChannel(runtime.activeChatId).then(function () { render(); }).catch(function () { render(); });
+      render();
     }
 
     function clampFab(fab, left, top) {
@@ -3980,6 +4589,8 @@
         chatActive = true;
         await runtime.switchChat(await runtime.resolveCurrentChatId(event));
         nav = { app: 'home', view: 'root', params: {}, stack: [] };
+        // 切换聊天后刷新 {{user}} 玩家名缓存（用户身份可能随聊天不同）。
+        refreshPlayerName();
         render();
       });
 
@@ -4016,6 +4627,9 @@
           // 当前数据基线：全量轮与 diff 轮都注入，模型据此沿用既有 id 与未变化行（多轮连续性）。
           current: PROMPT.buildCurrent(state, featureFlags)
         };
+        // 传讯通道已读游标：基线注入即已读（评审结论）。玩家消息随基线进入模型上下文，
+        // 未读数随之清零；消息本体保留在角色域线程中，模型可继续回复。
+        if (featureFlags.msg !== false) runtime.markPlayerRead(chatId);
         return PROMPT.mutatePrepareEvent(event, promptLang(), featureFlags, ctx);
       });
 
@@ -4109,6 +4723,7 @@
       ensureShell();
       var id = await runtime.resolveCurrentChatId();
       await runtime.switchChat(id);
+      refreshPlayerName();
       render();
       hostDocument.addEventListener('keydown', function (event) { if (event.key === 'Escape') close(); }, true);
       // 从设置页等返回聊天页时刷新 FAB 显隐与 overlay 状态（配置变化无 Hook 可订阅；
