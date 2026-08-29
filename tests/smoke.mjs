@@ -641,6 +641,107 @@ M.i18n.invalidate();
   eq(M.VIEWS.fieldValue(state.tablet, 'look', 'appearance'), '', 'fieldValue 缺字段返回空串');
 }
 
+// ---------- 交互基座第一层 · 检索筛选 ----------
+console.log('# 交互基座 · 检索筛选');
+{
+  // 关键词工具：空关键词恒匹配（renderX 空串即全量，见下方玉牌 11 字段断言）；大小写不敏感。
+  ok(M.VIEWS.searchKw('  abc  ') === 'abc', 'searchKw 去空白并小写');
+  eq(M.VIEWS.searchKw(''), '', '空检索串为空关键词');
+  ok(M.VIEWS.searchKw('ABC') === 'abc', '关键词统一小写');
+
+  // 检索框结构：placeholder/aria 走 catalog，有值才渲染清除按钮。
+  const sbEmpty = M.VIEWS.searchBox('');
+  ok(sbEmpty.includes('data-search-input') && sbEmpty.includes(zhCatalog['runtime.search.placeholder']), '检索框带 input 与 catalog placeholder');
+  ok(sbEmpty.includes('yz-search-clear hidden'), '无关键词时清除按钮隐藏');
+  const sbFull = M.VIEWS.searchBox('剑');
+  ok(sbFull.includes('value="剑"') && !sbFull.includes('yz-search-clear hidden') && sbFull.includes('data-action="clear-search"'), '有关键词时显示清除按钮');
+
+  // 玉牌字段过滤：按字段名/值过滤，未命中组不渲染。
+  const ts = M.CORE.blankState('f1');
+  ts.tablet = M.CORE.normalizeTablet(TABLET_OBJ);
+  const tAll = M.VIEWS.renderTablet(ts, '');
+  ok(tAll.includes('data-marker="tablet"') && tAll.includes('data-search-input'), '玉牌页带检索框');
+  eq((tAll.match(/yz-field/g) || []).length, 11, '无关键词渲染全部字段');
+  const tKw = M.VIEWS.renderTablet(ts, '灵根');
+  ok(tKw.includes('灵根') && !tKw.includes('身高'), '玉牌按字段名过滤');
+  const tKwV = M.VIEWS.renderTablet(ts, '李逍遥');
+  ok(tKwV.includes('李逍遥') && !tKwV.includes('性别'), '玉牌按字段值过滤');
+  const tNone = M.VIEWS.renderTablet(ts, '不存在的词');
+  ok(tNone.includes(zhCatalog['runtime.search.noMatch']) && !tNone.includes('yz-field'), '玉牌无命中显示专属空态');
+
+  // 讯息：联系人列表过滤 + 聊天详情内过滤。
+  const ms = M.CORE.blankState('f2');
+  ms.chats = M.CORE.normalizeChats(MSG_OBJ);
+  const chatList = M.VIEWS.renderMsg(ms, { app: 'msg', view: 'chats', params: {} }, '林月如');
+  ok(chatList.includes('林月如') && !chatList.includes('酒剑仙'), '联系人按名称过滤');
+  const chatListRel = M.VIEWS.renderMsg(ms, { app: 'msg', view: 'chats', params: {} }, '道侣');
+  ok(chatListRel.includes('林月如') && !chatListRel.includes('酒剑仙'), '联系人按关系过滤');
+  const chatDetail = M.VIEWS.renderMsg(ms, { app: 'msg', view: 'chat', params: { id: 'c1' } }, '勿念');
+  ok(chatDetail.includes('勿念') && !chatDetail.includes('定当赴约'), '聊天详情按消息内容过滤');
+  const chatDetailNone = M.VIEWS.renderMsg(ms, { app: 'msg', view: 'chat', params: { id: 'c1' } }, '没有的话');
+  ok(chatDetailNone.includes(zhCatalog['runtime.search.noMatch']), '聊天详情无命中显示空态');
+  const groupList = M.VIEWS.renderMsg(ms, { app: 'msg', view: 'groups', params: {} }, '青云');
+  ok(groupList.includes('青云内门'), '群聊列表按名称过滤');
+  const gDetail = M.VIEWS.renderMsg(ms, { app: 'msg', view: 'gchat', params: { id: 'g1' } }, '掌门');
+  ok(gDetail.includes('卯时议事') && !gDetail.includes('不得迟到'), '群聊详情按发送者/内容过滤');
+
+  // 玉册：文件夹按名称过滤、文件夹内按标题/正文过滤。
+  const ns = M.CORE.blankState('f3');
+  ns.notes = { folders: [{ id: 'f1', name: '杂记', count: 1 }, { id: 'f2', name: '秘录', count: 0 }], notes: [{ id: 'n1', folderId: 'f1', updated: '今日', locked: false, title: '约定', body: '卯时山门' }] };
+  const folders = M.VIEWS.renderNotes(ns, { app: 'notes', view: 'folders', params: {} }, '秘录');
+  ok(folders.includes('秘录') && !folders.includes('杂记'), '玉册文件夹按名称过滤');
+  const folderNotes = M.VIEWS.renderNotes(ns, { app: 'notes', view: 'folder', params: { id: 'f1' } }, '卯时');
+  ok(folderNotes.includes('约定') && !folderNotes.includes(zhCatalog['runtime.guard.notes']), '文件夹内按正文过滤');
+  const folderNone = M.VIEWS.renderNotes(ns, { app: 'notes', view: 'folder', params: { id: 'f1' } }, '无');
+  ok(folderNone.includes(zhCatalog['runtime.search.noMatch']), '文件夹内无命中显示空态');
+
+  // 论坛：帖子按标题/作者/版块过滤。
+  const fo = M.CORE.blankState('f4');
+  fo.forum = { posts: [{ id: 'p1', author: '掌门', role: '长老', section: '公告', time: '今日', title: '议事', body: '卯时集合', resonance: 3, comments: [{ author: '长老', time: '今日', text: '已知' }, { author: '弟子', time: '今日', text: '恭候' }] }] };
+  const forumTitle = M.VIEWS.renderForum(fo, { app: 'forum', view: 'root', params: {} }, '议事');
+  ok(forumTitle.includes('data-marker="forum-list"') && forumTitle.includes('议事'), '帖子按标题过滤');
+  const forumNone = M.VIEWS.renderForum(fo, { app: 'forum', view: 'root', params: {} }, '悬赏');
+  ok(forumNone.includes(zhCatalog['runtime.search.noMatch']), '帖子无命中显示空态');
+  const postComments = M.VIEWS.renderForum(fo, { app: 'forum', view: 'post', params: { id: 'p1' } }, '长老');
+  ok(postComments.includes('已知') && !postComments.includes('恭候'), '帖子评论按评论者过滤');
+
+  // 坊市：行情/订单按名称过滤；芥子空间：物品/钱财按名称过滤；舆图：行踪过滤、当前位置保留。
+  const mk = M.CORE.blankState('f5');
+  mk.market = { listings: [{ id: 'l1', name: '灵草', grade: '下品', desc: '百年份', price: '10灵石', seller: '坊主' }], auctions: [{ id: 'a1', name: '古剑', grade: '上品', desc: '锈蚀', start: '100', current: '150', timeLeft: '1时辰', bids: 3 }], orders: [{ id: 'o1', name: '符纸', status: '已成交', price: '5灵石', time: '今日', side: '买' }] };
+  const listings = M.VIEWS.renderMarket(mk, { app: 'market', view: 'listings', params: {} }, '灵草');
+  ok(listings.includes('灵草') && !listings.includes('古剑'), '行情按名称过滤');
+  const auctions = M.VIEWS.renderMarket(mk, { app: 'market', view: 'auctions', params: {} }, '锈蚀');
+  ok(auctions.includes('古剑') && !auctions.includes('灵草'), '拍卖按描述过滤');
+  const orders = M.VIEWS.renderMarket(mk, { app: 'market', view: 'orders', params: {} }, '符纸');
+  ok(orders.includes('符纸') && !orders.includes('古剑'), '订单按名称过滤');
+  const marketNone = M.VIEWS.renderMarket(mk, { app: 'market', view: 'listings', params: {} }, '无此物');
+  ok(marketNone.includes(zhCatalog['runtime.search.noMatch']), '行情无命中显示空态');
+
+  const sp = M.CORE.blankState('f6');
+  sp.space = { currencies: [{ kind: '灵石', amount: '120' }], items: [{ id: 'i1', name: '养神丹', qty: 2, grade: '中品', desc: '宁神益气' }] };
+  const items = M.VIEWS.renderSpace(sp, { app: 'space', view: 'items', params: {} }, '养神丹');
+  ok(items.includes('养神丹') && !items.includes('灵石'), '储物按物品名过滤');
+  const coins = M.VIEWS.renderSpace(sp, { app: 'space', view: 'currencies', params: {} }, '灵石');
+  ok(coins.includes('灵石') && !coins.includes('养神丹'), '钱财按种类过滤');
+
+  const mp = M.CORE.blankState('f7');
+  mp.map = { current: { place: '青云山', domain: '东域', desc: '山门所在' }, tracks: [{ id: 't1', time: '昨日', place: '山门', action: '入门' }, { id: 't2', time: '今日', place: '演武场', action: '晨练' }] };
+  const mapTracks = M.VIEWS.renderMap(mp, '演武');
+  ok(mapTracks.includes('演武场') && mapTracks.includes('青云山') && !mapTracks.includes('入门'), '舆图行踪过滤、当前位置保留');
+  const mapNone = M.VIEWS.renderMap(mp, '荒原');
+  ok(mapNone.includes(zhCatalog['runtime.search.noMatch']) && mapNone.includes('青云山'), '舆图无命中行踪时显示空态且当前位置仍在');
+
+  // renderPage 透传 ui.search 到各页面；无 ui 时缺省空关键词不报错。
+  const pageSearch = M.VIEWS.renderPage(ms, { app: 'msg', view: 'chats', params: {}, stack: [] }, {}, { search: '林月如' });
+  ok(pageSearch.includes('林月如') && !pageSearch.includes('酒剑仙'), 'renderPage 透传检索关键词');
+  ok(M.VIEWS.renderPage(M.CORE.blankState('f8'), { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}).includes('data-search-input'), '无检索状态时页面正常渲染');
+
+  // 回归：检索空态文案与清除按钮键双语齐全。
+  ['runtime.search.placeholder', 'runtime.search.clear', 'runtime.search.noMatch'].forEach((k) => {
+    ok(!!zhCatalog[k] && !!enCatalog[k], `检索文案 ${k} 双语齐全`);
+  });
+}
+
 // ---------- P1 · 同步详情页 ----------
 console.log('# P1 · 同步详情页');
 {

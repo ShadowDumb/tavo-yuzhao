@@ -1466,6 +1466,9 @@
         auctions: tr('runtime.guard.auctions'), orders: tr('runtime.guard.orders'), currencies: tr('runtime.guard.currencies'),
         items: tr('runtime.guard.items'), tracks: tr('runtime.guard.tracks')
       },
+      searchPlaceholder: tr('runtime.search.placeholder'),
+      searchClear: tr('runtime.search.clear'),
+      searchNoMatch: tr('runtime.search.noMatch'),
       labels: {
         self: tr('runtime.label.self'), locked: tr('runtime.label.locked'), membersUnit: tr('runtime.label.membersUnit'),
         notesWord: tr('runtime.label.notesWord'), resonance: tr('runtime.label.resonance'), commentsWord: tr('runtime.label.commentsWord'),
@@ -2613,26 +2616,56 @@
       '</div>';
   }
 
-  function renderTablet(state) {
+  // 检索关键词：去空白、统一小写，匹配两端同规一化（中文不受影响）。
+  function searchKw(search) {
+    return String(search == null ? '' : search).trim().toLowerCase();
+  }
+
+  function contains(keyword, value) {
+    if (!keyword) return true;
+    return String(value == null ? '' : value).toLowerCase().indexOf(keyword) >= 0;
+  }
+
+  // 任一字段命中即匹配；keyword 为空时恒匹配。
+  function filterMatch(keyword, values) {
+    for (var i = 0; i < values.length; i += 1) if (contains(keyword, values[i])) return true;
+    return false;
+  }
+
+  // 列表页顶部检索框：纯前端过滤，不改动数据。value 非空时渲染清除按钮。
+  function searchBox(value) {
+    var t = I18N.dict();
+    return '<div class="yz-search"><input type="search" data-search-input value="' + CORE.escapeHtml(value || '') +
+      '" placeholder="' + CORE.escapeHtml(t.searchPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.searchPlaceholder) + '">' +
+      '<button type="button" class="yz-search-clear' + (value ? '' : ' hidden') + '" data-action="clear-search" aria-label="' + CORE.escapeHtml(t.searchClear) + '">×</button></div>';
+  }
+
+  function renderTablet(state, search) {
     var t = I18N.dict();
     var tablet = state.tablet || CORE.blankTablet();
+    var kw = searchKw(search);
     var body = '';
     if (CORE.safeArray(tablet.groups, 10).length) {
       var name = tablet.name || fieldValue(tablet, 'basic', 'name');
       var realm = fieldValue(tablet, 'cult', 'realm');
       body = '<div class="yz-hero"><div class="yz-ava">' + CORE.escapeHtml(String(name || t.avaFallback).slice(0, 1)) + '</div><div><b>' + CORE.escapeHtml(name || t.features.tablet) + '</b><small>' + CORE.escapeHtml(realm || '') + '</small></div></div>';
-      CORE.safeArray(tablet.groups, 10).forEach(function (group) {
-        var fields = CORE.safeArray(group.fields, 30);
-        if (!fields.length) return;
-        body += '<section class="yz-group"><h3>' + CORE.escapeHtml(groupName(group.id)) + '</h3>' + fields.map(function (field) {
+      var groups = CORE.safeArray(tablet.groups, 10).map(function (group) {
+        return { id: group.id, fields: CORE.safeArray(group.fields, 30).filter(function (field) {
+          return filterMatch(kw, [field.key, field.value]);
+        }) };
+      });
+      groups.forEach(function (group) {
+        if (!group.fields.length) return;
+        body += '<section class="yz-group"><h3>' + CORE.escapeHtml(groupName(group.id)) + '</h3>' + group.fields.map(function (field) {
           return '<div class="yz-field"><small>' + CORE.escapeHtml(field.key) + '</small><p>' + CORE.escapeHtml(field.value) + '</p></div>';
         }).join('') + '</section>';
       });
+      if (kw && !groups.some(function (g) { return g.fields.length; })) body += '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
     } else {
       body = '<div class="yz-empty">' + CORE.escapeHtml(t.emptyTablet) + '</div>';
     }
     return '<main class="yz-page-inner" data-marker="tablet">' +
-      yzHeader(t.features.tablet) + body + '</main>';
+      yzHeader(t.features.tablet) + searchBox(search) + body + '</main>';
   }
 
   function ava(label, sizeClass) {
@@ -2644,56 +2677,65 @@
     return button('navigate', ava(row.name) + '<span class="yz-row-copy"><b>' + CORE.escapeHtml(row.name) + '<i>' + CORE.escapeHtml(row.relation || extra || '') + '</i></b><em>' + CORE.escapeHtml(row.preview || t.awaitingSync) + '</em></span><time>' + CORE.escapeHtml(row.time || '') + unread + '</time>', { view: label, id: row.id }, 'yz-row');
   }
 
-  function renderChatList(state, nav) {
+  function renderChatList(state, nav, search) {
     var t = I18N.dict();
     var chats = CORE.safeObject(state.chats);
+    var kw = searchKw(search);
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
     var body = '';
     var items;
     if (view === 'groups') {
-      items = CORE.safeArray(chats.groups, 6).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
-      if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(t.guards.groups) + '</div>';
+      items = CORE.safeArray(chats.groups, 6).filter(function (row) {
+        return filterMatch(kw, [row.name, row.preview, row.time]);
+      }).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
+      if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
       else body = '<div class="yz-page-list">' + items.join('') + '</div>';
       return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true) +
-        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + body + '</main>';
+        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
     }
-    items = CORE.safeArray(chats.contacts, 10).map(function (row) { return chatRow(t, row, 'chat', ''); });
-    if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(t.guards.contacts) + '</div>';
+    items = CORE.safeArray(chats.contacts, 10).filter(function (row) {
+      return filterMatch(kw, [row.name, row.relation, row.preview, row.time]);
+    }).map(function (row) { return chatRow(t, row, 'chat', ''); });
+    if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.contacts) + '</div>';
     else body = '<div class="yz-page-list">' + items.join('') + '</div>';
     return '<main class="yz-page-inner" data-marker="msg-chats">' + yzHeader(t.features.msg, true) +
-      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + body + '</main>';
+      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
   }
 
-  function renderMsgDetail(state, nav, group) {
+  function renderMsgDetail(state, nav, group, search) {
     var t = I18N.dict();
     var chats = CORE.safeObject(state.chats);
+    var kw = searchKw(search);
     var rows = group ? CORE.safeArray(chats.groups, 6) : CORE.safeArray(chats.contacts, 10);
     var rowItem = null;
     rows.forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) rowItem = item; });
     if (!rowItem) return '<main class="yz-page-inner"><div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '</div></main>';
-    var bubbles = CORE.safeArray(rowItem.messages, group ? 24 : 20).map(function (message) {
+    var bubbles = CORE.safeArray(rowItem.messages, group ? 24 : 20).filter(function (message) {
+      return filterMatch(kw, [message.text, message.sender, message.time]);
+    }).map(function (message) {
       var sender = group ? '<b class="yz-sender">' + CORE.escapeHtml(message.sender || (message.side === 'self' ? t.labels.self : '')) + '</b>' : '';
       return '<div class="yz-bubble-row ' + (message.side === 'self' ? 'self' : 'other') + '">' +
         ((message.side === 'other' && group) ? '<span class="yz-bubble-ava">' + ava(message.sender || '?') + '</span>' : '') +
         '<div class="yz-bubble-wrap">' + sender + '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
         '</div>';
     }).join('');
-    if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(t.awaitingSync) + '</div>';
+    if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.awaitingSync) + '</div>';
     var title = CORE.escapeHtml(rowItem.name) + (group && Number(rowItem.members) ? ' <small>(' + CORE.escapeHtml(rowItem.members + t.labels.membersUnit) + ')</small>' : '');
     return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' +
-      yzHeader(title) + '<div class="yz-bubbles">' + bubbles + '</div></main>';
+      yzHeader(title) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div></main>';
   }
 
-  function renderMsg(state, nav) {
+  function renderMsg(state, nav, search) {
     nav = nav || { app: 'msg', view: 'chats', params: {} };
-    if (nav.view === 'chat') return renderMsgDetail(state, nav, false);
-    if (nav.view === 'gchat') return renderMsgDetail(state, nav, true);
-    return renderChatList(state, nav);
+    if (nav.view === 'chat') return renderMsgDetail(state, nav, false, search);
+    if (nav.view === 'gchat') return renderMsgDetail(state, nav, true, search);
+    return renderChatList(state, nav, search);
   }
 
-  function renderNotes(state, nav) {
+  function renderNotes(state, nav, search) {
     var t = I18N.dict();
     var notes = CORE.safeObject(state.notes);
+    var kw = searchKw(search);
     nav = nav || { app: 'notes', view: 'folders', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'folders';
     if (view === 'note') {
@@ -2709,30 +2751,37 @@
       var folder = null;
       CORE.safeArray(notes.folders, 10).forEach(function (f) { if (String(f.id) === String(nav.params && nav.params.id)) folder = f; });
       if (!folder) return '<main class="yz-page-inner"><div class="yz-empty">' + CORE.escapeHtml(t.guards.notes) + '</div></main>';
-      var rows = CORE.safeArray(notes.notes, 30).filter(function (note) { return String(note.folderId) === String(folder.id); });
+      var rows = CORE.safeArray(notes.notes, 30).filter(function (note) {
+        return String(note.folderId) === String(folder.id) && filterMatch(kw, [note.title, note.body]);
+      });
       var list = rows.length ? rows.map(function (note) {
         return button('navigate', '<b>' + (note.locked ? '🔒 ' : '') + CORE.escapeHtml(note.title) + '</b><p>' + CORE.escapeHtml(note.body) + '</p><time>' + CORE.escapeHtml(note.updated || '') + '</time>', { view: 'note', id: note.id }, 'yz-note-row');
-      }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.notes) + '</div>';
+      }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.notes) + '</div>';
       return '<main class="yz-page-inner" data-marker="notes-list">' +
-        yzHeader(CORE.escapeHtml(folder.name)) + '<div class="yz-page-list">' + list + '</div></main>';
+        yzHeader(CORE.escapeHtml(folder.name)) + searchBox(search) + '<div class="yz-page-list">' + list + '</div></main>';
     }
-    var folderCards = CORE.safeArray(notes.folders, 10).map(function (f) {
+    var folderCards = CORE.safeArray(notes.folders, 10).filter(function (f) {
+      return filterMatch(kw, [f.name]);
+    }).map(function (f) {
       return button('navigate', '<span class="yz-folder-glyph">📁</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(f.name) + '</b><em>' + CORE.escapeHtml(String(f.count || 0) + ' ' + t.labels.notesWord) + '</em></span>', { view: 'folder', id: f.id }, 'yz-row');
     });
-    var body = folderCards.length ? '<div class="yz-page-list">' + folderCards.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.folders) + '</div>';
-    return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + body + '</main>';
+    var body = folderCards.length ? '<div class="yz-page-list">' + folderCards.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.folders) + '</div>';
+    return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + searchBox(search) + body + '</main>';
   }
 
-  function renderForum(state, nav) {
+  function renderForum(state, nav, search) {
     var t = I18N.dict();
     var forum = CORE.safeObject(state.forum);
+    var kw = searchKw(search);
     nav = nav || { app: 'forum', view: 'root', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'root';
     if (view === 'post') {
       var post = null;
       CORE.safeArray(forum.posts, 20).forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) post = item; });
       if (!post) return '<main class="yz-page-inner"><div class="yz-empty">' + CORE.escapeHtml(t.guards.post) + '</div></main>';
-      var comments = CORE.safeArray(post.comments, 20).map(function (comment) {
+      var comments = CORE.safeArray(post.comments, 20).filter(function (comment) {
+        return filterMatch(kw, [comment.author, comment.text, comment.time]);
+      }).map(function (comment) {
         return '<div class="yz-comment"><span class="yz-comment-ava">' + ava(comment.author || '?') + '</span><div class="yz-comment-copy"><b>' + CORE.escapeHtml(comment.author || '') + '</b><p>' + CORE.escapeHtml(comment.text) + '</p><time>' + CORE.escapeHtml(comment.time || '') + '</time></div></div>';
       }).join('');
       return '<main class="yz-page-inner" data-marker="forum-post">' +
@@ -2742,85 +2791,104 @@
         (CORE.hasText(post.section) ? '<span class="yz-tag">' + CORE.escapeHtml(post.section) + '</span>' : '') +
         '<p>' + CORE.escapeHtml(post.body) + '</p>' +
         '<div class="yz-resonance">❋ ' + CORE.escapeHtml(String(post.resonance || 0)) + ' ' + CORE.escapeHtml(t.labels.resonance) + '</div></article>' +
-        '<section class="yz-comments"><h3>' + CORE.escapeHtml(String(CORE.safeArray(post.comments, 20).length)) + ' ' + CORE.escapeHtml(t.labels.commentsWord) + '</h3>' + (comments || '') + '</section>' +
+        (comments.length || !kw
+          ? '<section class="yz-comments"><h3>' + CORE.escapeHtml(String(comments.length)) + ' ' + CORE.escapeHtml(t.labels.commentsWord) + '</h3>' + comments + '</section>'
+          : '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>') +
         '</main>';
     }
-    var posts = CORE.safeArray(forum.posts, 20);
+    var posts = CORE.safeArray(forum.posts, 20).filter(function (post) {
+      return filterMatch(kw, [post.title, post.author, post.section, post.body]);
+    });
     var list = posts.length ? posts.map(function (post) {
       return button('navigate', '<b>' + CORE.escapeHtml(post.title) + '</b><em>' + CORE.escapeHtml((post.author || '') + (CORE.hasText(post.section) ? ' · ' + post.section : '')) + '</em><time>' + CORE.escapeHtml(post.time || '') + '</time>', { view: 'post', id: post.id }, 'yz-row');
-    }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.posts) + '</div>';
-    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum) + '<div class="yz-page-list">' + list + '</div></main>';
+    }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.posts) + '</div>';
+    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum) + searchBox(search) + '<div class="yz-page-list">' + list + '</div></main>';
   }
 
   function marketRow(avatarName, title, sub, meta, foot) {
     return '<div class="yz-row yz-static">' + ava(avatarName) + '<span class="yz-row-copy"><b>' + title + '<i>' + sub + '</i></b><em>' + meta + '</em></span><time>' + foot + '</time></div>';
   }
 
-  function renderMarket(state, nav) {
+  function renderMarket(state, nav, search) {
     var t = I18N.dict();
     var market = CORE.safeObject(state.market);
+    var kw = searchKw(search);
     nav = nav || { app: 'market', view: 'listings', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
     var body;
     if (view === 'auctions') {
-      var auctions = CORE.safeArray(market.auctions, 12);
+      var auctions = CORE.safeArray(market.auctions, 12).filter(function (auction) {
+        return filterMatch(kw, [auction.name, auction.grade, auction.desc, auction.start, auction.current, auction.timeLeft]);
+      });
       body = auctions.length ? '<div class="yz-page-list">' + auctions.map(function (auction) {
         return marketRow(auction.name,
           CORE.escapeHtml(auction.name), CORE.escapeHtml(auction.grade || ''),
           '<span class="yz-price">' + CORE.escapeHtml(t.labels.startPrice + ' ' + (auction.start || '')) + ' → ' + CORE.escapeHtml(auction.current || '') + '</span> · ' + CORE.escapeHtml(auction.desc || ''),
           CORE.escapeHtml(auction.timeLeft || '') + '<u class="yz-res">' + CORE.escapeHtml(String(auction.bids || 0)) + ' ' + CORE.escapeHtml(t.labels.bidsUnit) + '</u>');
-      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.auctions) + '</div>';
+      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.auctions) + '</div>';
     } else if (view === 'orders') {
-      var orders = CORE.safeArray(market.orders, 12);
+      var orders = CORE.safeArray(market.orders, 12).filter(function (order) {
+        return filterMatch(kw, [order.name, order.status, order.price, order.time, order.side]);
+      });
       body = orders.length ? '<div class="yz-page-list">' + orders.map(function (order) {
         var side = /^(buy|买|求购|购)/i.test(order.side) ? t.labels.buy : (/^(sell|卖|出售|售)/i.test(order.side) ? t.labels.sell : order.side);
         return marketRow(order.name,
           CORE.escapeHtml(order.name), '<span class="yz-side">' + CORE.escapeHtml(side || '') + '</span>',
           CORE.escapeHtml(order.status || ''),
           CORE.escapeHtml(order.time || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(order.price || '') + '</u>');
-      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.orders) + '</div>';
+      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.orders) + '</div>';
     } else {
-      var listings = CORE.safeArray(market.listings, 20);
+      var listings = CORE.safeArray(market.listings, 20).filter(function (listing) {
+        return filterMatch(kw, [listing.name, listing.grade, listing.desc, listing.price, listing.seller]);
+      });
       body = listings.length ? '<div class="yz-page-list">' + listings.map(function (listing) {
         return marketRow(listing.name,
           CORE.escapeHtml(listing.name), CORE.escapeHtml(listing.grade || ''),
           CORE.escapeHtml(listing.desc || ''),
           CORE.escapeHtml(listing.seller || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(listing.price || '') + '</u>');
-      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.listings) + '</div>';
+      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.listings) + '</div>';
     }
     return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true) +
-      yzTabs([['listings', t.tabs.listings], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + body + '</main>';
+      yzTabs([['listings', t.tabs.listings], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBox(search) + body + '</main>';
   }
 
-  function renderSpace(state, nav) {
+  function renderSpace(state, nav, search) {
     var t = I18N.dict();
     var space = CORE.safeObject(state.space);
+    var kw = searchKw(search);
     nav = nav || { app: 'space', view: 'items', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'items';
     var body;
     if (view === 'currencies') {
-      var currencies = CORE.safeArray(space.currencies, 10);
+      var currencies = CORE.safeArray(space.currencies, 10).filter(function (currency) {
+        return filterMatch(kw, [currency.kind, currency.amount]);
+      });
       body = currencies.length ? '<div class="yz-page-list">' + currencies.map(function (currency) {
         return '<div class="yz-row yz-static"><span class="yz-coin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(currency.kind) + '</b></span><time class="yz-amount">' + CORE.escapeHtml(currency.amount || '') + '</time></div>';
-      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.currencies) + '</div>';
+      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.currencies) + '</div>';
     } else {
-      var items = CORE.safeArray(space.items, 30);
+      var items = CORE.safeArray(space.items, 30).filter(function (item) {
+        return filterMatch(kw, [item.name, item.grade, item.desc]);
+      });
       body = items.length ? '<div class="yz-page-list">' + items.map(function (item) {
         return marketRow(item.name,
           CORE.escapeHtml(item.name), CORE.escapeHtml(item.grade || ''),
           CORE.escapeHtml(item.desc || ''),
           CORE.escapeHtml(item.qtyText || String(item.qty || '')));
-      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(t.guards.items) + '</div>';
+      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.items) + '</div>';
     }
     return '<main class="yz-page-inner" data-marker="space-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.space, true) +
-      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + body + '</main>';
+      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBox(search) + body + '</main>';
   }
 
-  function renderMap(state) {
+  function renderMap(state, search) {
     var t = I18N.dict();
     var map = CORE.safeObject(state.map);
+    var kw = searchKw(search);
     var cur = CORE.safeObject(map.current);
-    var tracks = CORE.safeArray(map.tracks, 20);
+    var tracks = CORE.safeArray(map.tracks, 20).filter(function (track) {
+      return filterMatch(kw, [track.place, track.action, track.time]);
+    });
     var hero;
     if (CORE.hasText(cur.place)) {
       hero = '<div class="yz-map-current"><h3>' + CORE.escapeHtml(t.mapTitles.current) + '</h3>' +
@@ -2833,7 +2901,8 @@
       tracks.map(function (track) {
         return '<div class="yz-track"><time>' + CORE.escapeHtml(track.time || '') + '</time><div><b>' + CORE.escapeHtml(track.place) + '</b>' + (CORE.hasText(track.action) ? '<p>' + CORE.escapeHtml(track.action) + '</p>' : '') + '</div></div>';
       }).join('') + '</div></div>' : '';
-    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map) + hero + timeline + '</main>';
+    var empty = (!CORE.safeArray(map.tracks, 20).length || tracks.length) ? '' : '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
+    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map) + searchBox(search) + hero + timeline + empty + '</main>';
   }
 
   function diagRow(label, valueHtml) {
@@ -2928,13 +2997,15 @@
 
   function renderPage(state, nav, flags, ui) {
     nav = nav || { app: 'home', view: 'root', params: {}, stack: [] };
-    if (nav.app === 'tablet') return renderTablet(state);
-    if (nav.app === 'msg') return renderMsg(state, nav);
-    if (nav.app === 'notes') return renderNotes(state, nav);
-    if (nav.app === 'forum') return renderForum(state, nav);
-    if (nav.app === 'market') return renderMarket(state, nav);
-    if (nav.app === 'space') return renderSpace(state, nav);
-    if (nav.app === 'map') return renderMap(state);
+    ui = ui || {};
+    var search = ui.search || '';
+    if (nav.app === 'tablet') return renderTablet(state, search);
+    if (nav.app === 'msg') return renderMsg(state, nav, search);
+    if (nav.app === 'notes') return renderNotes(state, nav, search);
+    if (nav.app === 'forum') return renderForum(state, nav, search);
+    if (nav.app === 'market') return renderMarket(state, nav, search);
+    if (nav.app === 'space') return renderSpace(state, nav, search);
+    if (nav.app === 'map') return renderMap(state, search);
     if (nav.app === 'sync') return '<main class="yz-page-inner" data-marker="sync">' + yzHeader(I18N.dict().diag.title) + renderSyncDetail(state) + '</main>';
     if (nav.app === 'manage') return renderManage(state, flags, ui);
     return '';
@@ -2992,7 +3063,9 @@
     nextWipeState: nextWipeState,
     WIPE_CONFIRM_MS: WIPE_CONFIRM_MS,
     fieldValue: fieldValue,
-    groupName: groupName
+    groupName: groupName,
+    searchKw: searchKw,
+    searchBox: searchBox
   };
 
   var STYLE_ID = 'yz1-style';
@@ -3137,6 +3210,14 @@
     '.yz-track time{flex:none;width:64px;font-size:10px;color:#7fae9a;padding-top:2px;text-align:right}',
     '.yz-track b{display:block;font-size:13px;color:#eef9f3;letter-spacing:.5px}',
     '.yz-track p{margin:2px 0 0;font-size:12px;color:#b7e0cd;line-height:1.6;white-space:pre-wrap;word-break:break-word}',
+    // —— 检索框：列表页/详情页顶部的纯内存过滤输入 ——
+    '.yz-search{position:relative;margin:2px 0 10px}',
+    '.yz-search input{width:100%;height:34px;border:1px solid rgba(160,235,205,.3);background:rgba(14,44,36,.6);border-radius:17px;color:#eef9f3;padding:0 36px 0 14px;font-size:12px;font-family:inherit;letter-spacing:.5px}',
+    '.yz-search input::placeholder{color:#7fae9a}',
+    '.yz-search input:focus{outline:1px solid rgba(150,255,215,.45)}',
+    '.yz-search .yz-search-clear{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:26px;height:26px;border:none;background:none;color:#a7d6c2;font-size:15px;line-height:1;border-radius:50%;display:grid;place-items:center;padding:0;font-family:inherit;cursor:pointer}',
+    '.yz-search .yz-search-clear:hover{background:rgba(70,180,140,.25);color:#dff7ec}',
+    '.yz-search .yz-search-clear[hidden]{display:none!important}',
     '.yz-manage-info{font-size:11px;color:#a7d6c2;line-height:1.7;margin:0 0 12px;padding:10px 12px;border-radius:12px;background:rgba(14,44,36,.5);border:1px solid rgba(150,255,215,.1)}',
     '.yz-manage-row .yz-glyph-sm{flex:none;width:34px;height:34px;border-radius:50%;border:1px solid rgba(200,255,230,.24);display:grid;place-items:center;font-size:16px;background:rgba(16,46,38,.62);line-height:1}',
     '.yz-glyph-sm svg{width:22px;height:22px}',
@@ -3259,6 +3340,8 @@
     var dataPanel = null;
     var armedWipe = null;
     var wipeTimer = 0;
+    // 列表页/详情页检索关键词：纯内存过滤瞬态，任何导航（含关闭）都复位。
+    var search = '';
 
     // 界面语言唯一真值源是宿主 locale（tavo.plugin.i18n）；
     // lang 设置仅决定注入提示词的语言（生成内容语言策略，见 settings.info）。
@@ -3424,7 +3507,17 @@
         // 注意：shell 初始模板中 page 带 hidden 属性（CSS [hidden]{display:none!important}），
         // 必须用 .hidden property 移除属性本身；classList.remove('hidden') 只能移除同名 class。
         pageNode.hidden = false;
-        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe });
+        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search });
+        // 检索框每次按键都整体重渲染：焦点丢给新的输入框并恢复光标到末尾，
+        // 否则输入一个字符后失去焦点、无法连续键入。
+        var focused = hostDocument.activeElement;
+        if (focused && focused.getAttribute && focused.getAttribute('data-search-input') !== null) {
+          var freshInput = pageNode.querySelector('[data-search-input]');
+          if (freshInput) {
+            freshInput.focus();
+            try { freshInput.setSelectionRange(search.length, search.length); } catch (_) {}
+          }
+        }
       }
     }
 
@@ -3451,6 +3544,12 @@
       wipeTimer = 0;
     }
 
+    // 检索关键词只属于当前页面：任何导航（前进/后退/切换/回主界面/关闭）都清空，
+    // 避免残留关键词把下一页的数据也过滤掉。
+    function resetSearch() {
+      search = '';
+    }
+
     function markAppliedSeen(featureId) {
       var state = runtime.current();
       var seen = CORE.safeArray(state.sync && state.sync.appliedSeen, 20);
@@ -3473,6 +3572,7 @@
       // 查看过该卦位即并入 appliedSeen：下一轮快照再次应用时重新点亮「新」徽标。
       markAppliedSeen(featureId);
       nav = { app: featureId, view: 'root', params: {}, stack: [] };
+      resetSearch();
       render();
     }
 
@@ -3483,6 +3583,7 @@
       nav.app = 'sync';
       nav.view = 'root';
       nav.params = {};
+      resetSearch();
       render();
     }
 
@@ -3555,6 +3656,7 @@
       nav.view = view;
       nav.params = params || {};
       if (view === 'chat' || view === 'gchat') clearUnread(view, params && params.id);
+      resetSearch();
       render();
     }
 
@@ -3563,6 +3665,7 @@
       nav.view = view || 'root';
       nav.params = {};
       nav.stack = [];
+      resetSearch();
       render();
     }
 
@@ -3577,6 +3680,7 @@
         goHome();
         return;
       }
+      resetSearch();
       render();
     }
 
@@ -3595,6 +3699,7 @@
       clearToast();
       resetManagePanels();
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
+      resetSearch();
       render();
     }
 
@@ -3610,6 +3715,7 @@
       clearToast();
       resetManagePanels();
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
+      resetSearch();
       render();
       // 打开时把焦点移入对话框。
       var dialog = overlay.querySelector('#' + JADE_ID) || overlay;
@@ -3622,6 +3728,7 @@
       clearToast();
       resetManagePanels();
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
+      resetSearch();
       overlay.classList.remove('open');
       overlay.setAttribute('aria-hidden', 'true');
       var fab = hostDocument.getElementById(FAB_ID);
@@ -3656,9 +3763,18 @@
           }
           if (action === 'copy-export') return copyExport();
           if (action === 'import-submit') return submitImport();
+          if (action === 'clear-search') { resetSearch(); return render(); }
           return;
         }
         if (event.target === overlay) close();
+      });
+      // 检索框输入走 input 事件委托：每次键入只更新内存关键词并重渲染，
+      // 纯前端过滤，不触碰任何持久化数据（交互基座第一层的只读约束）。
+      overlay.addEventListener('input', function (event) {
+        var box = event.target.closest ? event.target.closest('[data-search-input]') : null;
+        if (!box) return;
+        search = String(box.value || '');
+        render();
       });
       // 模态焦点陷阱：Tab / Shift+Tab 在对话框内的可见按钮间循环，避免焦点移出到背后页面。
       overlay.addEventListener('keydown', function (event) {
