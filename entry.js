@@ -81,6 +81,8 @@
     basic: ['基本', '基础', 'basic'],
     look: ['仪容', '外貌', '外观', 'look', 'appearance'],
     cult: ['修为', '修炼', '修行', 'cultivation', 'cult'],
+    gong: ['功法', '心法', '法诀', '绝学', '术法', 'gong', 'technique'],
+    bond: ['羁绊', '缘分', '牵挂', 'bond', 'bonds', 'ties', 'connection'],
     secret: ['隐秘', '隐秘信息', '秘密', '隐私', 'secret', 'hidden']
   };
 
@@ -94,7 +96,9 @@
     root: ['灵根', 'spiritual root', 'root'],
     body: ['体质', 'constitution', 'physique', 'body'],
     realm: ['境界', '修为境界', 'realm', 'cultivation realm', 'cultivation level'],
-    status: ['状态', '当前状态', 'status', 'state', 'condition']
+    status: ['状态', '当前状态', 'status', 'state', 'condition'],
+    technique: ['功法', '功法名', '主修功法', '所学功法', 'technique', 'skill', 'art'],
+    bond: ['羁绊', '羁绊对象', '缘分', 'bond', 'tie']
   };
 
   function groupId(name) {
@@ -115,7 +119,7 @@
     return null;
   }
 
-  var GROUP_ORDER = ['basic', 'look', 'cult', 'secret'];
+  var GROUP_ORDER = ['basic', 'look', 'cult', 'gong', 'bond', 'secret'];
 
   function blankTablet() {
     return { name: '', groups: [] };
@@ -428,6 +432,9 @@
     valid.basic = !!(groups.basic && hasAll(groups.basic, ['name', 'gender', 'height', 'weight']));
     valid.look = !!(groups.look && hasAll(groups.look, ['appearance', 'clothing']));
     valid.cult = !!(groups.cult && hasAll(groups.cult, ['root', 'body', 'realm', 'status']));
+    // 功法/羁绊与隐秘同为内容组：至少一条即可（写什么由引导行与约束文本约定）。
+    valid.gong = !!(groups.gong && safeArray(groups.gong.fields, 30).length >= 1);
+    valid.bond = !!(groups.bond && safeArray(groups.bond.fields, 30).length >= 1);
     valid.secret = !!(groups.secret && safeArray(groups.secret.fields, 30).length >= 1);
     return {
       ok: GROUP_ORDER.every(function (id) { return valid[id]; }),
@@ -762,7 +769,7 @@
   function featureIssues(id, result) {
     result = safeObject(result);
     if (id === 'tablet') {
-      return ['basic', 'look', 'cult', 'secret'].filter(function (g) { return !safeObject(result.groups)[g]; })
+      return ['basic', 'look', 'cult', 'gong', 'bond', 'secret'].filter(function (g) { return !safeObject(result.groups)[g]; })
         .map(function (g) { return { path: 'tablet.' + g, code: 'tablet.' + g }; });
     }
     if (id === 'msg') {
@@ -1523,6 +1530,8 @@
         'tablet.basic': tr('assess.issue.tablet.basic'),
         'tablet.look': tr('assess.issue.tablet.look'),
         'tablet.cult': tr('assess.issue.tablet.cult'),
+        'tablet.gong': tr('assess.issue.tablet.gong'),
+        'tablet.bond': tr('assess.issue.tablet.bond'),
         'tablet.secret': tr('assess.issue.tablet.secret'),
         'msg.contacts': tr('assess.issue.msg.contacts'),
         'msg.groups': tr('assess.issue.msg.groups'),
@@ -1614,7 +1623,7 @@
         tablet: tr('runtime.gua.tablet'), msg: tr('runtime.gua.msg'), notes: tr('runtime.gua.notes'), market: tr('runtime.gua.market'),
         forum: tr('runtime.gua.forum'), space: tr('runtime.gua.space'), map: tr('runtime.gua.map'), manage: tr('runtime.gua.manage')
       },
-      groups: { basic: tr('runtime.group.basic'), look: tr('runtime.group.look'), cult: tr('runtime.group.cult'), secret: tr('runtime.group.secret') },
+      groups: { basic: tr('runtime.group.basic'), look: tr('runtime.group.look'), cult: tr('runtime.group.cult'), gong: tr('runtime.group.gong'), bond: tr('runtime.group.bond'), secret: tr('runtime.group.secret') },
       manage: {
         info: tr('runtime.manage.info'),
         on: tr('runtime.manage.on'),
@@ -2606,13 +2615,13 @@
     {
       id: 'tablet',
       en: {
-        constraint: '- Life-bound Jade Tablet: all four groups Basic (name/gender/height/weight), Appearance (appearance/clothing), Cultivation (spiritual root/constitution/realm/status), Secret (at least 1) must be complete.',
-        rows: ['<yz_tablet>', 'field｜Basic｜name｜value', 'field｜Basic｜gender｜value', 'field｜Basic｜height｜value', 'field｜Basic｜weight｜value', 'field｜Appearance｜appearance｜value', 'field｜Appearance｜clothing｜value', 'field｜Cultivation｜spiritual root｜value', 'field｜Cultivation｜constitution｜value', 'field｜Cultivation｜realm｜value', 'field｜Cultivation｜status｜value', 'field｜Secret｜secret｜value', '</yz_tablet>'],
+        constraint: '- Life-bound Jade Tablet: all six groups Basic (name/gender/height/weight), Appearance (appearance/clothing), Cultivation (spiritual root/constitution/realm/status), Techniques (at least 1), Bonds (at least 1), Secret (at least 1) must be complete.',
+        rows: ['<yz_tablet>', 'field｜Basic｜name｜value', 'field｜Basic｜gender｜value', 'field｜Basic｜height｜value', 'field｜Basic｜weight｜value', 'field｜Appearance｜appearance｜value', 'field｜Appearance｜clothing｜value', 'field｜Cultivation｜spiritual root｜value', 'field｜Cultivation｜constitution｜value', 'field｜Cultivation｜realm｜value', 'field｜Cultivation｜status｜value', 'field｜Techniques｜technique｜value', 'field｜Bonds｜bond｜value', 'field｜Secret｜secret｜value', '</yz_tablet>'],
         name: 'Life-bound Jade Tablet'
       },
       zh: {
-        constraint: '- 本命玉牌：基本（名字/性别/身高/体重）、仪容（外貌/穿着）、修为（灵根/体质/境界/状态）、隐秘（至少 1 条）四组齐全。',
-        rows: ['<yz_tablet>', 'field｜基本｜名字｜名字', 'field｜基本｜性别｜男或女', 'field｜基本｜身高｜身高', 'field｜基本｜体重｜体重', 'field｜仪容｜外貌｜外貌描写', 'field｜仪容｜穿着｜当前穿着', 'field｜修为｜灵根｜灵根与资质', 'field｜修为｜体质｜体质', 'field｜修为｜境界｜当前境界', 'field｜修为｜状态｜当前状态', 'field｜隐秘｜隐秘信息｜隐秘信息', '</yz_tablet>'],
+        constraint: '- 本命玉牌：基本（名字/性别/身高/体重）、仪容（外貌/穿着）、修为（灵根/体质/境界/状态）、功法（至少 1 门）、羁绊（至少 1 条）、隐秘（至少 1 条）六组齐全。',
+        rows: ['<yz_tablet>', 'field｜基本｜名字｜名字', 'field｜基本｜性别｜男或女', 'field｜基本｜身高｜身高', 'field｜基本｜体重｜体重', 'field｜仪容｜外貌｜外貌描写', 'field｜仪容｜穿着｜当前穿着', 'field｜修为｜灵根｜灵根与资质', 'field｜修为｜体质｜体质', 'field｜修为｜境界｜当前境界', 'field｜修为｜状态｜当前状态', 'field｜功法｜功法名｜所修功法', 'field｜羁绊｜羁绊对象｜关系说明', 'field｜隐秘｜隐秘信息｜隐秘信息', '</yz_tablet>'],
         name: '本命玉牌'
       }
     },

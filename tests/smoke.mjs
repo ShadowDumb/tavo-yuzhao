@@ -177,6 +177,8 @@ const FULL_JADE = [
   'field｜修为｜体质｜凡体',
   'field｜修为｜境界｜炼气三层',
   'field｜修为｜状态｜良好',
+  'field｜功法｜功法名｜青云剑诀',
+  'field｜羁绊｜道侣｜林月如',
   'field｜隐秘｜身世｜青云宗弃徒',
   '</yz_tablet>',
   '<yz_market>',
@@ -329,7 +331,7 @@ function fakeHost() {
 function jade(turnId, extraSections) {
   return '<yz_jade><yz_meta>\nturn｜' + turnId + '｜李逍遥｜同步\n</yz_meta>' + (extraSections || '') + '</yz_jade>';
 }
-const TABLET_OK = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜基本｜性别｜男\nfield｜基本｜身高｜175cm\nfield｜基本｜体重｜60kg\nfield｜仪容｜外貌｜清朗\nfield｜仪容｜穿着｜道袍\nfield｜修为｜灵根｜天灵根\nfield｜修为｜体质｜凡体\nfield｜修为｜境界｜炼气\nfield｜修为｜状态｜佳\nfield｜隐秘｜身世｜弃徒\n</yz_tablet>';
+const TABLET_OK = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜基本｜性别｜男\nfield｜基本｜身高｜175cm\nfield｜基本｜体重｜60kg\nfield｜仪容｜外貌｜清朗\nfield｜仪容｜穿着｜道袍\nfield｜修为｜灵根｜天灵根\nfield｜修为｜体质｜凡体\nfield｜修为｜境界｜炼气\nfield｜修为｜状态｜佳\nfield｜功法｜功法名｜青云剑诀\nfield｜羁绊｜道侣｜林月如\nfield｜隐秘｜身世｜弃徒\n</yz_tablet>';
 const MSG_MIN = '<yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\nmsg占位忽略\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\n</yz_msg>';
 const MSG_ARCH = '<yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜other｜昨日｜别忘\nmsg｜c1｜m3｜other｜昨日｜三事\nmsg｜c1｜m4｜self｜今日｜四时练剑\nmsg｜c1｜m5｜other｜今日｜五更同行\nmsg｜c1｜m6｜self｜今日｜六合归一\nmsg｜c1｜m7｜other｜今日｜七窍玲珑\nmsg｜c1｜m8｜other｜今日｜八荒来朝\nmsg｜c2｜x1｜other｜今日｜喝酒\nmsg｜c2｜x2｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜排班\ngmsg｜g1｜gm3｜弟子｜other｜今日｜报到\ngmsg｜g1｜gm4｜长老｜other｜今日｜巡山\ngmsg｜g1｜gm5｜掌门｜other｜今日｜传令\ngmsg｜g1｜gm6｜弟子｜other｜今日｜收到\ngmsg｜g1｜gm7｜长老｜other｜今日｜守夜\ngmsg｜g1｜gm8｜掌门｜other｜今日｜明晨集合\n</yz_msg>';
 
@@ -340,6 +342,8 @@ const TABLET_OBJ = {
     { id: 'basic', fields: [{ key: '名字', value: '李逍遥' }, { key: '性别', value: '男' }, { key: '身高', value: '175cm' }, { key: '体重', value: '60kg' }] },
     { id: 'look', fields: [{ key: '外貌', value: '清朗' }, { key: '穿着', value: '道袍' }] },
     { id: 'cult', fields: [{ key: '灵根', value: '天灵根' }, { key: '体质', value: '凡体' }, { key: '境界', value: '炼气三层' }, { key: '状态', value: '良好' }] },
+    { id: 'gong', fields: [{ key: '功法名', value: '青云剑诀' }] },
+    { id: 'bond', fields: [{ key: '道侣', value: '林月如' }] },
     { id: 'secret', fields: [{ key: '身世', value: '青云宗弃徒' }] }
   ]
 };
@@ -661,7 +665,7 @@ console.log('# 交互基座 · 检索筛选');
   ts.tablet = M.CORE.normalizeTablet(TABLET_OBJ);
   const tAll = M.VIEWS.renderTablet(ts, '');
   ok(tAll.includes('data-marker="tablet"') && tAll.includes('data-search-input'), '玉牌页带检索框');
-  eq((tAll.match(/yz-field/g) || []).length, 11, '无关键词渲染全部字段');
+  eq((tAll.match(/yz-field/g) || []).length, 13, '无关键词渲染全部字段');
   const tKw = M.VIEWS.renderTablet(ts, '灵根');
   ok(tKw.includes('灵根') && !tKw.includes('身高'), '玉牌按字段名过滤');
   const tKwV = M.VIEWS.renderTablet(ts, '李逍遥');
@@ -879,7 +883,7 @@ console.log('# P1 · appliedSeen 与 importState');
 // ---------- P2 · 协议：mode/skip/digest ----------
 console.log('# P2 · 协议 skip 与 digest');
 {
-  const partParsed = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜tp1｜李逍遥｜只更玉牌｜part\n</yz_meta><yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜基本｜性别｜男\nfield｜基本｜身高｜175cm\nfield｜基本｜体重｜60kg\nfield｜仪容｜外貌｜清朗\nfield｜仪容｜穿着｜道袍\nfield｜修为｜灵根｜天灵根\nfield｜修为｜体质｜凡体\nfield｜修为｜境界｜炼气\nfield｜修为｜状态｜佳\nfield｜隐秘｜身世｜弃徒\n</yz_tablet></yz_jade>');
+  const partParsed = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜tp1｜李逍遥｜只更玉牌｜part\n</yz_meta><yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜基本｜性别｜男\nfield｜基本｜身高｜175cm\nfield｜基本｜体重｜60kg\nfield｜仪容｜外貌｜清朗\nfield｜仪容｜穿着｜道袍\nfield｜修为｜灵根｜天灵根\nfield｜修为｜体质｜凡体\nfield｜修为｜境界｜炼气\nfield｜修为｜状态｜佳\nfield｜功法｜功法名｜青云剑诀\nfield｜羁绊｜道侣｜林月如\nfield｜隐秘｜身世｜弃徒\n</yz_tablet></yz_jade>');
   eq(partParsed.turn.mode, 'part', 'meta 第 5 字段 part 解析');
   eq(partParsed.present, ['tablet'], 'present 记录出现分区');
   ok(!partParsed.skipped, '无 skip 时不产出 skipped 映射');
@@ -995,7 +999,7 @@ console.log('# P2 · 当前数据基线与提示词');
   const jadeRt = '<yz_jade>\n<yz_meta>\nturn｜rt｜李逍遥｜回环\n</yz_meta>\n' + cur.join('\n').replace(/yzc_/g, 'yz_') + '\n</yz_jade>';
   const rt = M.PROTOCOL.parse(jadeRt);
   ok(rt && rt.tablet.name === '李逍遥', '基线行回环解析出角色名');
-  eq(rt.tablet.groups.length, 4, '基线玉牌四组回环');
+  eq(rt.tablet.groups.length, 6, '基线玉牌六组回环');
   eq(rt.chats.contacts.length, 2, '基线联系人回环');
   eq(rt.chats.contacts[0].messages.length, 2, '基线联系人消息回环');
   ok(rt.chats.contacts[0].messages.every((m) => ['m1', 'm2'].includes(m.id)), '消息 id 原样沿用');
@@ -1721,6 +1725,73 @@ console.log('# 玩家域 CRUD（二期）');
   ok(noteForm.includes('value="约定"') && noteForm.includes('value="pf-1"'), '备忘表单预填标题与父玉册夹');
   const orderForm = M.VIEWS.renderPage(cs, { app: 'market', view: 'form', params: { kind: 'order', id: 'po-1' } }, {}, {}, 'player', ps);
   ok(orderForm.includes('<option value="buy" selected') && orderForm.includes('<option value="sell"'), '订单表单方向选择预填');
+}
+
+// ---------- 四、角色域内容扩展：玉牌扩组（功法/羁绊） ----------
+console.log('# 玉牌扩组（功法/羁绊）');
+{
+  // 组名归一：中文/英文别名全部归入 gong/bond
+  eq(M.CORE.groupId('功法'), 'gong', '功法组别名归一');
+  eq(M.CORE.groupId('心法'), 'gong', '心法组别名归一');
+  eq(M.CORE.groupId('technique'), 'gong', 'technique 别名归一');
+  eq(M.CORE.groupId('羁绊'), 'bond', '羁绊组别名归一');
+  eq(M.CORE.groupId('缘分'), 'bond', '缘分组别名归一');
+  eq(M.CORE.groupId('bonds'), 'bond', 'bonds 别名归一');
+  eq(M.CORE.groupId('装备'), null, '未知组名拒绝');
+
+  // normalizeTablet：新组进入固定顺序（修为→功法→羁绊→隐秘）
+  const ts = M.CORE.normalizeTablet({
+    groups: [
+      { id: 'secret', fields: [{ key: '身世', value: '弃徒' }] },
+      { id: 'gong', fields: [{ key: '功法名', value: '青云剑诀' }] },
+      { id: 'bond', fields: [{ key: '道侣', value: '林月如' }] }
+    ]
+  });
+  eq(ts.groups.map((g) => g.id).join(','), 'gong,bond,secret', '新组按 GROUP_ORDER 重排且未知组剔除');
+
+  // diff：+field 建组/更新、canonical 键去重、-field 删行（走完整应用链路，含达标门禁）
+  const dgState = M.CORE.blankState('dg');
+  dgState.tablet = M.CORE.normalizeTablet(TABLET_OBJ);
+  const dg1 = M.CORE.applySnapshot(dgState, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜dg1｜李逍遥｜换功法｜diff\n</yz_meta><yz_tablet>\n+field｜功法｜主修功法｜御剑术\n</yz_tablet></yz_jade>'), {}).state;
+  eq(dg1.tablet.groups.find((g) => g.id === 'gong').fields.length, 1, '功法组内 canonical 键合并为一行');
+  eq(dg1.tablet.groups.find((g) => g.id === 'gong').fields[0].value, '御剑术', 'canonical 键更新功法');
+  const dg2 = M.CORE.applySnapshot(dg1, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜dg2｜李逍遥｜结缘｜diff\n</yz_meta><yz_tablet>\n+field｜羁绊｜师尊｜酒剑仙\n</yz_tablet></yz_jade>'), {}).state;
+  eq(dg2.tablet.groups.find((g) => g.id === 'bond').fields.length, 2, '羁绊组追加新行');
+  const dg3 = M.CORE.applySnapshot(dg2, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜dg3｜李逍遥｜缘尽｜diff\n</yz_meta><yz_tablet>\n-field｜羁绊｜师尊\n</yz_tablet></yz_jade>'), {}).state;
+  eq(dg3.tablet.groups.find((g) => g.id === 'bond').fields.length, 1, '删除羁绊一行后保留道侣行');
+  const dg4 = M.CORE.applySnapshot(dg3, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜dg4｜李逍遥｜弃功｜diff\n</yz_meta><yz_tablet>\n-field｜功法｜功法名\n</yz_tablet></yz_jade>'), {}).state;
+  eq(dg4.tablet.groups.find((g) => g.id === 'gong').fields[0].value, '御剑术', '删空功法组被达标门禁拦截不落盘');
+
+  // 达标评估：缺组记 issue，补足后全组达标
+  const bare = M.CORE.normalizeTablet(TABLET_OBJ);
+  const partial = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, tablet: bare }, {});
+  ok(partial.tablet.ok === true, '六组齐全时玉牌达标');
+  const missing = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, tablet: M.CORE.normalizeTablet({ groups: [{ id: 'basic', fields: [{ key: '名字', value: '李逍遥' }, { key: '性别', value: '男' }, { key: '身高', value: '175' }, { key: '体重', value: '60' }] }, { id: 'look', fields: [{ key: '外貌', value: '清朗' }, { key: '穿着', value: '道袍' }] }, { id: 'cult', fields: [{ key: '灵根', value: '天灵根' }, { key: '体质', value: '凡体' }, { key: '境界', value: '炼气' }, { key: '状态', value: '佳' }] }] }) }, {});
+  ok(missing.tablet.ok === false, '缺功法/羁绊时玉牌不达标');
+  ok(missing.tablet.groups.gong === false && missing.tablet.groups.bond === false, '功法/羁绊独立判定');
+  ok(missing.issues.some((i) => i.code === 'tablet.gong') && missing.issues.some((i) => i.code === 'tablet.bond'), '缺组 issue 回显');
+
+  // issue 文案双语
+  ok(zhCatalog['assess.issue.tablet.gong'] && enCatalog['assess.issue.tablet.gong'], '功法 issue 双语文案存在');
+
+  // 引导：提示词包含新组行与约束
+  const pGuide = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
+  ok(pGuide.includes('field｜功法｜功法名｜所修功法') && pGuide.includes('field｜羁绊｜羁绊对象｜关系说明'), '引导行含功法/羁绊');
+  ok(pGuide.includes('功法（至少 1 门）、羁绊（至少 1 条）'), '约束文本含新组底线');
+
+  // 基线：buildCurrent 含新组字段行
+  const dgFull = M.CORE.normalizeTablet(TABLET_OBJ);
+  const dgCur = M.PROMPT.buildCurrent({ tablet: dgFull }, {});
+  ok(dgCur.includes('field｜gong｜功法名｜青云剑诀'), '基线含功法行');
+  ok(dgCur.includes('field｜bond｜道侣｜林月如'), '基线含羁绊行');
+
+  // 视图：玉牌页按组名渲染新组标题
+  const tsView = M.CORE.blankState('v-gong');
+  tsView.tablet = M.CORE.normalizeTablet(TABLET_OBJ);
+  const tbl = M.VIEWS.renderTablet(tsView, '');
+  ok(tbl.includes(zhCatalog['runtime.group.gong']) && tbl.includes(zhCatalog['runtime.group.bond']), '玉牌页渲染功法/羁绊组标题');
+  const tblKw = M.VIEWS.renderTablet(tsView, '青云剑诀');
+  ok(tblKw.includes('青云剑诀') && !tblKw.includes('林月如'), '新组字段参与检索过滤');
 }
 
 // ---------- 结果 ----------
