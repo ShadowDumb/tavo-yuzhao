@@ -134,7 +134,7 @@
       chats: { contacts: [], groups: [] },
       notes: { folders: [], notes: [] },
       forum: { posts: [] },
-      market: { listings: [], auctions: [], orders: [] },
+      market: { listings: [], auctions: [], orders: [], requests: [] },
       space: { currencies: [], items: [] },
       map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] },
       processedTurns: [],
@@ -187,7 +187,7 @@
       tablet: blankTablet(),
       chats: { contacts: [], groups: [] },
       notes: { folders: [], notes: [] },
-      market: { listings: [], auctions: [], orders: [] },
+      market: { listings: [], auctions: [], orders: [], requests: [] },
       space: { currencies: [], items: [] },
       map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] },
       pluginVersion: ''
@@ -307,7 +307,12 @@
       order = safeObject(order);
       return { id: cleanText(order.id, 160), name: cleanText(order.name, 120), status: cleanText(order.status, 40), price: cleanText(order.price, 80), time: cleanText(order.time, 80), side: cleanText(order.side, 20) };
     }).filter(function (order) { return order.id && hasText(order.name); });
-    return { listings: listings, auctions: auctions, orders: orders };
+    // 求购区：坊市的买公告（与行情配对），公开数据——行 id 由模型声明。
+    var requests = safeArray(raw.requests, 12).map(function (request) {
+      request = safeObject(request);
+      return { id: cleanText(request.id, 160), name: cleanText(request.name, 120), grade: cleanText(request.grade, 60), desc: cleanText(request.desc, 3000), price: cleanText(request.price, 80), author: cleanText(request.author, 120) };
+    }).filter(function (request) { return request.id && hasText(request.name); });
+    return { listings: listings, auctions: auctions, orders: orders, requests: requests };
   }
 
   function normalizeSpace(raw) {
@@ -479,7 +484,8 @@
     valid.listings = safeArray(market.listings, 20).length >= 1;
     valid.auctions = safeArray(market.auctions, 12).length >= 1;
     valid.orders = safeArray(market.orders, 12).length >= 1;
-    return { ok: valid.listings && valid.auctions && valid.orders, listings: valid.listings, auctions: valid.auctions, orders: valid.orders };
+    valid.requests = safeArray(market.requests, 12).length >= 1;
+    return { ok: valid.listings && valid.auctions && valid.orders && valid.requests, listings: valid.listings, auctions: valid.auctions, orders: valid.orders, requests: valid.requests };
   }
 
   function assessSpace(space) {
@@ -699,6 +705,10 @@
         list = out.orders;
         var oname = cleanText(op.values[1], 120);
         if (op.add && hasText(oname)) item = { id: id, name: oname, status: cleanText(op.values[2], 40), price: cleanText(op.values[3], 80), time: cleanText(op.values[4], 80), side: cleanText(op.values[5], 20) };
+      } else if (op.type === 'request') {
+        list = out.requests;
+        var rname = cleanText(op.values[1], 120);
+        if (op.add && hasText(rname)) item = { id: id, name: rname, grade: cleanText(op.values[2], 60), desc: cleanText(op.values[3], 3000), price: cleanText(op.values[4], 80), author: cleanText(op.values[5], 120) };
       }
       if (!list) return;
       var at = indexOfById(list, id);
@@ -1056,6 +1066,7 @@
     listing: ['listing', '商品', '在售'],
     auction: ['auction', '拍卖', '拍品'],
     order: ['order', '订单'],
+    request: ['request', '求购', '求购单'],
     currency: ['currency', '灵石', '钱财'],
     item: ['item', '物品'],
     current: ['current', '当前', '所在地'],
@@ -1288,7 +1299,7 @@
   }
 
   function parseMarket(body) {
-    var out = { listings: [], auctions: [], orders: [] };
+    var out = { listings: [], auctions: [], orders: [], requests: [] };
     typed(body, ['listing', '商品', '在售']).forEach(function (line) {
       var values = row(line, 7);
       var id = cleanText(values[1], 160);
@@ -1309,6 +1320,13 @@
       var name = cleanText(values[2], 120);
       if (!id || !hasText(name) || out.orders.length >= 12) return;
       out.orders.push({ id: id, name: name, status: cleanText(values[3], 40), price: cleanText(values[4], 80), time: cleanText(values[5], 80), side: cleanText(values[6], 20) });
+    });
+    typed(body, ['request', '求购', '求购单']).forEach(function (line) {
+      var values = row(line, 7);
+      var id = cleanText(values[1], 160);
+      var name = cleanText(values[2], 120);
+      if (!id || !hasText(name) || out.requests.length >= 12) return;
+      out.requests.push({ id: id, name: name, grade: cleanText(values[3], 60), desc: cleanText(values[4], 3000), price: cleanText(values[5], 80), author: cleanText(values[6], 120) });
     });
     return out;
   }
@@ -1573,8 +1591,8 @@
       guards: {
         contacts: tr('runtime.guard.contacts'), groups: tr('runtime.guard.groups'), chat: tr('runtime.guard.chat'), gchat: tr('runtime.guard.gchat'),
         folders: tr('runtime.guard.folders'), notes: tr('runtime.guard.notes'), note: tr('runtime.guard.note'),
-        posts: tr('runtime.guard.posts'), post: tr('runtime.guard.post'), listings: tr('runtime.guard.listings'),
-        auctions: tr('runtime.guard.auctions'), orders: tr('runtime.guard.orders'), currencies: tr('runtime.guard.currencies'),
+        posts: tr('runtime.guard.posts'), post: tr('runtime.guard.post'),         listings: tr('runtime.guard.listings'),
+        auctions: tr('runtime.guard.auctions'), orders: tr('runtime.guard.orders'), requests: tr('runtime.guard.requests'), currencies: tr('runtime.guard.currencies'),
         items: tr('runtime.guard.items'), tracks: tr('runtime.guard.tracks')
       },
       searchPlaceholder: tr('runtime.search.placeholder'),
@@ -1639,7 +1657,7 @@
       },
       tabs: {
         contacts: tr('runtime.tab.contacts'), groups: tr('runtime.tab.groups'), folders: tr('runtime.tab.folders'), notes: tr('runtime.tab.notes'),
-        listings: tr('runtime.tab.listings'), auctions: tr('runtime.tab.auctions'), orders: tr('runtime.tab.orders'),
+        listings: tr('runtime.tab.listings'), requests: tr('runtime.tab.requests'), auctions: tr('runtime.tab.auctions'), orders: tr('runtime.tab.orders'),
         currencies: tr('runtime.tab.currencies'), items: tr('runtime.tab.items')
       },
       features: {
@@ -2713,13 +2731,13 @@
     {
       id: 'market',
       en: {
-        constraint: '- Market: at least 1 listing, 1 auction and 1 order.',
-        rows: ['<yz_market>', 'listing｜id｜item name｜grade｜description｜price｜seller', 'auction｜id｜item name｜grade｜description｜starting price｜current price｜time left｜bidder count', 'order｜id｜item name｜status｜price｜time｜buy or sell', '</yz_market>'],
+        constraint: '- Market: at least 1 listing, 1 auction, 1 order and 1 request.',
+        rows: ['<yz_market>', 'listing｜id｜item name｜grade｜description｜price｜seller', 'auction｜id｜item name｜grade｜description｜starting price｜current price｜time left｜bidder count', 'order｜id｜item name｜status｜price｜time｜buy or sell', 'request｜id｜item name｜grade｜description｜offered price｜requester', '</yz_market>'],
         name: 'Market'
       },
       zh: {
-        constraint: '- 交易坊市：行情、拍卖、订单三类各至少 1 条。',
-        rows: ['<yz_market>', 'listing｜id｜物品名｜品阶｜描述｜价格｜卖方', 'auction｜id｜物品名｜品阶｜描述｜起拍价｜当前价｜剩余时间｜出价人数', 'order｜id｜物品名｜状态｜价格｜时间｜买或卖', '</yz_market>'],
+        constraint: '- 交易坊市：行情、拍卖、订单、求购四类各至少 1 条。',
+        rows: ['<yz_market>', 'listing｜id｜物品名｜品阶｜描述｜价格｜卖方', 'auction｜id｜物品名｜品阶｜描述｜起拍价｜当前价｜剩余时间｜出价人数', 'order｜id｜物品名｜状态｜价格｜时间｜买或卖', 'request｜id｜物品名｜品阶｜描述｜出价｜求购人', '</yz_market>'],
         name: '交易坊市'
       }
     },
@@ -2760,6 +2778,7 @@
   var RECENT_LISTING_ROWS = 6;
   var RECENT_AUCTION_ROWS = 6;
   var RECENT_ITEM_ROWS = 10;
+  var RECENT_REQUEST_ROWS = 6;
   // 地点名录窗口：窗口之外的地点正文不进基线，完整名录在世界书关键词条目中召回。
   var RECENT_PLACE_ROWS = 6;
   // 基线总字符上限：超限时按行淘汰（先丢最早的明细行，标识行与归档行保留）。
@@ -2915,6 +2934,16 @@
       safeArray(market.orders, 12).forEach(function (item) {
         if (!item || !hasText(item.name) || !item.id) return;
         k.rows.push({ text: 'order｜' + v(item.id, 160) + '｜' + v(item.name, 120) + '｜' + v(item.status, 40) + '｜' + v(item.price, 80) + '｜' + v(item.time, 80) + '｜' + v(item.side, 20), drop: false });
+      });
+      // 求购区：与行情同构的买公告，窗口外给归档摘要行。
+      var requests = safeArray(market.requests, 12);
+      requests.forEach(function (item, index) {
+        if (!item || !hasText(item.name) || !item.id) return;
+        if (index < requests.length - RECENT_REQUEST_ROWS) {
+          k.rows.push({ text: archived('request', v(item.id, 160), v(item.name, 120)), drop: false });
+          return;
+        }
+        k.rows.push({ text: 'request｜' + v(item.id, 160) + '｜' + v(item.name, 120) + '｜' + v(item.grade, 60) + '｜' + v(item.desc) + '｜' + v(item.price, 80) + '｜' + v(item.author, 120), drop: true });
       });
     }
     if (on('space')) {
@@ -3689,6 +3718,17 @@
           CORE.escapeHtml(order.time || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(order.price || '') + '</u>', !!player);
         return player ? editableListRow(row, 'order', order.id) : row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.orders) + '</div>';
+    } else if (view === 'requests') {
+      // 求购区是公开数据（与行情/拍卖同源，跨域一致）：展示求购公告与出价。
+      var requests = CORE.safeArray(market.requests, 12).filter(function (request) {
+        return filterMatch(kw, [request.name, request.grade, request.desc, request.price, request.author]);
+      });
+      body = requests.length ? '<div class="yz-page-list">' + requests.map(function (request) {
+        return marketRow(request.name,
+          CORE.escapeHtml(request.name), CORE.escapeHtml(request.grade || ''),
+          CORE.escapeHtml(request.desc || ''),
+          CORE.escapeHtml(request.author || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(t.labels.buy + ' ' + (request.price || '')) + '</u>');
+      }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.requests) + '</div>';
     } else {
       var listings = CORE.safeArray(market.listings, 20).filter(function (listing) {
         return filterMatch(kw, [listing.name, listing.grade, listing.desc, listing.price, listing.seller]);
@@ -3702,7 +3742,7 @@
     }
     var cta = (player && view === 'orders') ? playerAddBtn('order', '') : '';
     return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true, tag) +
-      yzTabs([['listings', t.tabs.listings], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBox(search) + body + cta + '</main>';
+      yzTabs([['listings', t.tabs.listings], ['requests', t.tabs.requests], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBox(search) + body + cta + '</main>';
   }
 
   function renderSpace(state, nav, search, player, ui) {

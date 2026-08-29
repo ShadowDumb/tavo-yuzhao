@@ -1068,7 +1068,7 @@ console.log('# P2 · diff 协议与应用');
     + '<yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\ngmsg｜g1｜gm3｜弟子｜other｜今日｜收到\n</yz_msg>'
     + '<yz_notes>\nfolder｜f1｜杂记｜2\nfolder｜f2｜秘录｜1\nnote｜n1｜f1｜今日｜false｜约定｜卯时山门\nnote｜n2｜f2｜今日｜true｜心法｜不可外传\nnote｜n3｜f1｜昨日｜false｜见闻｜坊市有新品灵草\n</yz_notes>'
     + '<yz_forum>\npost｜p1｜掌门｜长老｜公告｜今日｜议事｜卯时集合｜3\ncomment｜p1｜长老｜今日｜已知\ncomment｜p1｜弟子｜今日｜恭候\npost｜p2｜长老｜长老｜闲聊｜昨日｜论剑｜切磋记录｜1\ncomment｜p2｜弟子｜昨日｜围观\n</yz_forum>'
-    + '<yz_market>\nlisting｜l1｜灵草｜下品｜百年份｜10灵石｜坊主\nauction｜a1｜古剑｜上品｜锈蚀｜100｜150｜1时辰｜3\norder｜o1｜符纸｜已成交｜5灵石｜今日｜买\n</yz_market>'
+    + '<yz_market>\nlisting｜l1｜灵草｜下品｜百年份｜10灵石｜坊主\nauction｜a1｜古剑｜上品｜锈蚀｜100｜150｜1时辰｜3\norder｜o1｜符纸｜已成交｜5灵石｜今日｜买\nrequest｜r1｜百年灵草｜下品｜急收炼丹｜8灵石｜炼丹师\n</yz_market>'
     + '<yz_space>\ncurrency｜灵石｜120\nitem｜i1｜养神丹｜2｜中品｜宁神益气\nitem｜i2｜驱邪符｜5｜下品｜辟邪护身\n</yz_space>'
     + '<yz_map>\ncurrent｜青云山｜东域｜山门所在\ntrack｜t1｜昨日｜山门｜入门\ntrack｜t2｜今日｜演武场｜晨练\nplace｜p1｜青云山｜东域｜山门所在，灵气充沛\nplace｜p2｜演武场｜东域｜弟子晨练之地\n</yz_map>');
   const base = M.CORE.blankState('d1');
@@ -1342,7 +1342,7 @@ console.log('# P3 · 版本迁移与备份恢复');
     + '<yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\ngmsg｜g1｜gm3｜弟子｜other｜今日｜收到\n</yz_msg>'
     + '<yz_notes>\nfolder｜f1｜杂记｜2\nfolder｜f2｜秘录｜1\nnote｜n1｜f1｜今日｜false｜约定｜卯时山门\nnote｜n2｜f2｜今日｜true｜心法｜不可外传\nnote｜n3｜f1｜昨日｜false｜见闻｜坊市有新品灵草\n</yz_notes>'
     + '<yz_forum>\npost｜p1｜掌门｜长老｜公告｜今日｜议事｜卯时集合｜3\ncomment｜p1｜长老｜今日｜已知\ncomment｜p1｜弟子｜今日｜恭候\npost｜p2｜长老｜长老｜闲聊｜昨日｜论剑｜切磋记录｜1\ncomment｜p2｜弟子｜昨日｜围观\n</yz_forum>'
-    + '<yz_market>\nlisting｜l1｜灵草｜下品｜百年份｜10灵石｜坊主\nauction｜a1｜古剑｜上品｜锈蚀｜100｜150｜1时辰｜3\norder｜o1｜符纸｜已成交｜5灵石｜今日｜买\n</yz_market>'
+    + '<yz_market>\nlisting｜l1｜灵草｜下品｜百年份｜10灵石｜坊主\nauction｜a1｜古剑｜上品｜锈蚀｜100｜150｜1时辰｜3\norder｜o1｜符纸｜已成交｜5灵石｜今日｜买\nrequest｜r1｜百年灵草｜下品｜急收炼丹｜8灵石｜炼丹师\n</yz_market>'
     + '<yz_space>\ncurrency｜灵石｜120\nitem｜i1｜养神丹｜2｜中品｜宁神益气\nitem｜i2｜驱邪符｜5｜下品｜辟邪护身\n</yz_space>'
     + '<yz_map>\ncurrent｜青云山｜东域｜山门所在\ntrack｜t1｜昨日｜山门｜入门\ntrack｜t2｜今日｜演武场｜晨练\nplace｜p1｜青云山｜东域｜山门所在，灵气充沛\nplace｜p2｜演武场｜东域｜弟子晨练之地\n</yz_map>');
   const vr1 = await vrt.applyText(FULL_V, 'chat-1', 'test');
@@ -1865,6 +1865,66 @@ console.log('# 舆图地点名录');
   ok(mvKw.includes('藏经阁') && !mvKw.includes('灵气充沛'), '地点名录按名称/描述过滤（当前位置保留）');
   const pv = M.VIEWS.renderPage(mpView, { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}, 'player', M.CORE.blankPlayerState('pv'));
   ok(pv.includes('藏经阁'), '玩家域舆图同样展示地点名录');
+}
+
+// ---------- 四·三、坊市求购区（market.requests） ----------
+console.log('# 坊市求购区');
+{
+  // 归一：requests 过滤空 id/空名，字段收敛
+  const nmk = M.CORE.normalizeMarket({ listings: [], auctions: [], orders: [], requests: [{ id: 'r1', name: '百年灵草', grade: '下品', desc: '炼丹急用', price: '8灵石', author: '炼丹师' }, { id: '', name: '无id' }, { id: 'r2', name: '' }] });
+  eq(nmk.requests.length, 1, '求购过滤空 id/空名');
+  eq(nmk.requests[0].author, '炼丹师', '求购人字段保留');
+
+  // 解析：request 行与中文别名
+  const pmk = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜pmk1｜李逍遥｜求购\n</yz_meta><yz_market>\nrequest｜r1｜百年灵草｜下品｜急收｜8灵石｜炼丹师\n求购｜r2｜寒铁｜精铁｜锻剑｜5灵石｜铁匠\n</yz_market></yz_jade>');
+  eq(pmk.market.requests.length, 2, 'request 行与求购别名均解析');
+  eq(pmk.market.requests[1].name, '寒铁', '中文别名解析出求购');
+  eq(pmk.market.listings.length, 0, '求购行不污染其它类型');
+
+  // diff：+request 追加/更新、-request 删除（含达标门禁）
+  let mkState = M.CORE.blankState('mk');
+  mkState.market = M.CORE.normalizeMarket({ listings: [{ id: 'l1', name: '灵草' }], auctions: [{ id: 'a1', name: '古剑' }], orders: [{ id: 'o1', name: '符纸' }], requests: [{ id: 'r1', name: '百年灵草', price: '8灵石', author: '炼丹师' }] });
+  const mk1 = M.CORE.applySnapshot(mkState, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mk1｜李逍遥｜添求购｜diff\n</yz_meta><yz_market>\n+request｜r2｜寒铁｜精铁｜锻剑｜5灵石｜铁匠\n</yz_market></yz_jade>'), {}).state;
+  eq(mk1.market.requests.length, 2, '求购区追加新求购');
+  const mk2 = M.CORE.applySnapshot(mk1, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mk2｜李逍遥｜改出价｜diff\n</yz_meta><yz_market>\n+request｜r1｜百年灵草｜下品｜急收｜9灵石｜炼丹师\n</yz_market></yz_jade>'), {}).state;
+  eq(mk2.market.requests.find((r) => r.id === 'r1').price, '9灵石', '+request 按 id 整行替换');
+  const mk3 = M.CORE.applySnapshot(mk2, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mk3｜李逍遥｜撤一条｜diff\n</yz_meta><yz_market>\n-request｜r2\n</yz_market></yz_jade>'), {}).state;
+  eq(mk3.market.requests.length, 1, '-request 删除指定求购');
+  const mk4 = M.CORE.applySnapshot(mk3, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mk4｜李逍遥｜撤光了｜diff\n</yz_meta><yz_market>\n-request｜r1\n</yz_market></yz_jade>'), {}).state;
+  eq(mk4.market.requests.length, 1, '删空求购区被达标门禁拦截');
+
+  // 达标：求购至少 1 条
+  const mOk = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, market: mk3.market }, {});
+  ok(mOk.market.ok === true && mOk.market.requests === true, '有求购时市场达标');
+  const mNo = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, market: M.CORE.normalizeMarket({ listings: [{ id: 'l1', name: 'x' }], auctions: [{ id: 'a1', name: 'x' }], orders: [{ id: 'o1', name: 'x' }], requests: [] }) }, {});
+  ok(mNo.market.ok === false && mNo.market.requests === false, '无求购不达标');
+  ok(mNo.issues.some((i) => i.code === 'market.rows'), '缺求购沿用 market.rows issue code');
+
+  // 基线窗口：超窗求购只给归档摘要行
+  const manyRequests = [];
+  for (let i = 1; i <= 8; i += 1) manyRequests.push({ id: 'r' + i, name: '求购' + i, price: i + '灵石', author: '客' + i });
+  const curR = M.PROMPT.buildCurrent({ market: M.CORE.normalizeMarket({ listings: [], auctions: [], orders: [], requests: manyRequests }) }, {});
+  eq(curR.filter((r) => r.startsWith('request｜')).length, 6, '基线只注入最近 6 条求购全行');
+  eq(curR.filter((r) => r.startsWith('archived｜request｜')).length, 2, '窗口外 2 条给归档摘要行');
+
+  // 引导：约束文本与行模板；删除帮助
+  const pReqGuide = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
+  ok(pReqGuide.includes('request｜id｜物品名｜品阶｜描述｜出价｜求购人') && pReqGuide.includes('行情、拍卖、订单、求购四类各至少 1 条'), '坊市引导含求购底线');
+  ok(M.PROMPT.buildPrompt('en', {}, { forceFull: true, current: [] }).includes('request｜id｜item name｜grade｜description｜offered price｜requester'), 'en 引导含求购行');
+  ok(M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [] }).includes('-request｜id'), '删除帮助含 request 定位行');
+
+  // 视图：求购 tab（公开数据，双域一致）展示与过滤
+  const mkView = M.CORE.blankState('v-mk');
+  mkView.market = M.CORE.normalizeMarket({ listings: [{ id: 'l1', name: '灵草', grade: '', desc: '', price: '10灵石', seller: '坊主' }], auctions: [], orders: [], requests: [{ id: 'r1', name: '百年灵草', grade: '下品', desc: '炼丹急用', price: '8灵石', author: '炼丹师' }] });
+  const rv = M.VIEWS.renderMarket(mkView, { app: 'market', view: 'requests', params: {} }, '');
+  ok(rv.includes(zhCatalog['runtime.tab.requests']) && rv.includes('炼丹急用'), '求购页渲染求购公告');
+  ok(rv.includes('8灵石') && rv.includes('炼丹师'), '求购出价与求购人展示');
+  const rvKw = M.VIEWS.renderMarket(mkView, { app: 'market', view: 'requests', params: {} }, '灵草');
+  ok(rvKw.includes('炼丹师') && !rvKw.includes('坊主'), '求购按物品名/求购人过滤');
+  const rvPlayer = M.VIEWS.renderPage(mkView, { app: 'market', view: 'requests', params: {}, stack: [] }, {}, {}, 'player', M.CORE.blankPlayerState('pv2'));
+  ok(rvPlayer.includes('炼丹急用') && rvPlayer.includes(zhCatalog['runtime.player.publicTag']), '玩家域求购区为公开数据带标识');
+  const rvOrders = M.VIEWS.renderMarket(mkView, { app: 'market', view: 'orders', params: {} }, '');
+  ok(!rvOrders.includes('炼丹急用'), '求购内容不进订单页（tab 栏标签是导航，正常出现）');
 }
 
 // ---------- 结果 ----------
