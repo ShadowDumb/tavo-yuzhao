@@ -30,10 +30,12 @@ function eq(actual, expected, name) {
 }
 
 // ---------- 加载插件内部模块 ----------
-const ANCHOR = 'var app = APP.create(';
+// ANCHOR 用 entry.js 尾部的 smoke-bootstrap 注释作锚（注释后即 app 创建/启动引导，
+// 截断时不会执行）。锚定注释而非代码字符串，避免变量改名破坏截断。
+const ANCHOR = '/* smoke-bootstrap */';
 const source = read('entry.js');
 const cut = source.indexOf(ANCHOR);
-if (cut < 0) throw new Error('未找到 entry.js 的 smoke-bootstrap 标记，请同步更新 tests/smoke.mjs 的 ANCHOR');
+if (cut < 0) throw new Error('未找到 entry.js 的 /* smoke-bootstrap */ 标记，请同步更新 tests/smoke.mjs 的 ANCHOR');
 const head = source.slice(0, cut);
 // 截断点位于 IIFE 内部：probe 借助闭包导出内部模块，随后补回函数收尾。
 const probe = head + `
@@ -141,8 +143,22 @@ ok(/#yz1-fab\{[^}]*-webkit-tap-highlight-color:transparent/.test(source), 'FAB �
 ok(/#yz1-fab:active\{transform:scale\(/.test(source), 'FAB 按压反馈为圆形缩放');
 ok(/!enabled\(\) \|\| !autoStrip\(\)/.test(source), '正文剥离有 enabled 门控');
 // 回归保护：generation:success 内剥离必须先于快照应用（防 5 秒预算超时丢弃剥离结果）。
-const successHandler = source.slice(source.indexOf("plugin.on('generation:success'"), source.indexOf('rebuildTimer = 0'));
+// 切片端点用相邻事件字符串而非局部变量名，避免改名破坏测试。
+const successHandler = source.slice(source.indexOf("plugin.on('generation:success'"), source.indexOf("plugin.on('generation:error'"));
 ok(successHandler.indexOf('stripEventFields(event)') >= 0 && successHandler.indexOf('stripEventFields(event)') < successHandler.indexOf('applyText('), 'success 先同步剥离再应用快照');
+
+// 回归保护：全部渲染出来的 data-action 按钮都有对应的 bindOverlay 路由分支（双向一致），
+// 防止新增按钮忘了挂处理器或删除分支后留下死按钮。源码级扫描，无需 DOM。
+// 按钮存在动态路径（button('navigate', ...) 助手），需一并收集 button( 字面量。
+{
+  const staticActions = [...source.matchAll(/data-action="([^"]+)"/g)].map((m) => m[1]).filter((a) => a.indexOf('+') < 0);
+  const buttonActions = [...source.matchAll(/button\('([^']+)'/g)].map((m) => m[1]);
+  const actionLiterals = [...new Set([...staticActions, ...buttonActions])];
+  const handlerLiterals = [...new Set([...source.matchAll(/action === '([^']+)'/g)].map((m) => m[1]))];
+  ok(actionLiterals.length > 0 && handlerLiterals.length > 0, '源码级扫描到 data-action 与路由分支');
+  ok(actionLiterals.every((a) => handlerLiterals.includes(a)), '全部 data-action 按钮都有路由分支');
+  ok(handlerLiterals.every((h) => actionLiterals.includes(h)), '全部路由分支都有对应按钮');
+}
 
 // ---------- Core ----------
 console.log('# Core 消毒与状态规范化');
@@ -221,6 +237,11 @@ const FULL_JADE = [
   const evEmpty = { text: '<yz_jade><yz_meta>\nturn｜x｜r｜s｜full\n</yz_meta></yz_jade>' };
   M.stripEventFields(evEmpty);
   ok(evEmpty.text === zhCatalog['runtime.stripFallback'] || evEmpty.text.length > 0, '剥离后为空时回填非空占位');
+
+  // 信封择优：text 含协议取 text；仅 content 含协议取 content；皆无时取非空字段。
+  eq(M.pickEnvelopePayload({ text: '<yz_jade>x</yz_jade>正文', content: '<yz_jade>y</yz_jade>' }), '<yz_jade>x</yz_jade>正文', 'text 含信封优先');
+  eq(M.pickEnvelopePayload({ content: '<yz_jade>y</yz_jade>正文', text: '普通文本' }), '<yz_jade>y</yz_jade>正文', '仅 content 含信封取 content');
+  eq(M.pickEnvelopePayload({ content: '普通', text: '' }), '普通', '皆无信封时取非空字段');
 }
 
 // ---------- Prompt ----------
@@ -413,7 +434,6 @@ async function runtimeCase() {
   // 水化签名：历史不变 → 不重复应用；新增楼层 → 增量应用
   host.setHistory([{ id: 'm1', role: 'assistant', content: jade('h1', TABLET_OK) }]);
   await rt.switchChat('chat-1');
-  const callsAfterFirst = host.findCalls();
   const revAfterHydrate = rt.current().revision;
   await rt.switchChat('chat-1'); // 历史未变，第二次开聊
   ok(rt.current().hydration && rt.current().hydration.sig, '水化签名已记录');
@@ -422,7 +442,6 @@ async function runtimeCase() {
   host.setHistory(host.history().concat([{ id: 'm2', role: 'assistant', content: jade('h2', MSG_MIN) }]));
   await rt.switchChat('chat-1');
   ok(rt.current().revision > revAfterHydrate, '新楼层到达后增量应用');
-  void callsAfterFirst;
 
   // 封印：被 seal 的功能既不判定也不应用
   flags.msg = false;
@@ -643,6 +662,8 @@ M.i18n.invalidate();
   const tabletPage = M.VIEWS.renderPage(state, { app: 'tablet' }, {});
   ok(tabletPage.includes('data-marker="tablet"'), 'renderPage 分发到玉牌页');
   eq(M.VIEWS.fieldValue(state.tablet, 'look', 'appearance'), '', 'fieldValue 缺字段返回空串');
+  state.tablet.groups = M.CORE.normalizeTablet({ groups: [{ id: 'look', fields: [{ key: '外貌', value: '眉目清朗' }] }] }).groups;
+  eq(M.VIEWS.fieldValue(state.tablet, 'look', 'appearance'), '眉目清朗', 'fieldValue 命中路径（规范键匹配）');
 }
 
 // ---------- 交互基座第一层 · 检索筛选 ----------
@@ -847,7 +868,7 @@ console.log('# P1 · 管理页');
   const openDiag = M.VIEWS.renderManage(mstate, {}, { diagOpen: true });
   ok(openDiag.includes('yz-diag-body') && openDiag.includes(zhCatalog['runtime.diag.chatId']), '展开后复用 renderSyncDetail 内容');
   const expPanel = M.VIEWS.renderManage(mstate, {}, { dataPanel: 'export' });
-  ok(expPanel.includes('data-export-output readonly'.split(' ')[0]) && expPanel.includes('readonly') && expPanel.includes('data-action="copy-export"'), '导出面板只读 textarea + 复制按钮');
+  ok(expPanel.includes('data-export-output') && expPanel.includes('readonly') && expPanel.includes('data-action="copy-export"'), '导出面板只读 textarea + 复制按钮');
   const impPanel = M.VIEWS.renderManage(mstate, {}, { dataPanel: 'import' });
   ok(impPanel.includes('data-import-input') && impPanel.includes('data-action="import-submit"'), '导入面板输入框 + 提交按钮');
   const armedPanel = M.VIEWS.renderManage(mstate, {}, { armed: { id: 'tablet', expiresAt: Date.now() + 1000 } });
@@ -2070,6 +2091,180 @@ console.log('# 玩家发帖（forum owner 维度）');
   ok(newForm.includes('data-marker="player-form"') && !newForm.includes('value="寻师"'), '新建发帖表单无预填');
   const cForm = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'form', params: { kind: 'post' }, stack: [] }, {}, {}, 'character', fps);
   ok(!cForm.includes('data-marker="player-form"'), '角色域论坛不渲染发帖表单');
+}
+
+// ---------- 评审加固：恶意数据渲染契约（XSS 守卫） ----------
+console.log('# 评审加固 · 恶意数据渲染契约');
+// 全分区达标基线（与 P2 diff 测试的 BASE_FULL 同构）：full 轮只有全部启封分区达标才落盘。
+const GUARD_FULL = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜基本｜性别｜男\nfield｜基本｜身高｜175cm\nfield｜基本｜体重｜60kg\nfield｜仪容｜外貌｜眉目清朗\nfield｜仪容｜穿着｜青色道袍\nfield｜修为｜灵根｜天灵根\nfield｜修为｜体质｜凡体\nfield｜修为｜境界｜炼气三层\nfield｜修为｜状态｜良好\nfield｜功法｜功法名｜青云剑诀\nfield｜羁绊｜道侣｜林月如\nfield｜隐秘｜身世｜青云宗弃徒\n</yz_tablet>' +
+  '<yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\n</yz_msg>' +
+  '<yz_notes>\nfolder｜f1｜杂记｜2\nfolder｜f2｜秘录｜1\nnote｜n1｜f1｜今日｜false｜约定｜卯时山门\nnote｜n2｜f2｜今日｜true｜心法｜不可外传\nnote｜n3｜f1｜昨日｜false｜见闻｜坊市有新品灵草\n</yz_notes>' +
+  '<yz_forum>\npost｜p1｜掌门｜长老｜公告｜今日｜议事｜卯时集合｜3\ncomment｜p1｜长老｜今日｜已知\npost｜p2｜长老｜长老｜闲聊｜昨日｜论剑｜切磋记录｜1\ncomment｜p2｜弟子｜昨日｜围观\n</yz_forum>' +
+  '<yz_market>\nlisting｜l1｜灵草｜下品｜百年份｜10灵石｜坊主\nauction｜a1｜古剑｜上品｜锈蚀｜100｜150｜1时辰｜3\norder｜o1｜符纸｜已成交｜5灵石｜今日｜买\nrequest｜r1｜百年灵草｜下品｜急收炼丹｜8灵石｜炼丹师\n</yz_market>' +
+  '<yz_space>\ncurrency｜灵石｜120\nitem｜i1｜养神丹｜2｜中品｜宁神益气\nitem｜i2｜驱邪符｜5｜下品｜辟邪护身\n</yz_space>' +
+  '<yz_map>\ncurrent｜青云山｜东域｜山门所在\ntrack｜t1｜昨日｜山门｜入门\ntrack｜t2｜今日｜演武场｜晨练\nplace｜p1｜青云山｜东域｜山门所在，灵气充沛\nplace｜p2｜演武场｜东域｜弟子晨练之地\n</yz_map>';
+{
+  // 用户可控字段（正文/名字/评论/描述）注入 HTML/属性载荷后，任何渲染路径都不得
+  // 输出未转义原文——防止误删 escapeHtml 后测试仍全绿。
+  const hostile = '<script>alert(1)</script>';
+  const quote = '"><img src=x onerror=alert(1)>';
+  const st = M.CORE.blankState('x1');
+  st.sync = { status: 'complete', roleName: '李逍遥', summary: 's', applied: [], appliedSeen: [], issues: [], updatedAt: 1 };
+  st.chats = M.CORE.normalizeChats({ contacts: [{ id: 'c1', name: hostile, messages: [{ id: 'm1', side: 'other', text: quote }] }], groups: [] });
+  st.forum = M.CORE.normalizeForum({ posts: [{ id: 'p1', author: hostile, title: hostile, body: quote, comments: [{ id: 'cm1', author: hostile, text: quote }] }] });
+  st.market = M.CORE.normalizeMarket({ listings: [{ id: 'l1', name: hostile, desc: quote }], auctions: [], orders: [], requests: [{ id: 'r1', name: hostile, desc: quote }] });
+  st.space = M.CORE.normalizeSpace({ currencies: [], items: [{ id: 'i1', name: hostile, desc: quote, qty: 1 }] });
+  st.map = M.CORE.normalizeMap({ current: { place: hostile }, tracks: [], places: [{ id: 'pl1', name: hostile, desc: quote }] });
+  const stHtml = [
+    M.VIEWS.renderHome(st, {}),
+    M.VIEWS.renderMsg(st, { app: 'msg', view: 'chats', params: {}, stack: [] }, ''),
+    M.VIEWS.renderForum(st, { app: 'forum', view: 'root', params: {}, stack: [] }, '', '', false),
+    M.VIEWS.renderMarket(st, { app: 'market', view: 'root', params: {}, stack: [] }, '', '', false),
+    M.VIEWS.renderSpace(st, { app: 'space', view: 'root', params: {}, stack: [] }, ''),
+    M.VIEWS.renderMap(st, { app: 'map', view: 'root', params: {}, stack: [] }, '')
+  ].join('\n');
+  // escapeHtml 只转义 <>&\"：转义后的文本仍含 onerror= 字样，断言须盯原始标签形态
+  //（<script> / <img 出现即未转义，&lt; 前缀说明已转义）。
+  ok(!stHtml.includes('<script>') && !stHtml.includes('<img') && !stHtml.includes('"><img'), '恶意载荷不得以未转义标签出现');
+  ok(stHtml.includes('&lt;script&gt;') && stHtml.includes('&quot;'), '恶意载荷均被转义');
+}
+{
+  // 第五轮淘汰：标识行（联系人/订单）合计可撑爆预算，截断到短上限后仍不超限
+  const wide = M.CORE.blankState('x2');
+  const contact = (i) => ({ id: 'c' + i, name: '联系人' + i, messages: [{ id: 'm' + i, side: 'other', text: '字'.repeat(900) }] });
+  wide.chats = { contacts: Array.from({ length: 10 }, (_, i) => contact(i + 1)), groups: [] };
+  const rows = M.PROMPT.buildCurrent(wide, {});
+  const total = rows.join('').length;
+  ok(total <= 9000, '标识行截断后基线不超硬上限（实际 ' + total + '）');
+  ok(rows.some((r) => r.includes('contact｜c1｜联系人1')), '截断保留行首 id/name 供 diff 定位');
+}
+{
+  // 评审加固：数值字段负值钳制 + 货币重命名撞种类拒绝 + 校验失败不污染状态
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-neg');
+  const neg = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜n1｜李逍遥｜负值｜full\n</yz_meta><yz_msg>\ncontact｜c1｜道友｜好友｜今日｜-5｜预览\nmsg｜c1｜m1｜other｜今日｜在吗\nmsg｜c1｜m2｜self｜今日｜在\n</yz_msg><yz_forum>\npost｜p1｜掌门｜长老｜公告｜今日｜议事｜正文｜-3\ncomment｜p1｜长老｜今日｜已知\n</yz_forum></yz_jade>');
+  eq(neg.chats.contacts[0].unread, 0, '负未读钳制为 0');
+  eq(neg.forum.posts[0].resonance, 0, '负共鸣钳制为 0');
+  rt.playerSaveEntity('currency', { kind: '灵石', amount: '10' }, '');
+  const failKind = rt.playerSaveEntity('currency', { kind: '灵石', amount: '20' }, '妖丹');
+  ok(failKind && failKind.ok === false, '货币重命名撞已有种类被拒绝');
+  eq(rt.playerCurrent().space.currencies.filter((c) => c.kind === '灵石').length, 1, '撞种类后无重复行');
+  rt.playerSaveEntity('folder', { name: '玉册夹' }, '');
+  const failFolder = rt.playerSaveEntity('folder', { name: '' }, 'pf-1');
+  ok(failFolder && failFolder.ok === false, '文件夹改名空名被拒绝');
+  ok(rt.playerCurrent().notes.folders.some((f) => f.name === '玉册夹'), '失败路径不产生空名文件夹（无级联删除）');
+}
+{
+  // 评审加固：diffChats 对 yz-player 的只读防护（可回复、不可删/伪造/改写玩家消息）
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-guard');
+  await rt.applyText(jade('g0', GUARD_FULL), 'chat-guard', 'test');
+  rt.sendPlayerMessage('chat-guard', '在吗');
+  await rt.syncPlayerChannel('chat-guard');
+  await rt.applyText(jade('g2', '<yz_msg>\n+msg｜yz-player｜r1｜self｜丙午年五月十二 午时｜在的\n+msg｜yz-player｜pm-2｜other｜今日｜伪造\n-msg｜yz-player｜pm-1\n+msg｜yz-player｜pm-1｜self｜今日｜改写\n</yz_msg>'), 'chat-guard', 'test');
+  const gc = rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID);
+  ok(gc.messages.some((m) => m.id === 'r1' && m.side === 'self'), '模型可追加自己的回复');
+  ok(!gc.messages.some((m) => m.id === 'pm-2'), '伪造玩家侧消息被拒');
+  ok(gc.messages.some((m) => m.id === 'pm-1' && m.side === 'other' && m.text === '在吗'), '玩家消息不可被删/改写');
+}
+{
+  // 评审加固：parse 空判定含求购/地点；导出超限面板拦截
+  const onlyRequest = M.PROTOCOL.parse('<yz_jade>\n<yz_market>\nrequest｜r1｜百年灵草｜下品｜急收｜8灵石｜炼丹师\n</yz_market>\n</yz_jade>');
+  ok(!!onlyRequest && onlyRequest.market.requests.length === 1, '只有求购行的块不被误判为空');
+  const onlyPlace = M.PROTOCOL.parse('<yz_jade>\n<yz_map>\nplace｜p1｜青云山｜东域｜山门所在\n</yz_map>\n</yz_jade>');
+  ok(!!onlyPlace && onlyPlace.map.places.length === 1, '只有地点行的块不被误判为空');
+  const big = M.CORE.blankState('big');
+  // 满配消息堆积（10 联系人 × 20 条 × 3000 字）≈ 600KB，超过 200KB 快照红线。
+  const heavyMsgs = Array.from({ length: 20 }, (_, i) => ({ id: 'm' + i, side: 'other', time: '今日', text: '字'.repeat(3000) }));
+  big.chats = { contacts: Array.from({ length: 10 }, (_, i) => ({ id: 'c' + i, name: '友' + i, messages: heavyMsgs })), groups: [] };
+  const bigState = M.CORE.normalizeState(JSON.parse(JSON.stringify(big)), 'big');
+  ok(JSON.stringify(bigState).length > 200000, '满配状态确实超过快照容量红线');
+  const manage = M.VIEWS.renderManage(bigState, {}, { dataPanel: 'export' });
+  ok(manage.includes(zhCatalog['runtime.manage.exportTooBig']), '导出超限显示拦截提示');
+  ok(!manage.includes('data-export-output'), '导出超限不渲染可复制面板');
+}
+{
+  // 评审加固：传讯通道消息超过 20 条后镜像幂等且保尾（此前头部切片导致重复推送）
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-20');
+  for (let i = 1; i <= 22; i += 1) rt.sendPlayerMessage('chat-20', '消息' + i);
+  await rt.syncPlayerChannel('chat-20');
+  const pc = rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID);
+  eq(pc.messages.length, 20, '镜像后联系人线程保尾 20 条');
+  await rt.syncPlayerChannel('chat-20');
+  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).messages.length, 20, '超 20 条后重复同步不再膨胀');
+  const ids = new Set(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).messages.map((m) => m.id));
+  eq(ids.size, 20, '镜像消息 id 无重复');
+  rt.markPlayerRead('chat-20');
+  eq(rt.current().sync.playerReadCursor, 22, '已读游标扫全量（非头部切片）');
+  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).unread, 0, '全量消息未读清零');
+}
+
+{
+  // 评审加固：镜像/宿主 tie-break——revision 平局时取更新时间更新的镜像，
+  // 陈旧宿主键不得覆盖新镜像（rev-0 聊天 + 切走后 save 只落镜像的场景）
+  const host = fakeHost();
+  host.current.chat = 'chat-tie';
+  const store = new Map();
+  const local = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) };
+  const staleHost = M.CORE.normalizeState(M.CORE.blankState('chat-tie'), 'chat-tie');
+  staleHost.sync = { status: 'complete', roleName: '李逍遥', summary: '旧', applied: [], appliedSeen: [], issues: [], updatedAt: 100 };
+  host.seedChat('yz_jade_v1', JSON.stringify(staleHost));
+  const freshMirror = JSON.parse(JSON.stringify(staleHost));
+  freshMirror.sync.summary = '新';
+  freshMirror.sync.updatedAt = 200;
+  store.set('yz-jade-v1:chat-tie', JSON.stringify(freshMirror));
+  const rt = M.createRuntime(host.api, local, () => ({}));
+  await rt.switchChat('chat-tie');
+  eq(rt.current().sync.summary, '新', 'revision 平局时更新的镜像胜出');
+  eq(rt.current().sync.updatedAt, 200, '镜像数据未被陈旧宿主覆盖');
+  await flushQueue();
+  ok(host.chatKeys().includes('yz_jade_v1'), '镜像胜出后回写宿主键');
+  const healed = JSON.parse(host.chatKeys().includes('yz_jade_v1') ? (host.api.get('yz_jade_v1', 'chat')) : '{}');
+  eq(healed.sync.summary, '新', '宿主键被镜像数据治愈');
+}
+
+{
+  // 评审加固：玩家帖 id 撞角色帖 → 双方同步改名（fp-<n> 找空位），角色帖保留
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-collide');
+  await rt.applyText(jade('y1', TABLET_OK + MSG_MIN + '<yz_forum>\npost｜fp-2｜掌门｜长老｜公告｜今日｜角色帖｜内容｜3\ncomment｜fp-2｜长老｜今日｜已知\npost｜p2｜长老｜长老｜闲聊｜昨日｜论剑｜切磋记录｜1\ncomment｜p2｜弟子｜昨日｜围观\n</yz_forum>'), 'chat-collide', 'test');
+  rt.playerSaveEntity('post', { title: '一帖', body: 'b' }, '');
+  rt.playerSaveEntity('post', { title: '二帖', body: 'b' }, '');
+  await rt.syncPlayerPosts('chat-collide');
+  const rolePost = rt.current().forum.posts.find((p) => p.id === 'fp-2');
+  const playerIds = rt.current().forum.posts.filter((p) => p.owner === 'player').map((p) => p.id);
+  ok(!!rolePost && rolePost.title === '角色帖', '撞车后角色帖未被覆盖');
+  ok(playerIds.length === 2 && playerIds.every((id) => id !== 'fp-2'), '玩家帖改名避让（' + playerIds.join(',') + '）');
+}
+{
+  // 评审加固：镜像 await 后的陈旧快照不得覆盖新轮次（双通道交错竞态）
+  let gate;
+  const gatePromise = new Promise((r) => { gate = r; });
+  let ccalls = 0;
+  const host = {
+    current: { chat: 'chat-race' },
+    api: {
+      get: () => null, set: () => {},
+      chat: { current: async () => { ccalls += 1; if (ccalls === 3) await gatePromise; return { id: 'chat-race' }; }, update: async () => {} },
+      message: { find: async () => [] }, lorebook: {}
+    }
+  };
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-race');
+  const player = rt.playerCurrent();
+  player.forum = M.CORE.normalizeForum({ posts: [{ id: 'fp-1', owner: 'player', title: '寻师改', body: '改文', comments: [] }] });
+  player.updatedAt = Date.now();
+  const syncing = rt.syncPlayerPosts('chat-race');
+  await rt.applyText(jade('x2', TABLET_OK + MSG_MIN + '<yz_forum>\npost｜p1｜掌门｜长老｜公告｜今日｜议事｜卯时集合｜3\ncomment｜p1｜长老｜今日｜已知\npost｜p2｜长老｜长老｜闲聊｜昨日｜论剑｜切磋记录｜1\ncomment｜p2｜弟子｜昨日｜围观\n</yz_forum>'), 'chat-race', 'test');
+  gate();
+  await syncing;
+  ok(rt.current().forum.posts.some((p) => p.id === 'p2'), '陈旧镜像不覆盖新轮次（新帖保留）');
+  ok(!!rt.current().forum.posts.find((p) => p.id === 'fp-1'), '玩家帖子仍镜像在场');
 }
 
 // ---------- 结果 ----------

@@ -44,11 +44,11 @@
 <yz_meta>   turn｜轮次ID｜角色名｜摘要｜模式(full/part/diff)
 <yz_tablet> field｜分组｜字段名｜值        （本命玉牌）
 <yz_msg>    contact/msg/group/gmsg        （交流讯息）
-<yz_forum>  post/comment                  （天下论坛）
+<yz_forum>  post/comment，post 行尾可选 owner 字段（player=玩家真实发帖，缺省=角色发帖）（天下论坛）
 <yz_notes>  folder/note                   （记事玉册）
-<yz_market> listing/auction/order         （交易坊市）
+<yz_market> listing/auction/request/order   （交易坊市：行情/求购/拍卖/订单）
 <yz_space>  currency/item                 （芥子空间）
-<yz_map>    current/track                 （天下舆图）
+<yz_map>    current/track/place           （天下舆图：当前位置/行踪/地点名录）
 ```
 
 - 行格式：一行一条、`｜` 分字段；diff 轮以 `+`（upsert）/ `-`（删除，只给定位字段）前缀输出
@@ -83,11 +83,11 @@
 node --check entry.js && node tests/smoke.mjs
 ```
 
-基线 **542 项全绿**，覆盖协议解析、diff 合并、评估矩阵、预算窗口、世界书归档、版本迁移、备份恢复链、检索筛选、双玉兆传讯通道等。
+基线 **701 项全绿**，覆盖协议解析、diff 合并、评估矩阵、预算窗口、世界书归档、版本迁移、备份恢复链、检索筛选、双玉兆传讯通道等。
 
 ### 发布门禁
 
-1. `node tests/smoke.mjs` 542 项全绿
+1. `node tests/smoke.mjs` 701 项全绿
 2. Tavo MCP 环境执行 `tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
 3. 真机回归：世界书归档挂接、FAB 拖拽/复位、卦位徽标、同步详情页、触屏两击确认、域切换与传讯（手机/平板/桌面）
 4. 产物随版本号更新出包

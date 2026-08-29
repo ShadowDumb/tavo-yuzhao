@@ -77,6 +77,11 @@
     return value == null ? value : JSON.parse(JSON.stringify(value));
   }
 
+  // 数值字段统一下限：Number(x)||0 只挡 NaN 不挡负数，未读/数量/共鸣等一律非负。
+  function nzero(value) {
+    return Math.max(0, Number(value) || 0);
+  }
+
   var GROUPS = {
     basic: ['基本', '基础', 'basic'],
     look: ['仪容', '外貌', '外观', 'look', 'appearance'],
@@ -151,7 +156,8 @@
   // 与玩家域中的角色联系人（玩家自己的会话线程，镜像角色回复）。
   var PLAYER_CONTACT_ID = 'yz-player';
   var PLAYER_THREAD_ID = 'yz-character';
-  // 每轮基线最多注入的未读传讯行数；超出部分只给一条摘要行（计入 9000 预算但不可淘汰）。
+  // 每轮基线最多注入的未读传讯行数；超出部分只给一条摘要行（计入预算，可淘汰但
+  // 优先级最高——仅极端超限时让位，见 buildCurrent 第四轮）。
   var MAX_PLAYER_UNREAD_ROWS = 5;
 
   // 玩家域实体 id 生成：按集合内现有编号取下一个（pn-<n> / pf-<n> / pi-<n> / po-<n>），
@@ -211,7 +217,7 @@
         name: cleanText(contact.name, 120),
         relation: cleanText(contact.relation, 120),
         time: cleanText(contact.time, 80),
-        unread: Number(contact.unread) || 0,
+        unread: nzero(contact.unread),
         preview: cleanText(contact.preview, 300),
         messages: tail(contact.messages, 20).map(function (message) {
           message = safeObject(message);
@@ -229,9 +235,9 @@
       return {
         id: cleanText(group.id, 160),
         name: cleanText(group.name, 120),
-        members: Number(group.members) || 0,
+        members: nzero(group.members),
         time: cleanText(group.time, 80),
-        unread: Number(group.unread) || 0,
+        unread: nzero(group.unread),
         preview: cleanText(group.preview, 300),
         messages: tail(group.messages, 24).map(function (message) {
           message = safeObject(message);
@@ -289,7 +295,7 @@
         time: cleanText(post.time, 80),
         title: cleanText(post.title, 200),
         body: cleanText(post.body, 3000),
-        resonance: Number(post.resonance) || 0,
+        resonance: nzero(post.resonance),
         comments: safeArray(post.comments, 20).map(function (comment) {
           comment = safeObject(comment);
           return { id: cleanText(comment.id, 160), author: cleanText(comment.author, 120), time: cleanText(comment.time, 80), text: cleanText(comment.text, 3000) };
@@ -307,7 +313,7 @@
     }).filter(function (listing) { return listing.id && hasText(listing.name); });
     var auctions = safeArray(raw.auctions, 12).map(function (auction) {
       auction = safeObject(auction);
-      return { id: cleanText(auction.id, 160), name: cleanText(auction.name, 120), grade: cleanText(auction.grade, 60), desc: cleanText(auction.desc, 3000), start: cleanText(auction.start, 80), current: cleanText(auction.current, 80), timeLeft: cleanText(auction.timeLeft, 80), bids: Number(auction.bids) || 0 };
+      return { id: cleanText(auction.id, 160), name: cleanText(auction.name, 120), grade: cleanText(auction.grade, 60), desc: cleanText(auction.desc, 3000), start: cleanText(auction.start, 80), current: cleanText(auction.current, 80), timeLeft: cleanText(auction.timeLeft, 80), bids: nzero(auction.bids) };
     }).filter(function (auction) { return auction.id && hasText(auction.name); });
     var orders = safeArray(raw.orders, 12).map(function (order) {
       order = safeObject(order);
@@ -329,7 +335,7 @@
     }).filter(function (currency) { return hasText(currency.kind); });
     var items = safeArray(raw.items, 30).map(function (item) {
       item = safeObject(item);
-      return { id: cleanText(item.id, 160), name: cleanText(item.name, 120), qty: Number(item.qty) || 0, qtyText: cleanText(item.qtyText, 40), grade: cleanText(item.grade, 60), desc: cleanText(item.desc, 3000) };
+      return { id: cleanText(item.id, 160), name: cleanText(item.name, 120), qty: nzero(item.qty), qtyText: cleanText(item.qtyText, 40), grade: cleanText(item.grade, 60), desc: cleanText(item.desc, 3000) };
     }).filter(function (item) { return item.id && hasText(item.name); });
     return { currencies: currencies, items: items };
   }
@@ -429,9 +435,9 @@
     if (id === 'msg') return { contacts: [], groups: [] };
     if (id === 'notes') return { folders: [], notes: [] };
     if (id === 'forum') return { posts: [] };
-    if (id === 'market') return { listings: [], auctions: [], orders: [] };
+    if (id === 'market') return { listings: [], auctions: [], orders: [], requests: [] };
     if (id === 'space') return { currencies: [], items: [] };
-    if (id === 'map') return { current: { place: '', domain: '', desc: '' }, tracks: [] };
+    if (id === 'map') return { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] };
     return null;
   }
 
@@ -581,11 +587,14 @@
       var id = cleanText(op.values[0], 160);
       if (!id) return;
       if (op.type === 'contact') {
+        // 玩家传讯联系人（yz-player）由跨域通道镜像维护，模型不得增删改（只读防护，
+        // 与 diffForum 对玩家帖子的门禁同语义；提示词亦明令禁止）。
+        if (String(id) === PLAYER_CONTACT_ID) return;
         var at = indexOfById(out.contacts, id);
         if (op.add) {
           var name = cleanText(op.values[1], 120);
           if (!hasText(name)) return;
-          var contact = { id: id, name: name, relation: cleanText(op.values[2], 120), time: cleanText(op.values[3], 80), unread: Number(op.values[4]) || 0, preview: cleanText(op.values[5], 300), messages: [] };
+          var contact = { id: id, name: name, relation: cleanText(op.values[2], 120), time: cleanText(op.values[3], 80), unread: nzero(op.values[4]), preview: cleanText(op.values[5], 300), messages: [] };
           if (at >= 0) contact.messages = out.contacts[at].messages;
           if (at >= 0) out.contacts[at] = contact;
           else if (out.contacts.length < 10) out.contacts.push(contact);
@@ -597,7 +606,7 @@
         if (op.add) {
           var gname = cleanText(op.values[1], 120);
           if (!hasText(gname)) return;
-          var group = { id: id, name: gname, members: Number(op.values[2]) || 0, time: cleanText(op.values[3], 80), unread: Number(op.values[4]) || 0, preview: cleanText(op.values[5], 300), messages: [] };
+          var group = { id: id, name: gname, members: nzero(op.values[2]), time: cleanText(op.values[3], 80), unread: nzero(op.values[4]), preview: cleanText(op.values[5], 300), messages: [] };
           if (gi >= 0) group.messages = out.groups[gi].messages;
           if (gi >= 0) out.groups[gi] = group;
           else if (out.groups.length < 6) out.groups.push(group);
@@ -610,10 +619,18 @@
         out.contacts.forEach(function (c) { if (c.id === id) owner = c; });
         if (isGroup) { owner = null; out.groups.forEach(function (g) { if (g.id === id) owner = g; }); }
         if (!owner) return;
+        if (String(id) === PLAYER_CONTACT_ID) {
+          // yz-player 线程只读防护：模型只能追加自己的回复（+msg self 新 id）；
+          // 禁止删消息、伪造玩家侧消息（side=other）、改写既有玩家消息（pm-*）。
+          if (!op.add || isGroup) return;
+          if (normalizeSide(op.values[2]) !== 'self') return;
+        }
         var mid = cleanText(op.values[1], 160);
         if (!mid) return;
         var mi = indexOfById(owner.messages, mid);
         if (op.add) {
+          // 玩家侧消息（pm-*，side=other）不可被模型改写覆盖；角色只允许新增/改自己的回复。
+          if (String(id) === PLAYER_CONTACT_ID && mi >= 0 && owner.messages[mi].side === 'other') return;
           var text = cleanText(isGroup ? op.values[5] : op.values[4], 3000);
           if (!hasText(text)) return;
           var message = isGroup
@@ -635,12 +652,14 @@
       if (!id) return;
       if (op.type === 'post') {
         var pi = indexOfById(out.posts, id);
-        // 玩家帖子是玩家的真实发帖：模型 +post/-post 一律不得触碰（提示词亦明令禁止）。
+        // 玩家帖子是玩家的真实发帖：模型 +post/-post 一律不得触碰已存在的玩家行
+        //（提示词亦明令禁止；门禁只保护已存在行，用新 id 伪造 owner=player 的行
+        // 由对账与撞车防护兜底，见 syncPlayerPosts）。
         if (pi >= 0 && out.posts[pi].owner === 'player') return;
         if (op.add) {
           var title = cleanText(op.values[5], 200);
           if (!hasText(title)) return;
-          var post = { id: id, owner: cleanText(op.values[8], 20), author: cleanText(op.values[1], 120), role: cleanText(op.values[2], 120), section: cleanText(op.values[3], 60), time: cleanText(op.values[4], 80), title: title, body: cleanText(op.values[6], 3000), resonance: Number(op.values[7]) || 0, comments: [] };
+          var post = { id: id, owner: cleanText(op.values[8], 20), author: cleanText(op.values[1], 120), role: cleanText(op.values[2], 120), section: cleanText(op.values[3], 60), time: cleanText(op.values[4], 80), title: title, body: cleanText(op.values[6], 3000), resonance: nzero(op.values[7]), comments: [] };
           if (pi >= 0) post.comments = out.posts[pi].comments;
           if (pi >= 0) out.posts[pi] = post;
           else if (out.posts.length < 20) out.posts.push(post);
@@ -662,7 +681,13 @@
           if (c.author === author && c.time === time && c.text === text) { ci = i; break; }
         }
         if (op.add) {
-          if (ci < 0 && owner.comments.length < 20) owner.comments.push({ id: 'cm-' + (owner.comments.length + 1), author: author, time: time, text: text });
+          // 评论 id 取现存最大值 +1，避免删除后 cm-<len+1> 撞已有 id。
+          var cmMax = 0;
+          owner.comments.forEach(function (c) {
+            var cm = /^cm-(\d+)$/.exec(String(c && c.id) || '');
+            if (cm) cmMax = Math.max(cmMax, Number(cm[1]) || 0);
+          });
+          if (ci < 0 && owner.comments.length < 20) owner.comments.push({ id: 'cm-' + (cmMax + 1), author: author, time: time, text: text });
         } else if (ci >= 0) owner.comments.splice(ci, 1);
       }
     });
@@ -714,7 +739,7 @@
       } else if (op.type === 'auction') {
         list = out.auctions;
         var aname = cleanText(op.values[1], 120);
-        if (op.add && hasText(aname)) item = { id: id, name: aname, grade: cleanText(op.values[2], 60), desc: cleanText(op.values[3], 3000), start: cleanText(op.values[4], 80), current: cleanText(op.values[5], 80), timeLeft: cleanText(op.values[6], 80), bids: Number(op.values[7]) || 0 };
+        if (op.add && hasText(aname)) item = { id: id, name: aname, grade: cleanText(op.values[2], 60), desc: cleanText(op.values[3], 3000), start: cleanText(op.values[4], 80), current: cleanText(op.values[5], 80), timeLeft: cleanText(op.values[6], 80), bids: nzero(op.values[7]) };
       } else if (op.type === 'order') {
         list = out.orders;
         var oname = cleanText(op.values[1], 120);
@@ -758,7 +783,7 @@
         if (op.add) {
           var name = cleanText(op.values[1], 120);
           if (!hasText(name)) return;
-          var item = { id: id, name: name, qty: Number(op.values[2]) || 0, qtyText: cleanText(op.values[2], 40), grade: cleanText(op.values[3], 60), desc: cleanText(op.values[4], 3000) };
+          var item = { id: id, name: name, qty: nzero(op.values[2]), qtyText: cleanText(op.values[2], 40), grade: cleanText(op.values[3], 60), desc: cleanText(op.values[4], 3000) };
           if (ii >= 0) out.items[ii] = item;
           else if (out.items.length < 30) out.items.push(item);
         } else if (ii >= 0) out.items.splice(ii, 1);
@@ -1192,7 +1217,7 @@
         name: cleanText(values[2], 120),
         relation: cleanText(values[3], 120),
         time: cleanText(values[4], 80),
-        unread: Number(values[5]) || 0,
+        unread: nzero(values[5]),
         preview: cleanText(values[6], 300),
         messages: []
       };
@@ -1220,9 +1245,9 @@
       var item = {
         id: id,
         name: cleanText(values[2], 120),
-        members: Number(values[3]) || 0,
+        members: nzero(values[3]),
         time: cleanText(values[4], 80),
-        unread: Number(values[5]) || 0,
+        unread: nzero(values[5]),
         preview: cleanText(values[6], 300),
         messages: []
       };
@@ -1246,10 +1271,6 @@
     return out;
   }
 
-  function parseFlag(value) {
-    return /^(true|1|yes|是|锁定)$/i.test(String(value || '').trim());
-  }
-
   function parseNotes(body) {
     var out = { folders: [], notes: [] };
     var folders = Object.create(null);
@@ -1271,7 +1292,7 @@
         id: cleanText(values[1], 160),
         folderId: folderId,
         updated: cleanText(values[3], 80),
-        locked: parseFlag(values[4]),
+        locked: flagOf(values[4]),
         title: cleanText(values[5], 200),
         body: cleanText(values[6], 3000)
       });
@@ -1295,7 +1316,7 @@
         time: cleanText(values[5], 80),
         title: cleanText(values[6], 200),
         body: cleanText(values[7], 3000),
-        resonance: Number(values[8]) || 0,
+        resonance: nzero(values[8]),
         comments: []
       };
       if (!hasText(item.title)) return;
@@ -1327,7 +1348,7 @@
       var id = cleanText(values[1], 160);
       var name = cleanText(values[2], 120);
       if (!id || !hasText(name) || out.auctions.length >= 12) return;
-      out.auctions.push({ id: id, name: name, grade: cleanText(values[3], 60), desc: cleanText(values[4], 3000), start: cleanText(values[5], 80), current: cleanText(values[6], 80), timeLeft: cleanText(values[7], 80), bids: Number(values[8]) || 0 });
+      out.auctions.push({ id: id, name: name, grade: cleanText(values[3], 60), desc: cleanText(values[4], 3000), start: cleanText(values[5], 80), current: cleanText(values[6], 80), timeLeft: cleanText(values[7], 80), bids: nzero(values[8]) });
     });
     typed(body, ['order', '订单']).forEach(function (line) {
       var values = row(line, 7);
@@ -1359,7 +1380,7 @@
       var id = cleanText(values[1], 160);
       var name = cleanText(values[2], 120);
       if (!id || !hasText(name) || out.items.length >= 30) return;
-      out.items.push({ id: id, name: name, qty: Number(values[3]) || 0, qtyText: cleanText(values[3], 40), grade: cleanText(values[4], 60), desc: cleanText(values[5], 3000) });
+      out.items.push({ id: id, name: name, qty: nzero(values[3]), qtyText: cleanText(values[3], 40), grade: cleanText(values[4], 60), desc: cleanText(values[5], 3000) });
     });
     return out;
   }
@@ -1439,9 +1460,9 @@
         chats: { contacts: [], groups: [] },
         forum: { posts: [] },
         notes: { folders: [], notes: [] },
-        market: { listings: [], auctions: [], orders: [] },
+        market: { listings: [], auctions: [], orders: [], requests: [] },
         space: { currencies: [], items: [] },
-        map: { current: { place: '', domain: '', desc: '' }, tracks: [] }
+        map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] }
       });
       diffOut.diff = diff;
       return diffOut;
@@ -1460,10 +1481,10 @@
     var chats = msgBody == null || skipped.msg != null ? { contacts: [], groups: [] } : parseMsg(msgBody);
     var forum = forumBody == null || skipped.forum != null ? { posts: [] } : parseForum(forumBody);
     var notes = notesBody == null || skipped.notes != null ? { folders: [], notes: [] } : parseNotes(notesBody);
-    var market = marketBody == null || skipped.market != null ? { listings: [], auctions: [], orders: [] } : parseMarket(marketBody);
+    var market = marketBody == null || skipped.market != null ? { listings: [], auctions: [], orders: [], requests: [] } : parseMarket(marketBody);
     var space = spaceBody == null || skipped.space != null ? { currencies: [], items: [] } : parseSpace(spaceBody);
-    var map = mapBody == null || skipped.map != null ? { current: { place: '', domain: '', desc: '' }, tracks: [] } : parseMap(mapBody);
-    if (!turn && !tablet.groups.length && !tablet.name && !chats.contacts.length && !chats.groups.length && !forum.posts.length && !notes.folders.length && !notes.notes.length && !market.listings.length && !market.auctions.length && !market.orders.length && !space.currencies.length && !space.items.length && !map.current.place && !map.tracks.length) return null;
+    var map = mapBody == null || skipped.map != null ? { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] } : parseMap(mapBody);
+    if (!turn && !tablet.groups.length && !tablet.name && !chats.contacts.length && !chats.groups.length && !forum.posts.length && !notes.folders.length && !notes.notes.length && !market.listings.length && !market.auctions.length && !market.orders.length && !market.requests.length && !space.currencies.length && !space.items.length && !map.current.place && !map.tracks.length && !map.places.length) return null;
     var out = CORE.sanitize({
       version: 1,
       turn: turn || { id: 'turn-' + CORE.stableHash(source), roleName: '', summary: '', mode: '' },
@@ -1598,6 +1619,7 @@
         'notes.folders': tr('assess.issue.notes.folders'),
         'notes.notes': tr('assess.issue.notes.notes'),
         'forum.posts': tr('assess.issue.forum.posts'),
+        'forum.rows': tr('assess.issue.forum.rows'),
         'market.rows': tr('assess.issue.market.rows'),
         'space.rows': tr('assess.issue.space.rows'),
         'map.rows': tr('assess.issue.map.rows'),
@@ -1699,8 +1721,10 @@
         importDone: tr('runtime.manage.importDone'),
         importBad: tr('runtime.manage.importBad'),
         copyAll: tr('runtime.manage.copyAll'),
+        exportTooBig: tr('runtime.manage.exportTooBig'),
         importPlaceholder: tr('runtime.manage.importPlaceholder')
       },
+      sep: { badge: tr('runtime.sep.badge'), list: tr('runtime.sep.list') },
       mapTitles: { current: tr('runtime.map.currentTitle'), tracks: tr('runtime.map.trackTitle'), places: tr('runtime.map.placesTitle') }
     };
   }
@@ -1860,7 +1884,14 @@
       var parsed = parseStored(raw);
       var fromHost = !!parsed;
       var mirrored = parseStored(localGet(LOCAL_PREFIX + chatId));
-      if (mirrored && (!parsed || (Number(mirrored.revision) || 0) > (Number(parsed.revision) || 0))) {
+      // 镜像与宿主同源同内容时取最新：save 先写镜像后写宿主（宿主写还可能被切聊复查跳过），
+      // 所以镜像的 updatedAt 恒不早于宿主；revision 严格更高或平局时更新者胜——
+      // 避免 rev-0 聊天/游标未读等 revision 中性变更后，陈旧宿主键覆盖更新的镜像。
+      var mirrorRev = Number(mirrored && mirrored.revision) || 0;
+      var hostRev = Number(parsed && parsed.revision) || 0;
+      var mirrorTime = Number(mirrored && mirrored.updatedAt) || 0;
+      var hostTime = Number(parsed && parsed.updatedAt) || 0;
+      if (mirrored && (!parsed || mirrorRev > hostRev || (mirrorRev === hostRev && mirrorTime >= hostTime))) {
         parsed = mirrored;
         fromHost = false;
       }
@@ -1992,6 +2023,9 @@
       activeChatId = chatId;
       rememberChat(chatId);
       evictChats();
+      // 读存储前等落盘队列排空：上一聊天未写完的 save 会在队列里落镜像/宿主，
+      // 直接读会读到陈旧/空白数据（rev-0 聊天首条玩家消息曾因此丢失）。
+      await saveQueue;
       var loaded = await load(chatId);
       if (token !== epoch || chatId !== activeChatId) return current();
       // load 的 await 期间若有事件真正写入内存（应用过快照、更新过 sync），保留内存版本，
@@ -2019,11 +2053,15 @@
       if (state.revision > 0) await syncPlayerPosts(chatId);
       var hydrated = await hydrateHistory(chatId, token, state);
       if (hydrated.stale || token !== epoch || chatId !== activeChatId) return current();
-      chats[chatId] = hydrated.state;
-      if (hydrated.changed || hydrated.marked) await save(chatId, hydrated.state);
-      // 水化可能补入新的角色回复：镜像回玩家域会话线程。
-      if (hydrated.changed) await syncPlayerChannel(chatId);
-      if (hydrated.changed) await syncPlayerPosts(chatId);
+      // 水化 await 期间可能有一轮新生成落地（chats[chatId] 已被替换为新对象）：
+      // 引用一致才写回，避免用进入时捕获的旧 state 覆盖新轮次（静默回滚）。
+      if (chats[chatId] === state) {
+        chats[chatId] = hydrated.state;
+        if (hydrated.changed || hydrated.marked) await save(chatId, hydrated.state);
+        // 水化可能补入新的角色回复：镜像回玩家域会话线程。
+        if (hydrated.changed) await syncPlayerChannel(chatId);
+        if (hydrated.changed) await syncPlayerPosts(chatId);
+      }
       return current();
     }
 
@@ -2112,7 +2150,7 @@
       return max;
     }
 
-    // {{user}}：宿主用户身份名（chat.persona.name）；角色名缺失时回退本地化文案。
+    // {{user}}：宿主用户身份名（chat.persona.name）；用户身份名缺失时回退本地化文案。
     async function resolvePlayerName() {
       try {
         if (tavoApi.chat && typeof tavoApi.chat.current === 'function') {
@@ -2134,7 +2172,8 @@
       var unread = 0;
       var latest = 0;
       var last = null;
-      safeArray(contact && contact.messages, 20).forEach(function (message) {
+      // 未读与游标扫全量消息：头部切片会在超过 20 条时漏计/回退。
+      safeArray(contact && contact.messages, 100).forEach(function (message) {
         if (!message) return;
         var n = /^pm-(\d+)$/.exec(String(message.id) || '');
         if (n) {
@@ -2168,6 +2207,9 @@
       if (!thread) return false;
       // 唯一 await：玩家名解析（{{user}}），必须先于一切状态变更。
       var name = await resolvePlayerName();
+      // await 期间可能已切换聊天/新轮次替换了状态对象：以当前对象为准，放弃陈旧快照，
+      // 否则旧 state 的 save 会覆盖新数据。
+      if (chatId !== activeChatId || state !== current() || player !== playerCurrent()) return false;
       var contact = characterContact(state);
       var changed = false;
       if (!contact) {
@@ -2181,9 +2223,12 @@
         contact.relation = I18N.dict().playerRelation;
         contactChanged = true;
       }
+      // known 集合必须覆盖全部既有消息：只扫头部 20 条会在线程超过 20 条后（尾部截断前的
+      // 窗口内镜像批次）把旧 id 误判为未知而重复 push。推送后保尾截断，与角色域 normalize
+      // 同策略——新消息永远在场，最旧淘汰。
       var known = {};
-      safeArray(contact.messages, 20).forEach(function (message) { known[String(message && message.id)] = true; });
-      safeArray(thread.messages, 20).forEach(function (message) {
+      safeArray(contact.messages, 100).forEach(function (message) { known[String(message && message.id)] = true; });
+      safeArray(thread.messages, 100).forEach(function (message) {
         if (!message || message.side !== 'self') return;
         if (known[String(message.id)]) return;
         contact.messages.push({ id: cleanText(message.id, 160), side: 'other', time: cleanText(message.time, 80), text: cleanText(message.text, 3000) });
@@ -2191,14 +2236,15 @@
         contactChanged = true;
       });
       if (contactChanged) {
+        if (contact.messages.length > 20) contact.messages = tail(contact.messages, 20);
         refreshPlayerContact(state, contact);
         changed = true;
       }
       // 角色 → 玩家：镜像角色回复（回复 = 角色域普通协议数据，玩家域只读展示）。
       var mirrorKnown = {};
-      safeArray(thread.messages, 20).forEach(function (message) { mirrorKnown[String(message && message.id)] = true; });
+      safeArray(thread.messages, 100).forEach(function (message) { mirrorKnown[String(message && message.id)] = true; });
       var mirrored = false;
-      safeArray(contact.messages, 20).forEach(function (message) {
+      safeArray(contact.messages, 100).forEach(function (message) {
         if (!message || message.side !== 'self') return;
         if (mirrorKnown[String(message.id)]) return;
         thread.messages.push({ id: cleanText(message.id, 160), side: 'other', time: cleanText(message.time, 80), text: cleanText(message.text, 3000), reply: true });
@@ -2207,6 +2253,7 @@
       });
       if (mirrored) {
         thread.name = characterThreadName(state);
+        if (thread.messages.length > 20) thread.messages = tail(thread.messages, 20);
         if (thread.messages.length) {
           var lastMessage = thread.messages[thread.messages.length - 1];
           thread.preview = lastMessage.text || '';
@@ -2232,7 +2279,7 @@
       var contact = characterContact(state);
       var cursor = playerReadCursor(state);
       var latest = cursor;
-      safeArray(contact && contact.messages, 20).forEach(function (message) {
+      safeArray(contact && contact.messages, 100).forEach(function (message) {
         var n = /^pm-(\d+)$/.exec(String(message && message.id) || '');
         if (n) latest = Math.max(latest, Number(n[1]) || 0);
       });
@@ -2243,7 +2290,7 @@
     }
 
     // 玩家发讯：写入玩家域会话线程 + 立即投递角色域（异步落盘，不阻塞 UI）。
-    // 返回消息对象；消息 id 幂等，重复调用不产生副本。
+    // 返回 { id, seq } 摘要；消息 id 按 seq 幂等，重复调用不产生重复行（镜像按 id 去重）。
     function sendPlayerMessage(chatId, text) {
       text = cleanText(String(text == null ? '' : text), 3000);
       if (!hasText(text)) return null;
@@ -2282,11 +2329,13 @@
       if (kind === 'folder') {
         var name = cleanText(raw.name, 120);
         if (!hasText(name)) reason = 'name';
+        if (reason) return fail();
+        // 校验通过后才变更对象：失败路径不得留下已改坏/空必填的实体，
+        // 否则下一次 normalize 会整行丢弃并级联其下数据。
         var folder = CORE.playerFindEntity(player, 'folder', existingId);
         if (folder) folder.name = name;
         // safeArray 返回副本：新建必须把拼接结果写回状态，否则 push 在副本上丢失。
-        else if (!reason) player.notes.folders = safeArray(player.notes.folders, 10).concat([{ id: CORE.playerNextId(player.notes.folders, 'pf-'), name: name, count: 0 }]);
-        if (reason) return fail();
+        else player.notes.folders = safeArray(player.notes.folders, 10).concat([{ id: CORE.playerNextId(player.notes.folders, 'pf-'), name: name, count: 0 }]);
         player.notes = CORE.normalizeNotes(player.notes);
       } else if (kind === 'note') {
         var title = cleanText(raw.title, 200);
@@ -2295,31 +2344,36 @@
         if (!hasText(title)) reason = 'title';
         var folderOk = safeArray(player.notes.folders, 10).some(function (f) { return String(f.id) === String(folderId); });
         if (!folderOk) reason = 'folder';
+        if (reason) return fail();
         var note = CORE.playerFindEntity(player, 'note', existingId);
         if (note) {
           note.title = title;
           note.body = body;
           note.locked = !!raw.locked;
-        } else if (!reason) {
+        } else {
           player.notes.notes = safeArray(player.notes.notes, 30).concat([{ id: CORE.playerNextId(player.notes.notes, 'pn-'), folderId: folderId, updated: formatDateTime(Date.now()), locked: !!raw.locked, title: title, body: body }]);
         }
-        if (reason) return fail();
         player.notes = CORE.normalizeNotes(player.notes);
       } else if (kind === 'item') {
         var iname = cleanText(raw.name, 120);
         if (!hasText(iname)) reason = 'name';
+        if (reason) return fail();
         var item = CORE.playerFindEntity(player, 'item', existingId);
         if (item) {
           item.name = iname;
-          item.qty = Number(raw.qty) || 0;
+          item.qty = Math.max(0, Number(raw.qty) || 0);
           item.grade = cleanText(raw.grade, 60);
           item.desc = cleanText(raw.desc, 3000);
-        } else if (!reason) player.space.items = safeArray(player.space.items, 30).concat([{ id: CORE.playerNextId(player.space.items, 'pi-'), name: iname, qty: Number(raw.qty) || 0, grade: cleanText(raw.grade, 60), desc: cleanText(raw.desc, 3000) }]);
-        if (reason) return fail();
+        } else player.space.items = safeArray(player.space.items, 30).concat([{ id: CORE.playerNextId(player.space.items, 'pi-'), name: iname, qty: Math.max(0, Number(raw.qty) || 0), grade: cleanText(raw.grade, 60), desc: cleanText(raw.desc, 3000) }]);
         player.space = CORE.normalizeSpace(player.space);
       } else if (kind === 'currency') {
         var ckind = cleanText(raw.kind, 60);
         if (!hasText(ckind)) reason = 'kind';
+        // 重命名撞已有种类：目标种类已存在时拒绝（kind 是唯一键，否则出现重复行）。
+        if (!reason) {
+          var clash = safeArray(player.space.currencies, 10).some(function (c) { return String(c.kind) === ckind && String(c.kind) !== existingId; });
+          if (clash) reason = 'kind';
+        }
         if (reason) return fail();
         // 种类是唯一键：重命名 = 移除旧种类 + 写入新种类（upsert 语义）。
         player.space.currencies = safeArray(player.space.currencies, 10).filter(function (c) { return String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
@@ -2327,6 +2381,7 @@
       } else if (kind === 'order') {
         var oname = cleanText(raw.name, 120);
         if (!hasText(oname)) reason = 'name';
+        if (reason) return fail();
         var order = CORE.playerFindEntity(player, 'order', existingId);
         var side = /^(sell|卖|售)/i.test(String(raw.side)) ? 'sell' : 'buy';
         if (order) {
@@ -2334,24 +2389,23 @@
           order.status = cleanText(raw.status, 40);
           order.price = cleanText(raw.price, 80);
           order.side = side;
-        } else if (!reason) player.market.orders = safeArray(player.market.orders, 12).concat([{ id: CORE.playerNextId(player.market.orders, 'po-'), name: oname, status: cleanText(raw.status, 40), price: cleanText(raw.price, 80), time: formatDateTime(Date.now()), side: side }]);
-        if (reason) return fail();
+        } else player.market.orders = safeArray(player.market.orders, 12).concat([{ id: CORE.playerNextId(player.market.orders, 'po-'), name: oname, status: cleanText(raw.status, 40), price: cleanText(raw.price, 80), time: formatDateTime(Date.now()), side: side }]);
         player.market = CORE.normalizeMarket(player.market);
       } else if (kind === 'post') {
         // 玩家发帖（三期）：owner=player 的论坛帖子，源数据在玩家域，经 syncPlayerPosts
         // 镜像进角色域（公开数据）。作者名由镜像异步解析 {{user}} 后回填。
         var ptitle = cleanText(raw.title, 200);
         if (!hasText(ptitle)) reason = 'title';
+        if (reason) return fail();
         var post = CORE.playerFindEntity(player, 'post', existingId);
         if (post) {
           post.title = ptitle;
           post.section = cleanText(raw.section, 60);
           post.body = cleanText(raw.body, 3000);
           post.time = formatDateTime(Date.now());
-        } else if (!reason) {
+        } else {
           player.forum.posts = safeArray(player.forum.posts, 20).concat([{ id: CORE.playerNextId(player.forum.posts, 'fp-'), owner: 'player', author: '', role: '', section: cleanText(raw.section, 60), time: formatDateTime(Date.now()), title: ptitle, body: cleanText(raw.body, 3000), resonance: 0, comments: [] }]);
         }
-        if (reason) return fail();
         player.forum = CORE.normalizeForum(player.forum);
       } else {
         return { ok: false, reason: 'kind' };
@@ -2408,13 +2462,39 @@
       var havePlayerRows = safeArray(state.forum && state.forum.posts, 20).some(function (p) { return String(p && p.owner) === 'player'; });
       if (!mine.length && !havePlayerRows) return false;
       var name = await resolvePlayerName();
+      // await 期间可能已切换聊天/新轮次替换了状态对象：放弃陈旧快照，
+      // 否则旧 state 的 save 会覆盖新数据（双通道并发已验证会丢帖子）。
+      if (chatId !== activeChatId || state !== current() || player !== playerCurrent()) return false;
       var changed = false;
       var hadPlayerRows = false;
       var originals = safeArray(state.forum && state.forum.posts, 20);
+      // 撞车防护：角色域已有同 id 的非玩家帖（模型可能复用基线里可见的 fp-* 前缀）——
+      // 给玩家帖换一个两边都未占用的新 id（双方同步改名，对账锚点幂等）。
+      mine.forEach(function (post) {
+        if (!post || !post.id) return;
+        var conflict = false;
+        originals.forEach(function (p) {
+          if (p && String(p.id) === String(post.id) && String(p.owner) !== 'player') conflict = true;
+        });
+        if (!conflict) return;
+        var used = {};
+        safeArray(player.forum && player.forum.posts, 20).forEach(function (p) { if (p && p.id) used[String(p.id)] = true; });
+        originals.forEach(function (p) { if (p && p.id) used[String(p.id)] = true; });
+        var n = 1;
+        while (used['fp-' + n]) n += 1;
+        post.id = 'fp-' + n;
+        player.updatedAt = Date.now();
+        changed = true;
+      });
+      var mineIds = {};
+      mine.forEach(function (post) { if (post && post.id) mineIds[String(post.id)] = true; });
       var kept = [];
       originals.forEach(function (post) {
         if (!post) return;
         if (String(post.owner) === 'player') { hadPlayerRows = true; return; }
+        // 模型改写剥落了 owner 标记的行也按 id 排除：以玩家域对账结果为准，
+        // 避免同 id 两份副本（对账又推一份 = 重复帖）。
+        if (mineIds[String(post.id)]) return;
         kept.push(post);
       });
       if (!mine.length && hadPlayerRows) {
@@ -2427,12 +2507,12 @@
       }
       mine.forEach(function (post) {
         if (!post || !post.id) return;
-        // existing 从原始角色域行里找（kept 已剔除玩家行）：命中即对账更新并保留
-        // 角色侧评论；未命中（历史重建/清空后）按玩家域插入。
+        // existing 只认 owner=player 的行（撞车防护已保证玩家帖 id 不被角色帖占用）：
+        // 命中即对账更新并保留角色侧评论；未命中（历史重建/清空后）按玩家域插入。
         var existing = null;
-        originals.forEach(function (p) { if (p && String(p.id) === String(post.id)) existing = p; });
+        originals.forEach(function (p) { if (p && String(p.id) === String(post.id) && String(p.owner) === 'player') existing = p; });
         if (!existing) {
-          kept.push({ id: cleanText(post.id, 160), owner: 'player', author: name, role: cleanText(post.role, 120), section: cleanText(post.section, 60), time: cleanText(post.time, 80), title: cleanText(post.title, 200), body: cleanText(post.body, 3000), resonance: Number(post.resonance) || 0, comments: [] });
+          kept.push({ id: cleanText(post.id, 160), owner: 'player', author: name, role: cleanText(post.role, 120), section: cleanText(post.section, 60), time: cleanText(post.time, 80), title: cleanText(post.title, 200), body: cleanText(post.body, 3000), resonance: nzero(post.resonance), comments: [] });
           changed = true;
         } else {
           if (existing.owner !== 'player' || existing.title !== post.title || existing.body !== post.body || existing.section !== post.section || existing.author !== name) {
@@ -2492,7 +2572,8 @@
         // 封印切换/版本更新后的重同步必须等真正达标的全量轮才清除强制标记。
         full: (function () { var a = applied.assessment; return !!a && !a.part && !a.diff && a.ok === true; })(),
         applied: CORE.safeArray(applied.state.sync.applied, 10).slice(),
-        assessment: applied.state.sync
+        // 返回 sync 快照而非引用：调用方后续写入状态时不会改变已返回的 assessment。
+        assessment: Object.assign({}, applied.state.sync)
       };
     }
 
@@ -2769,22 +2850,13 @@
       playerSaveEntity: playerSaveEntity,
       playerDeleteEntity: playerDeleteEntity,
       saveChat: function (chatId) { return save(chatId, current()); },
-      savePlayerChat: function (chatId) { return save(chatId, playerCurrent(), { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX }); },
       cachedChatIds: function () { return lru.slice(); },
-      get activeChatId() { return activeChatId; },
-      get epoch() { return epoch; }
+      get activeChatId() { return activeChatId; }
     };
   }
 
   var RUNTIME = {
-    createRuntime: createRuntime,
-    STATE_KEY: STATE_KEY,
-    LOCAL_PREFIX: LOCAL_PREFIX,
-    BACKUP_PREFIX: BACKUP_PREFIX,
-    PLAYER_STATE_KEY: PLAYER_STATE_KEY,
-    PLAYER_LOCAL_PREFIX: PLAYER_LOCAL_PREFIX,
-    PLAYER_BACKUP_PREFIX: PLAYER_BACKUP_PREFIX,
-    PLUGIN_VERSION: PLUGIN_VERSION
+    createRuntime: createRuntime
   };
 
   var PROMPT_FEATURES = [
@@ -2804,12 +2876,12 @@
     {
       id: 'msg',
       en: {
-        constraint: '- Messaging: at least 2 contacts, each with at least 2 messages; at least 1 group, each with at least 10 messages; msg rows must belong to declared contact ids, gmsg rows to declared group ids; the direction field of msg/gmsg must be exactly self or other; time fields must be absolute dates (e.g. 丙午年五月十二 午时), never relative ones like 今日/昨日 — messages are archived to the lorebook, and relative times mislead recall after the story date moves on.',
+        constraint: '- Messaging: at least 2 contacts, each with at least 2 messages; at least 1 group, each with at least 2 messages; msg rows must belong to declared contact ids, gmsg rows to declared group ids; the direction field of msg/gmsg must be exactly self or other; time fields must be absolute dates (e.g. 丙午年五月十二 午时), never relative ones like 今日/昨日 — messages are archived to the lorebook, and relative times mislead recall after the story date moves on.',
         rows: ['<yz_msg>', 'contact｜id｜name｜relation｜time｜unread｜preview', 'msg｜contact-id｜message-id｜self or other｜absolute date like 丙午年五月十二午时｜text', 'group｜id｜group name｜member count｜time｜unread｜preview', 'gmsg｜group-id｜message-id｜sender name｜self or other｜absolute date like 丙午年五月十二午时｜text', '</yz_msg>'],
         name: 'Messaging'
       },
       zh: {
-        constraint: '- 交流讯息：至少 2 个联系人且每人至少 2 条消息、至少 1 个群且每群至少 10 条消息；msg 行必须属于已声明的联系人，gmsg 行必须属于已声明的群；方向字段固定填 self 或 other；时间字段一律写绝对日期（如 丙午年五月十二 午时），禁止 今日/昨日 等相对时间——消息会进世界书归档，剧情日期变化后被召回时相对时间会误导回顾。',
+        constraint: '- 交流讯息：至少 2 个联系人且每人至少 2 条消息、至少 1 个群且每群至少 2 条消息；msg 行必须属于已声明的联系人，gmsg 行必须属于已声明的群；方向字段固定填 self 或 other；时间字段一律写绝对日期（如 丙午年五月十二 午时），禁止 今日/昨日 等相对时间——消息会进世界书归档，剧情日期变化后被召回时相对时间会误导回顾。',
         rows: ['<yz_msg>', 'contact｜id｜道号或姓名｜关系｜时间｜未读｜预览', 'msg｜联系人id｜消息id｜self或other｜绝对时间如丙午年五月十二午时｜正文', 'group｜群id｜群名｜成员数｜时间｜未读｜预览', 'gmsg｜群id｜消息id｜发送者名｜self或other｜绝对时间如丙午年五月十二午时｜正文', '</yz_msg>'],
         name: '交流讯息'
       }
@@ -2893,9 +2965,14 @@
   var RECENT_REQUEST_ROWS = 6;
   // 地点名录窗口：窗口之外的地点正文不进基线，完整名录在世界书关键词条目中召回。
   var RECENT_PLACE_ROWS = 6;
-  // 基线总字符上限：超限时按行淘汰（先丢最早的明细行，标识行与归档行保留）。
+  // 基线总字符上限：超限时按五级顺序淘汰——① 其它功能明细行（消息/笔记/帖子等，
+  // 世界书对消息有召回）→ ② tablet 字段行（角色设定最重要，排最后）→ ③ 归档摘要行
+  // → ④ last 标记行（玩家传讯未读行与玩家帖子，真实事件，仅极端场景让位）→
+  // ⑤ 超长标识行截断到短上限（保留行首 id/name 供 diff 定位，丢 preview/time 长尾）。
   // 这是每轮注入量的硬上限——数据再大也不会随轮次滚雪球。
   var MAX_BASELINE_CHARS = 9000;
+  // 第五轮截断后的单行硬上限：标识行以存在性与 diff 定位为主，长尾字段可弃。
+  var ROW_HARD_CAP = 160;
 
   // 当前数据基线：把 state 按协议行语法序列化进 yzc_ 容器（内部标签与行语法同输出格式，
   // 但 section() 只认 yz_ 前缀，基线被复读时不会污染 <yz_jade> 解析）。
@@ -2993,9 +3070,9 @@
         if (!post || !hasText(post.title) || !post.id) return;
         var isPlayerPost = String(post.owner || '') === 'player';
         if (isPlayerPost) {
-          // 玩家帖子是真实事件（与传讯未读行同级）：永远全行注入、不归档、不淘汰
-          // （drop:false，last 标记让预算淘汰时优先让位给普通明细行），行尾带 owner
-          // 字段供模型识别；角色对玩家帖子的评论同全行注入。
+          // 玩家帖子是真实事件（与传讯未读行同级）：永远全行注入、不归档
+          // （drop:false，last 标记仅极端预算场景最后让位，见 buildCurrent 第四轮），
+          // 行尾带 owner 字段供模型识别；角色对玩家帖子的评论同全行注入。
           var rowText = 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜player';
           f.rows.push({ text: rowText, drop: false, last: true });
           safeArray(post.comments, 20).forEach(function (comment) {
@@ -3108,10 +3185,8 @@
         mp.rows.push({ text: 'place｜' + v(place.id, 160) + '｜' + v(place.name, 120) + '｜' + v(place.domain, 120) + '｜' + v(place.desc), drop: true });
       });
     }
-    // 发送上限：全部行计入预算。淘汰顺序：① 其它功能明细行（消息/笔记/帖子等，
-    // 世界书对消息有召回）→ ② tablet 字段行（角色设定最重要，排最后）→ ③ 归档摘要行
-    // → ④ 玩家传讯未读行（真实事件，淘汰优先级最高，只有前三级全丢仍超限才让位）。
-    // 实体标识行（contact/group/folder 等存在性与 diff 定位依赖）永不淘汰。
+    // 发送上限：全部行计入预算，五级淘汰见 MAX_BASELINE_CHARS 注释。
+    // 实体标识行（contact/group/folder 等存在性与 diff 定位依赖）永不整行淘汰，仅最后截断。
     var total = 0;
     sections.forEach(function (item) {
       item.rows.forEach(function (r) { total += r.text.length; });
@@ -3146,13 +3221,27 @@
           });
         });
       }
-      // 第四轮：归档行也丢光仍超限时，最后丢玩家传讯未读行（真实事件，仅极端场景让位）。
+      // 第四轮：归档行也丢光仍超限时，最后丢 last 标记行（玩家传讯未读行、玩家帖子与
+      // 其评论，真实事件，仅极端场景让位）。
       if (total > MAX_BASELINE_CHARS) {
         sections.forEach(function (item) {
           item.rows.forEach(function (r) {
             if (r.last && total > MAX_BASELINE_CHARS) {
               total -= r.text.length;
               r.text = '';
+            }
+          });
+        });
+      }
+      // 第五轮：标识行全保留也撑爆预算的极端满配态下，把超长标识行截断到短上限
+      // （行首 id/name 仍在，diff 可定位；preview/time 等长尾字段放弃）。
+      if (total > MAX_BASELINE_CHARS) {
+        sections.forEach(function (item) {
+          item.rows.forEach(function (r) {
+            if (!r.last && r.text.length > ROW_HARD_CAP && total > MAX_BASELINE_CHARS) {
+              total -= r.text.length;
+              r.text = r.text.slice(0, ROW_HARD_CAP);
+              total += r.text.length;
             }
           });
         });
@@ -3321,7 +3410,7 @@
   }
 
   // 手工格式化 YYYY-MM-DD HH:mm：不用 toLocaleString——它随系统 locale 漂移，
-  // App 手动切换语言时会与界面语言不一致；固定按 UTC 展示保证跨设备输出一致。
+  // 与界面语言不一致；固定按 UTC 展示保证跨设备输出一致。
   function formatDateTime(ms) {
     var n = Number(ms);
     if (!n || !Number.isFinite(n)) return '-';
@@ -3373,13 +3462,15 @@
       var cls = 'yz-node t-' + feature.tone + (off || lockedNode ? ' sealed' : '');
       var badge = (off || lockedNode) ? null : nodeBadge(feature, disabled, state);
       var badgeHtml = '';
+      // 标点随语言（zh '，' / en ', '），避免 en 界面泄漏中文标点。
+      var sep = tr('runtime.sep.badge');
       var aria = name;
       if (badge) {
         cls += ' b-' + badge.kind;
-        if (badge.kind === 'alert') { badgeHtml = '<i class="yz-badge yz-badge-alert">!</i>'; aria = name + '，' + t.badge.alert; }
-        else if (badge.kind === 'unread') { badgeHtml = '<i class="yz-badge yz-badge-unread">' + CORE.escapeHtml(badge.label) + '</i>'; aria = name + '，' + tr('runtime.badge.unread', { n: badge.label }); }
+        if (badge.kind === 'alert') { badgeHtml = '<i class="yz-badge yz-badge-alert">!</i>'; aria = name + sep + t.badge.alert; }
+        else if (badge.kind === 'unread') { badgeHtml = '<i class="yz-badge yz-badge-unread">' + CORE.escapeHtml(badge.label) + '</i>'; aria = name + sep + tr('runtime.badge.unread', { n: badge.label }); }
         // 新同步只保留 b-new 呼吸光效，不渲染文字角标，避免遮挡卦名。
-        else { aria = name + '，' + t.badge.new; }
+        else { aria = name + sep + t.badge.new; }
       }
       var seal = (off || lockedNode) ? '<i class="yz-seal">' + CORE.escapeHtml(t.sealGlyph) + '</i>' : '';
       return '<button type="button" class="' + cls + '" data-action="open-feature" data-feature="' + feature.id + '" style="left:' + feature.pos[0] + '%;top:' + feature.pos[1] + '%" aria-label="' + CORE.escapeHtml(aria) + '"><span class="yz-glyph">' + feature.glyph + '</span><b>' + CORE.escapeHtml(name) + '</b><em>' + CORE.escapeHtml(t.gua[feature.id] || '') + '</em>' + seal + badgeHtml + '</button>';
@@ -3561,11 +3652,7 @@
     CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).forEach(function (c) {
       if (String(c && c.id) === CORE.PLAYER_THREAD_ID) thread = c;
     });
-    if (view === 'chat' || view === 'gchat') {
-      if (nav.view === 'gchat') {
-        return '<main class="yz-page-inner" data-marker="player-groups">' + yzHeader(t.features.msg, true) +
-          yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + '<div class="yz-empty">' + CORE.escapeHtml(t.playerNoGroups) + '</div></main>';
-      }
+    if (view === 'chat') {
       // 已送达集合：角色域 yz-player 联系人中已存在的玩家消息 id（投递确认）。
       var delivered = {};
       var characterContact = null;
@@ -3980,7 +4067,7 @@
     body += diagRow(t.diag.turn, CORE.escapeHtml(CORE.hasText(sync.turnId) ? sync.turnId : '-'));
     body += diagRow(t.diag.source, CORE.escapeHtml(CORE.hasText(sync.lastSource) ? sync.lastSource : '-'));
     var applied = CORE.safeArray(sync.applied, 10).map(function (id) { return t.features[id] || id; });
-    body += diagRow(t.diag.applied, CORE.escapeHtml(applied.length ? applied.join('、') : t.diag.none));
+    body += diagRow(t.diag.applied, CORE.escapeHtml(applied.length ? applied.join(tr('runtime.sep.list')) : t.diag.none));
     var issues = CORE.safeArray(sync.issues, 20).map(function (issue) {
       return (issue && (t.issues[issue.code] || t.issues[issue.path])) || (issue && issue.path) || '';
     }).filter(Boolean);
@@ -4042,10 +4129,17 @@
         '<span class="yz-glyph-sm">' + (kind === 'export' ? '↧' : '↥') + '</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(label) + '</b></span></button>';
     }).join('');
     // 导出/导入共用一行一个面板：导出只读 + 全选复制；导入粘贴 JSON 后校验替换。
+    // 导出内容不得超过导入容量红线（importState 拒绝超限），否则导出→导入 round-trip 断裂。
     var panel = '';
     if (ui.dataPanel === 'export') {
-      panel = '<textarea class="yz-io" readonly data-export-output>' + CORE.escapeHtml(JSON.stringify(state, null, 2)) + '</textarea>' +
-        '<div class="yz-io-actions"><button type="button" class="yz-tab" data-action="copy-export">' + CORE.escapeHtml(t.manage.copyAll) + '</button></div>';
+      var exportCompact = '';
+      try { exportCompact = JSON.stringify(state || {}); } catch (_) {}
+      if (exportCompact.length > MAX_SNAPSHOT_BYTES) {
+        panel = '<div class="yz-empty">' + CORE.escapeHtml(t.manage.exportTooBig) + '</div>';
+      } else {
+        panel = '<textarea class="yz-io" readonly data-export-output>' + CORE.escapeHtml(JSON.stringify(state, null, 2)) + '</textarea>' +
+          '<div class="yz-io-actions"><button type="button" class="yz-tab" data-action="copy-export">' + CORE.escapeHtml(t.manage.copyAll) + '</button></div>';
+      }
     } else if (ui.dataPanel === 'import') {
       panel = '<textarea class="yz-io" data-import-input placeholder="' + CORE.escapeHtml(t.manage.importPlaceholder) + '"></textarea>' +
         '<div class="yz-io-actions"><button type="button" class="yz-tab" data-action="import-submit">' + CORE.escapeHtml(t.manage.importBtn) + '</button></div>';
@@ -4747,11 +4841,15 @@
     }
 
     // 单功能清空：只重置该分区并落盘；绝不动 processedTurns——否则下一轮相同 turnId 会被去重误挡。
+    // 玩家真实数据（传讯/发帖）以玩家域为源：清空角色域分区后立即补投镜像，避免
+    // 空窗期导出/注入基线缺玩家数据。
     function clearFeatureData(featureId) {
       var blank = CORE.blankFeatureField(featureId);
       if (!blank) return;
       runtime.current()[CORE.FEATURE_FIELDS[featureId]] = blank;
       runtime.saveChat(runtime.activeChatId);
+      if (featureId === 'forum') runtime.syncPlayerPosts(runtime.activeChatId);
+      if (featureId === 'msg') runtime.syncPlayerChannel(runtime.activeChatId);
       // 清空后刷新世界书：消息归档条目与全状态快照都同步更新。
       runtime.syncArchive(runtime.activeChatId);
       armedWipe = null;
@@ -4907,7 +5005,6 @@
           var action = target.getAttribute('data-action');
           if (action === 'close') return close();
           if (action === 'back') return backNav();
-          if (action === 'home') { if (nav.app !== 'home') return goHome(); return close(); }
           if (action === 'open-feature') return openFeature(target.getAttribute('data-feature'));
           if (action === 'switch-view') return switchView(target.getAttribute('data-view'));
           if (action === 'navigate') return navigateView(target.getAttribute('data-view'), { id: target.getAttribute('data-id') || '' });
@@ -5206,13 +5303,6 @@
       stripNodes(nodes);
     }
 
-    function wipeOldShells() {
-      ['yz0-overlay', 'yz0-fab'].forEach(function (id) {
-        var stale = hostDocument.getElementById(id);
-        if (stale) stale.remove();
-      });
-    }
-
     function bindHooks() {
       var plugin = tavoApi.plugin;
       if (!plugin) return;
@@ -5357,7 +5447,6 @@
     async function start() {
       if (started) return;
       started = true;
-      wipeOldShells();
       bindHooks();
       try {
         var i18nApi = tavoApi.plugin && tavoApi.plugin.i18n;
