@@ -163,6 +163,7 @@
   "runtime.group.secret": "隐秘",
   "runtime.map.currentTitle": "当前所在",
   "runtime.map.trackTitle": "近期行踪",
+  "runtime.map.placesTitle": "地点名录",
   "runtime.manage.info": "被封印的功能不再注入提示词、不再同步数据，以节省用量；对应卦位随之封印。",
   "runtime.manage.on": "启用中",
   "runtime.manage.off": "已封印",

@@ -163,6 +163,7 @@
   "runtime.group.secret": "Secret",
   "runtime.map.currentTitle": "Current location",
   "runtime.map.trackTitle": "Recent movements",
+  "runtime.map.placesTitle": "Location directory",
   "runtime.manage.info": "Sealed functions are excluded from the injected prompt and stop syncing, saving tokens; their bagua slots turn sealed.",
   "runtime.manage.on": "On",
   "runtime.manage.off": "Sealed",

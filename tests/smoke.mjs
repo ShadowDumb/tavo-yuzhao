@@ -1070,7 +1070,7 @@ console.log('# P2 · diff 协议与应用');
     + '<yz_forum>\npost｜p1｜掌门｜长老｜公告｜今日｜议事｜卯时集合｜3\ncomment｜p1｜长老｜今日｜已知\ncomment｜p1｜弟子｜今日｜恭候\npost｜p2｜长老｜长老｜闲聊｜昨日｜论剑｜切磋记录｜1\ncomment｜p2｜弟子｜昨日｜围观\n</yz_forum>'
     + '<yz_market>\nlisting｜l1｜灵草｜下品｜百年份｜10灵石｜坊主\nauction｜a1｜古剑｜上品｜锈蚀｜100｜150｜1时辰｜3\norder｜o1｜符纸｜已成交｜5灵石｜今日｜买\n</yz_market>'
     + '<yz_space>\ncurrency｜灵石｜120\nitem｜i1｜养神丹｜2｜中品｜宁神益气\nitem｜i2｜驱邪符｜5｜下品｜辟邪护身\n</yz_space>'
-    + '<yz_map>\ncurrent｜青云山｜东域｜山门所在\ntrack｜t1｜昨日｜山门｜入门\ntrack｜t2｜今日｜演武场｜晨练\n</yz_map>');
+    + '<yz_map>\ncurrent｜青云山｜东域｜山门所在\ntrack｜t1｜昨日｜山门｜入门\ntrack｜t2｜今日｜演武场｜晨练\nplace｜p1｜青云山｜东域｜山门所在，灵气充沛\nplace｜p2｜演武场｜东域｜弟子晨练之地\n</yz_map>');
   const base = M.CORE.blankState('d1');
   const r0 = M.CORE.applySnapshot(base, M.PROTOCOL.parse(BASE_FULL), {});
   ok(r0.state.sync.status === 'complete', '基线状态先落一轮全量 complete');
@@ -1344,7 +1344,7 @@ console.log('# P3 · 版本迁移与备份恢复');
     + '<yz_forum>\npost｜p1｜掌门｜长老｜公告｜今日｜议事｜卯时集合｜3\ncomment｜p1｜长老｜今日｜已知\ncomment｜p1｜弟子｜今日｜恭候\npost｜p2｜长老｜长老｜闲聊｜昨日｜论剑｜切磋记录｜1\ncomment｜p2｜弟子｜昨日｜围观\n</yz_forum>'
     + '<yz_market>\nlisting｜l1｜灵草｜下品｜百年份｜10灵石｜坊主\nauction｜a1｜古剑｜上品｜锈蚀｜100｜150｜1时辰｜3\norder｜o1｜符纸｜已成交｜5灵石｜今日｜买\n</yz_market>'
     + '<yz_space>\ncurrency｜灵石｜120\nitem｜i1｜养神丹｜2｜中品｜宁神益气\nitem｜i2｜驱邪符｜5｜下品｜辟邪护身\n</yz_space>'
-    + '<yz_map>\ncurrent｜青云山｜东域｜山门所在\ntrack｜t1｜昨日｜山门｜入门\ntrack｜t2｜今日｜演武场｜晨练\n</yz_map>');
+    + '<yz_map>\ncurrent｜青云山｜东域｜山门所在\ntrack｜t1｜昨日｜山门｜入门\ntrack｜t2｜今日｜演武场｜晨练\nplace｜p1｜青云山｜东域｜山门所在，灵气充沛\nplace｜p2｜演武场｜东域｜弟子晨练之地\n</yz_map>');
   const vr1 = await vrt.applyText(FULL_V, 'chat-1', 'test');
   ok(vr1.changed, '更新后全量轮应用成功');
   eq(vrt.current().sync.status, 'complete', '更新后全量轮完整达标');
@@ -1792,6 +1792,79 @@ console.log('# 玉牌扩组（功法/羁绊）');
   ok(tbl.includes(zhCatalog['runtime.group.gong']) && tbl.includes(zhCatalog['runtime.group.bond']), '玉牌页渲染功法/羁绊组标题');
   const tblKw = M.VIEWS.renderTablet(tsView, '青云剑诀');
   ok(tblKw.includes('青云剑诀') && !tblKw.includes('林月如'), '新组字段参与检索过滤');
+}
+
+// ---------- 四·二、舆图地点名录（map.places + 世界书召回） ----------
+console.log('# 舆图地点名录');
+{
+  // 归一：places 过滤空 id/空名
+  const nm = M.CORE.normalizeMap({ current: { place: '青云山' }, tracks: [], places: [{ id: 'p1', name: '青云山', domain: '东域', desc: '山门' }, { id: '', name: '无id' }, { id: 'p2', name: '' }, { id: 'p3', name: '演武场' }] });
+  eq(nm.places.length, 2, '地点名录过滤空 id/空名');
+  eq(nm.places[0].desc, '山门', '地点描述保留');
+
+  // 解析：place 行与中文别名
+  const pm = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜pm1｜李逍遥｜舆图\n</yz_meta><yz_map>\ncurrent｜青云山｜东域｜山门\nplace｜p1｜青云山｜东域｜山门所在\ntrack｜t1｜今日｜演武场｜晨练\n地点｜p2｜藏经阁｜东域｜藏书之地\n</yz_map></yz_jade>');
+  eq(pm.map.places.length, 2, 'place 行与地点别名均解析');
+  eq(pm.map.places[1].name, '藏经阁', '中文别名解析出地点');
+  eq(pm.map.tracks.length, 1, 'track 行不受影响');
+
+  // diff：+place 追加/更新、-place 删除（含达标门禁）
+  let mpState = M.CORE.blankState('mp');
+  mpState.map = M.CORE.normalizeMap({ current: { place: '青云山', domain: '东域', desc: '山门' }, tracks: [{ id: 't1', place: '山门', action: '入门' }, { id: 't2', place: '演武场', action: '晨练' }], places: [{ id: 'p1', name: '青云山', desc: '山门' }, { id: 'p2', name: '演武场', desc: '练功' }] });
+  const mp1 = M.CORE.applySnapshot(mpState, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mp1｜李逍遥｜新地名｜diff\n</yz_meta><yz_map>\n+place｜p3｜藏经阁｜东域｜藏书万卷\n</yz_map></yz_jade>'), {}).state;
+  eq(mp1.map.places.length, 3, '地点名录追加新地点');
+  const mp2 = M.CORE.applySnapshot(mp1, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mp2｜李逍遥｜改说明｜diff\n</yz_meta><yz_map>\n+place｜p1｜青云山｜东域｜护山大阵所在\n</yz_map></yz_jade>'), {}).state;
+  eq(mp2.map.places.find((p) => p.id === 'p1').desc, '护山大阵所在', '+place 按 id 整行替换');
+  const mp3 = M.CORE.applySnapshot(mp2, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mp3｜李逍遥｜弃一处｜diff\n</yz_meta><yz_map>\n-place｜p2\n</yz_map></yz_jade>'), {}).state;
+  eq(mp3.map.places.length, 2, '-place 删除指定地点');
+  const mp4 = M.CORE.applySnapshot(mp3, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜mp4｜李逍遥｜删多了｜diff\n</yz_meta><yz_map>\n-place｜p3\n</yz_map></yz_jade>'), {}).state;
+  eq(mp4.map.places.length, 2, '删到 2 处以下被达标门禁拦截');
+
+  // 达标：地点至少 2 处
+  const aOk = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, map: mp3.map }, {});
+  ok(aOk.map.ok === true && aOk.map.places === true, '两处地点达标');
+  const aNo = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, map: M.CORE.normalizeMap({ current: { place: '青云山' }, tracks: [{ id: 't1', place: '山门' }, { id: 't2', place: '演武场' }], places: [] }) }, {});
+  ok(aNo.map.ok === false && aNo.map.places === false, '无地点名录不达标');
+  ok(aNo.issues.some((i) => i.code === 'map.rows'), '缺地点沿用 map.rows issue code');
+
+  // 基线窗口：超出最近 6 处的地点只给归档摘要行，窗口内全行注入
+  const manyPlaces = [];
+  for (let i = 1; i <= 9; i += 1) manyPlaces.push({ id: 'p' + i, name: '地点' + i, domain: '东域', desc: '描述' + i });
+  const curP = M.PROMPT.buildCurrent({ map: M.CORE.normalizeMap({ current: { place: '青云山' }, tracks: [], places: manyPlaces }) }, {});
+  eq(curP.filter((r) => r.startsWith('place｜')).length, 6, '基线只注入最近 6 处地点全行');
+  eq(curP.filter((r) => r.startsWith('archived｜place｜')).length, 3, '窗口外 3 处给归档摘要行');
+
+  // 世界书召回：窗口外地点进关键词条目；封印舆图后移除
+  const arh = fakeHost();
+  const ar = M.createRuntime(arh.api, null, () => ({}));
+  const placeState = M.CORE.blankState('a5');
+  placeState.revision = 1;
+  placeState.map = M.CORE.normalizeMap({ current: { place: '青云山' }, tracks: [], places: manyPlaces });
+  const entries = ar.buildArchiveEntries(placeState);
+  const pEntry = entries.find((e) => e.identifier === 'yz-map-places');
+  ok(!!pEntry, '窗口外地点生成名录条目');
+  eq(pEntry.keywords.length, 3, '关键词 = 归档地点名');
+  ok(pEntry.keywords.includes('地点1') && pEntry.keywords.includes('地点3'), '关键词覆盖全部归档地点');
+  ok(pEntry.content.includes('描述1') && pEntry.content.includes('描述3'), '名录条目含完整地点描述');
+  ok(!entries.some((e) => e.identifier === 'yz-c-'), '纯地点状态不生成讯息条目');
+  const sealedAr = M.createRuntime(arh.api, null, () => ({ map: false }));
+  eq(sealedAr.buildArchiveEntries(placeState).filter((e) => e.identifier === 'yz-map-places').length, 0, '封印舆图后名录条目移除');
+
+  // 引导：提示词含 place 行与底线
+  const pMapGuide = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
+  ok(pMapGuide.includes('place｜id｜地点名｜所属域｜说明') && pMapGuide.includes('至少两处 place'), '舆图引导含地点名录');
+  ok(M.PROMPT.buildPrompt('en', {}, { forceFull: true, current: [] }).includes('place｜id｜place name｜domain｜description'), 'en 引导含地点名录');
+  ok(M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [] }).includes('-place｜id｜'), '删除帮助含 place 定位行');
+
+  // 视图：地点名录区块 + 检索过滤；玩家域同渲染
+  const mpView = M.CORE.blankState('v-map');
+  mpView.map = M.CORE.normalizeMap({ current: { place: '青云山', domain: '东域', desc: '山门' }, tracks: [{ id: 't1', place: '山门', action: '入门' }], places: [{ id: 'p1', name: '青云山', domain: '东域', desc: '灵气充沛' }, { id: 'p2', name: '藏经阁', domain: '东域', desc: '藏书万卷' }] });
+  const mv = M.VIEWS.renderMap(mpView, '');
+  ok(mv.includes(zhCatalog['runtime.map.placesTitle']) && mv.includes('藏经阁'), '舆图页渲染地点名录');
+  const mvKw = M.VIEWS.renderMap(mpView, '藏书');
+  ok(mvKw.includes('藏经阁') && !mvKw.includes('灵气充沛'), '地点名录按名称/描述过滤（当前位置保留）');
+  const pv = M.VIEWS.renderPage(mpView, { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}, 'player', M.CORE.blankPlayerState('pv'));
+  ok(pv.includes('藏经阁'), '玩家域舆图同样展示地点名录');
 }
 
 // ---------- 结果 ----------

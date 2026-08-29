@@ -136,7 +136,7 @@
       forum: { posts: [] },
       market: { listings: [], auctions: [], orders: [] },
       space: { currencies: [], items: [] },
-      map: { current: { place: '', domain: '', desc: '' }, tracks: [] },
+      map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] },
       processedTurns: [],
       hydration: null,
       // 插件版本与持久化强制全量标记：更新/封印变化后下一轮按新提示词全量重写数据。
@@ -189,7 +189,7 @@
       notes: { folders: [], notes: [] },
       market: { listings: [], auctions: [], orders: [] },
       space: { currencies: [], items: [] },
-      map: { current: { place: '', domain: '', desc: '' }, tracks: [] },
+      map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] },
       pluginVersion: ''
     };
   }
@@ -331,7 +331,12 @@
       track = safeObject(track);
       return { id: cleanText(track.id, 160), time: cleanText(track.time, 80), place: cleanText(track.place, 120), action: cleanText(track.action, 300) };
     }).filter(function (track) { return track.id && hasText(track.place); });
-    return { current: cur, tracks: tracks };
+    // 地点名录：角色已知世界的目录（配合世界书关键词召回），id 用于 diff 定位。
+    var places = safeArray(raw.places, 20).map(function (place) {
+      place = safeObject(place);
+      return { id: cleanText(place.id, 160), name: cleanText(place.name, 120), domain: cleanText(place.domain, 120), desc: cleanText(place.desc, 3000) };
+    }).filter(function (place) { return place.id && hasText(place.name); });
+    return { current: cur, tracks: tracks, places: places };
   }
 
   function normalizeTablet(raw) {
@@ -490,7 +495,8 @@
     var valid = {};
     valid.current = !!(map.current && hasText(map.current.place));
     valid.tracks = safeArray(map.tracks, 20).length >= 2;
-    return { ok: valid.current && valid.tracks, current: valid.current, tracks: valid.tracks };
+    valid.places = safeArray(map.places, 20).length >= 2;
+    return { ok: valid.current && valid.tracks && valid.places, current: valid.current, tracks: valid.tracks, places: valid.places };
   }
 
   var ASSESS_ORDER = ['tablet', 'msg', 'notes', 'forum', 'market', 'space', 'map'];
@@ -758,6 +764,19 @@
           if (ti >= 0) out.tracks[ti] = track;
           else if (out.tracks.length < 20) out.tracks.push(track);
         } else if (ti >= 0) out.tracks.splice(ti, 1);
+        return;
+      }
+      if (op.type === 'place') {
+        var pid = cleanText(op.values[0], 160);
+        if (!pid) return;
+        var pIndex = indexOfById(out.places, pid);
+        if (op.add) {
+          var pname = cleanText(op.values[1], 120);
+          if (!hasText(pname)) return;
+          var placeItem = { id: pid, name: pname, domain: cleanText(op.values[2], 120), desc: cleanText(op.values[3], 3000) };
+          if (pIndex >= 0) out.places[pIndex] = placeItem;
+          else if (out.places.length < 20) out.places.push(placeItem);
+        } else if (pIndex >= 0) out.places.splice(pIndex, 1);
       }
     });
     return normalizeMap(out);
@@ -1040,7 +1059,8 @@
     currency: ['currency', '灵石', '钱财'],
     item: ['item', '物品'],
     current: ['current', '当前', '所在地'],
-    track: ['track', '行踪']
+    track: ['track', '行踪'],
+    place: ['place', '地点', '地名']
   };
 
   var TYPE_CANON = {};
@@ -1312,7 +1332,7 @@
   }
 
   function parseMap(body) {
-    var out = { current: { place: '', domain: '', desc: '' }, tracks: [] };
+    var out = { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] };
     typed(body, ['current', '当前', '所在地']).forEach(function (line) {
       var values = row(line, 4);
       var place = cleanText(values[1], 120);
@@ -1325,6 +1345,13 @@
       var place = cleanText(values[3], 120);
       if (!id || !hasText(place) || out.tracks.length >= 20) return;
       out.tracks.push({ id: id, time: cleanText(values[2], 80), place: place, action: cleanText(values[4], 300) });
+    });
+    typed(body, ['place', '地点', '地名']).forEach(function (line) {
+      var values = row(line, 5);
+      var id = cleanText(values[1], 160);
+      var name = cleanText(values[2], 120);
+      if (!id || !hasText(name) || out.places.length >= 20) return;
+      out.places.push({ id: id, name: name, domain: cleanText(values[3], 120), desc: cleanText(values[4], 3000) });
     });
     return out;
   }
@@ -1639,7 +1666,7 @@
         copyAll: tr('runtime.manage.copyAll'),
         importPlaceholder: tr('runtime.manage.importPlaceholder')
       },
-      mapTitles: { current: tr('runtime.map.currentTitle'), tracks: tr('runtime.map.trackTitle') }
+      mapTitles: { current: tr('runtime.map.currentTitle'), tracks: tr('runtime.map.trackTitle'), places: tr('runtime.map.placesTitle') }
     };
   }
 
@@ -2430,10 +2457,9 @@
       };
     }
 
-    // 纯函数：由 state 构建世界书条目列表（封印交流讯息时不归档）。
+    // 纯函数：由 state 构建世界书条目列表（封印交流讯息时不归档；封印舆图时地点名录不归档）。
     function buildArchiveEntries(state) {
       var flags = getFlags();
-      if (flags && flags.msg === false) return [];
       var chatsData = safeObject(safeObject(state).chats);
       var entries = [];
       function pushEntry(identifier, title, keywords, header, lines) {
@@ -2469,30 +2495,50 @@
           delay: 0
         });
       }
-      safeArray(chatsData.contacts, 10).forEach(function (contact) {
-        if (!contact || !contact.id || !hasText(contact.name)) return;
-        var rows = archiveWindow(contact.messages);
-        if (!rows.length) return;
-        pushEntry(
-          'yz-c-' + cleanText(contact.id, 160),
-          '讯息·' + cleanText(contact.name, 120),
-          [cleanText(contact.name, 120)],
-          '【玉兆·归档讯息】' + cleanText(contact.name, 120) + '（' + cleanText(contact.relation, 120) + '）｜共 ' + rows.length + ' 条早于最近窗口的归档消息（旧→新）：',
-          archiveLines(rows, false)
-        );
-      });
-      safeArray(chatsData.groups, 6).forEach(function (group) {
-        if (!group || !group.id || !hasText(group.name)) return;
-        var rows = archiveWindow(group.messages);
-        if (!rows.length) return;
-        pushEntry(
-          'yz-g-' + cleanText(group.id, 160),
-          '群聊·' + cleanText(group.name, 120),
-          [cleanText(group.name, 120)],
-          '【玉兆·归档群聊】' + cleanText(group.name, 120) + '（' + (Number(group.members) || 0) + ' 人）｜共 ' + rows.length + ' 条早于最近窗口的归档消息（旧→新）：',
-          archiveLines(rows, true)
-        );
-      });
+      if (!flags || flags.msg !== false) {
+        safeArray(chatsData.contacts, 10).forEach(function (contact) {
+          if (!contact || !contact.id || !hasText(contact.name)) return;
+          var rows = archiveWindow(contact.messages);
+          if (!rows.length) return;
+          pushEntry(
+            'yz-c-' + cleanText(contact.id, 160),
+            '讯息·' + cleanText(contact.name, 120),
+            [cleanText(contact.name, 120)],
+            '【玉兆·归档讯息】' + cleanText(contact.name, 120) + '（' + cleanText(contact.relation, 120) + '）｜共 ' + rows.length + ' 条早于最近窗口的归档消息（旧→新）：',
+            archiveLines(rows, false)
+          );
+        });
+        safeArray(chatsData.groups, 6).forEach(function (group) {
+          if (!group || !group.id || !hasText(group.name)) return;
+          var rows = archiveWindow(group.messages);
+          if (!rows.length) return;
+          pushEntry(
+            'yz-g-' + cleanText(group.id, 160),
+            '群聊·' + cleanText(group.name, 120),
+            [cleanText(group.name, 120)],
+            '【玉兆·归档群聊】' + cleanText(group.name, 120) + '（' + (Number(group.members) || 0) + ' 人）｜共 ' + rows.length + ' 条早于最近窗口的归档消息（旧→新）：',
+            archiveLines(rows, true)
+          );
+        });
+      }
+      // 地点名录召回：窗口之外的地点进世界书关键词条目（正文提及地点名时注入完整名录，
+      // 与基线窗口共用 RECENT_PLACE_ROWS 切分，两条通道不重叠、不遗漏）。
+      if (!flags || flags.map !== false) {
+        var mapData = safeObject(safeObject(state).map);
+        var mapPlaces = safeArray(mapData.places, 20);
+        var archivePlaces = mapPlaces.slice(0, Math.max(0, mapPlaces.length - RECENT_PLACE_ROWS));
+        if (archivePlaces.length) {
+          pushEntry(
+            'yz-map-places',
+            '玉兆·地点名录',
+            archivePlaces.map(function (place) { return cleanText(place.name, 120); }),
+            '【玉兆·地点名录】共 ' + archivePlaces.length + ' 处（旧→新）：',
+            archivePlaces.map(function (place) {
+              return '[' + cleanText(place.domain, 120) + '] ' + cleanText(place.name, 120) + ' — ' + cleanText(place.desc, 3000);
+            })
+          );
+        }
+      }
       return entries;
     }
 
@@ -2693,13 +2739,13 @@
     {
       id: 'map',
       en: {
-        constraint: '- World Map: exactly one current row and at least 2 track rows.',
-        rows: ['<yz_map>', 'current｜location｜domain｜description', 'track｜id｜time｜place｜action', '</yz_map>'],
+        constraint: '- World Map: exactly one current row, at least 2 track rows, and at least 2 place rows in the location directory.',
+        rows: ['<yz_map>', 'current｜location｜domain｜description', 'track｜id｜time｜place｜action', 'place｜id｜place name｜domain｜description', '</yz_map>'],
         name: 'World Map'
       },
       zh: {
-        constraint: '- 天下舆图：恰好一行 current，至少两行 track。',
-        rows: ['<yz_map>', 'current｜所在地｜所属域｜说明', 'track｜id｜时间｜地点｜动作', '</yz_map>'],
+        constraint: '- 天下舆图：恰好一行 current，至少两行 track，地点名录至少两处 place。',
+        rows: ['<yz_map>', 'current｜所在地｜所属域｜说明', 'track｜id｜时间｜地点｜动作', 'place｜id｜地点名｜所属域｜说明', '</yz_map>'],
         name: '天下舆图'
       }
     }
@@ -2714,6 +2760,8 @@
   var RECENT_LISTING_ROWS = 6;
   var RECENT_AUCTION_ROWS = 6;
   var RECENT_ITEM_ROWS = 10;
+  // 地点名录窗口：窗口之外的地点正文不进基线，完整名录在世界书关键词条目中召回。
+  var RECENT_PLACE_ROWS = 6;
   // 基线总字符上限：超限时按行淘汰（先丢最早的明细行，标识行与归档行保留）。
   // 这是每轮注入量的硬上限——数据再大也不会随轮次滚雪球。
   var MAX_BASELINE_CHARS = 9000;
@@ -2895,6 +2943,16 @@
         if (!track || !track.id || !hasText(track.place)) return;
         mp.rows.push({ text: 'track｜' + v(track.id, 160) + '｜' + v(track.time, 80) + '｜' + v(track.place, 120) + '｜' + v(track.action, 300), drop: false });
       });
+      // 地点名录：窗口外给归档摘要行（正文靠世界书关键词召回），窗口内全行注入。
+      var places = safeArray(mapData.places, 20);
+      places.forEach(function (place, index) {
+        if (!place || !place.id || !hasText(place.name)) return;
+        if (index < places.length - RECENT_PLACE_ROWS) {
+          mp.rows.push({ text: archived('place', v(place.id, 160), v(place.name, 120)), drop: false });
+          return;
+        }
+        mp.rows.push({ text: 'place｜' + v(place.id, 160) + '｜' + v(place.name, 120) + '｜' + v(place.domain, 120) + '｜' + v(place.desc), drop: true });
+      });
     }
     // 发送上限：全部行计入预算。淘汰顺序：① 其它功能明细行（消息/笔记/帖子等，
     // 世界书对消息有召回）→ ② tablet 字段行（角色设定最重要，排最后）→ ③ 归档摘要行
@@ -3015,8 +3073,8 @@
     });
     if (!forceFull) {
       lines.push(en
-        ? 'Delete rows (locating fields only): -field｜group｜key｜ -contact｜id｜ -msg｜contact-id｜message-id｜ -group｜id｜ -gmsg｜group-id｜message-id｜ -post｜id｜ -comment｜post-id｜author｜time｜text｜ -folder｜id｜ -note｜id｜ -listing｜id｜ -auction｜id｜ -order｜id｜ -currency｜kind｜ -item｜id｜ -track｜id'
-        : '删除行（只给定位字段）：-field｜组｜键｜ -contact｜id｜ -msg｜联系人id｜消息id｜ -group｜id｜ -gmsg｜群id｜消息id｜ -post｜id｜ -comment｜帖子id｜评论者｜时间｜内容｜ -folder｜id｜ -note｜id｜ -listing｜id｜ -auction｜id｜ -order｜id｜ -currency｜种类｜ -item｜id｜ -track｜id');
+        ? 'Delete rows (locating fields only): -field｜group｜key｜ -contact｜id｜ -msg｜contact-id｜message-id｜ -group｜id｜ -gmsg｜group-id｜message-id｜ -post｜id｜ -comment｜post-id｜author｜time｜text｜ -folder｜id｜ -note｜id｜ -listing｜id｜ -auction｜id｜ -order｜id｜ -currency｜kind｜ -item｜id｜ -track｜id｜ -place｜id｜ -request｜id'
+        : '删除行（只给定位字段）：-field｜组｜键｜ -contact｜id｜ -msg｜联系人id｜消息id｜ -group｜id｜ -gmsg｜群id｜消息id｜ -post｜id｜ -comment｜帖子id｜评论者｜时间｜内容｜ -folder｜id｜ -note｜id｜ -listing｜id｜ -auction｜id｜ -order｜id｜ -currency｜种类｜ -item｜id｜ -track｜id｜ -place｜id｜ -request｜id');
     }
     lines.push('</yz_jade>');
     // 当前数据基线：全量轮与 diff 轮都注入——模型据此沿用既有 id 与未变化行，
@@ -3689,6 +3747,9 @@
     var tracks = CORE.safeArray(map.tracks, 20).filter(function (track) {
       return filterMatch(kw, [track.place, track.action, track.time]);
     });
+    var places = CORE.safeArray(map.places, 20).filter(function (place) {
+      return filterMatch(kw, [place.name, place.domain, place.desc]);
+    });
     var hero;
     if (CORE.hasText(cur.place)) {
       hero = '<div class="yz-map-current"><h3>' + CORE.escapeHtml(t.mapTitles.current) + '</h3>' +
@@ -3701,8 +3762,20 @@
       tracks.map(function (track) {
         return '<div class="yz-track"><time>' + CORE.escapeHtml(track.time || '') + '</time><div><b>' + CORE.escapeHtml(track.place) + '</b>' + (CORE.hasText(track.action) ? '<p>' + CORE.escapeHtml(track.action) + '</p>' : '') + '</div></div>';
       }).join('') + '</div></div>' : '';
-    var empty = (!CORE.safeArray(map.tracks, 20).length || tracks.length) ? '' : '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
-    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map) + searchBox(search) + hero + timeline + empty + '</main>';
+    var roster = places.length ? '<div class="yz-map-places"><h3>' + CORE.escapeHtml(t.mapTitles.places) + '</h3><div class="yz-page-list">' +
+      places.map(function (place) {
+        return '<div class="yz-row yz-static"><span class="yz-map-pin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(place.name) + '</b>' +
+          (CORE.hasText(place.domain) ? '<i>' + CORE.escapeHtml(place.domain) + '</i>' : '') +
+          (CORE.hasText(place.desc) ? '<em>' + CORE.escapeHtml(place.desc) + '</em>' : '') + '</span></div>';
+      }).join('') + '</div></div>' : '';
+    var empty = '';
+    if (kw) {
+      var curMatch = filterMatch(kw, [cur.place, cur.domain, cur.desc]);
+      if (!curMatch && !tracks.length && !places.length) empty = '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
+    } else if (!CORE.hasText(cur.place) && !CORE.safeArray(map.tracks, 20).length && !CORE.safeArray(map.places, 20).length) {
+      empty = '<div class="yz-empty">' + CORE.escapeHtml(t.guards.tracks) + '</div>';
+    }
+    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map) + searchBox(search) + hero + timeline + roster + empty + '</main>';
   }
 
   function diagRow(label, valueHtml) {
