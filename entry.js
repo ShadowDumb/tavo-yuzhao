@@ -1644,7 +1644,6 @@
       playerThreadEmpty: tr('runtime.player.threadEmpty'),
       playerNoThread: tr('runtime.player.noThread'),
       playerStartThread: tr('runtime.player.startThread'),
-      playerNoGroups: tr('runtime.player.noGroups'),
       playerMsgPlaceholder: tr('runtime.player.msgPlaceholder'),
       playerSend: tr('runtime.player.send'),
       playerStatusSent: tr('runtime.player.statusSent'),
@@ -3610,14 +3609,14 @@
       yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
   }
 
-  function renderMsgDetail(state, nav, group, search) {
+  function renderMsgDetail(state, nav, group, search, tag) {
     var t = I18N.dict();
     var chats = CORE.safeObject(state.chats);
     var kw = searchKw(search);
     var rows = group ? CORE.safeArray(chats.groups, 6) : CORE.safeArray(chats.contacts, 10);
     var rowItem = null;
     rows.forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) rowItem = item; });
-    if (!rowItem) return '<main class="yz-page-inner"><div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '</div></main>';
+    if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false, tag) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '</div></main>';
     var bubbles = CORE.safeArray(rowItem.messages, group ? 24 : 20).filter(function (message) {
       return filterMatch(kw, [message.text, message.sender, message.time]);
     }).map(function (message) {
@@ -3630,7 +3629,7 @@
     if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.awaitingSync) + '</div>';
     var title = CORE.escapeHtml(rowItem.name) + (group && Number(rowItem.members) ? ' <small>(' + CORE.escapeHtml(rowItem.members + t.labels.membersUnit) + ')</small>' : '');
     return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' +
-      yzHeader(title) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div></main>';
+      yzHeader(title, false, tag) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div></main>';
   }
 
   function renderMsg(state, nav, search) {
@@ -3643,11 +3642,25 @@
   // 玩家域交流讯息：固定「与角色传讯」会话（唯一跨域写入点）。
   // 玩家消息为右侧气泡，附 已送达/已读/已回 状态；角色回复经通道镜像为左侧气泡。
   // 已回 = 线程中该消息之后存在角色回复；已读 = seq ≤ 角色域已读游标（注入即已读）。
-  function renderMsgPlayer(characterState, playerState, nav, search) {
+  // 群聊是公开数据（跨域一致）：玩家域的群组列表/群聊详情渲染角色域数据并带「公开」标识。
+  function renderMsgPlayer(characterState, playerState, nav, search, tag) {
     var t = I18N.dict();
     var kw = searchKw(search);
     nav = nav || { app: 'msg', view: 'chats', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
+    if (view === 'gchat') {
+      // 群聊详情（公开）：直接复用角色域渲染，加「公开」标识。
+      return renderMsgDetail(characterState, nav, true, search, tag);
+    }
+    if (view === 'groups') {
+      // 群组列表（公开）：渲染角色域群组，行内未读徽标与角色域一致。
+      var gitems = CORE.safeArray(characterState.chats && characterState.chats.groups, 6).filter(function (row) {
+        return filterMatch(kw, [row.name, row.preview, row.time]);
+      }).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
+      var gbody = gitems.length ? '<div class="yz-page-list">' + gitems.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
+      return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true, tag) +
+        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + searchBox(search) + gbody + '</main>';
+    }
     var thread = null;
     CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).forEach(function (c) {
       if (String(c && c.id) === CORE.PLAYER_THREAD_ID) thread = c;
@@ -3694,10 +3707,6 @@
         yzHeader(title) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
     }
     // 会话列表：未建立线程时给首次传讯入口（固定会话形态，无需选联系人）。
-    if (view === 'groups') {
-      return '<main class="yz-page-inner" data-marker="player-groups">' + yzHeader(t.features.msg, true) +
-        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + '<div class="yz-empty">' + CORE.escapeHtml(t.playerNoGroups) + '</div></main>';
-    }
     var items = [];
     if (thread && filterMatch(kw, [thread.name, thread.preview, thread.time])) {
       items.push(chatRow(t, { id: CORE.PLAYER_THREAD_ID, name: thread.name, relation: t.playerThreadRelation, time: thread.time, preview: thread.preview }, 'chat', ''));
@@ -4152,13 +4161,17 @@
 
   // 域切换与公开数据标识：
   // 私有数据（玉牌/讯息/玉册/坊市订单/储物/舆图）随域切换数据源；
-  // 公开数据（天下论坛、坊市行情/拍卖）跨域一致，永远渲染角色域数据并带「公开」标识。
+  // 公开数据（天下论坛、坊市行情/拍卖、群聊）跨域一致，永远渲染角色域数据并带「公开」标识。
   function headerTagText(domain, isPlayer, nav, t) {
     if (!isPlayer) return '';
     if (nav.app === 'forum') return t.playerPublicTag;
     if (nav.app === 'market') {
       var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
       if (view !== 'orders') return t.playerPublicTag;
+    }
+    if (nav.app === 'msg') {
+      var mview = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
+      if (mview === 'groups' || mview === 'gchat') return t.playerPublicTag;
     }
     return t.playerDomainShort;
   }
@@ -4174,7 +4187,7 @@
     var t = I18N.dict();
     var tag = headerTagText(domain, isPlayer, nav, t);
     if (nav.app === 'tablet') return isPlayer ? renderTablet(pstate, search, t.playerEmptyPrivate) : renderTablet(state, search);
-    if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search) : renderMsg(state, nav, search);
+    if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search, tag) : renderMsg(state, nav, search);
     if (nav.app === 'notes') return isPlayer ? renderNotes(pstate, nav, search, true, ui) : renderNotes(state, nav, search);
     if (nav.app === 'forum') {
       // 论坛是公开数据：列表/详情用角色域合并视图（含镜像进来的玩家帖子）；

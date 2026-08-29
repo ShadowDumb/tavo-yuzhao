@@ -79,7 +79,6 @@
   "runtime.player.threadEmpty": "尚未传讯——发送第一条消息吧",
   "runtime.player.noThread": "尚未与角色建立传讯",
   "runtime.player.startThread": "向角色传讯",
-  "runtime.player.noGroups": "玩家域暂无群聊",
   "runtime.player.msgPlaceholder": "输入传讯…",
   "runtime.player.send": "传讯",
   "runtime.player.statusSent": "已送达",

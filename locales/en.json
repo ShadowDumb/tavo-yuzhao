@@ -78,7 +78,6 @@
   "runtime.player.threadEmpty": "No messages yet — send the first one",
   "runtime.player.noThread": "No conversation with the character yet",
   "runtime.player.startThread": "Message the character",
-  "runtime.player.noGroups": "No groups in your domain",
   "runtime.player.msgPlaceholder": "Type a message…",
   "runtime.player.send": "Send",
   "runtime.player.statusSent": "Delivered",

@@ -1594,6 +1594,17 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   const pMsg = M.VIEWS.renderPage(cs, { app: 'msg' }, {}, {}, 'player', ps);
   ok(pMsg.includes(zhCatalog['runtime.player.startThread']) && pMsg.includes('data-marker="player-chats"'), '未建立会话时显示首讯入口');
 
+  // 群聊是公开数据：玩家域群组列表/群聊详情渲染角色域数据并带「公开」标识。
+  cs.chats.groups = [{ id: 'g9', name: '青云内门', members: 30, time: '今日', unread: 5, preview: '集合', messages: [{ id: 'gm1', sender: '掌门', side: 'other', time: '今日', text: '卯时议事' }] }];
+  const pGroups = M.VIEWS.renderPage(cs, { app: 'msg', view: 'groups' }, {}, {}, 'player', ps);
+  ok(pGroups.includes('青云内门') && pGroups.includes(zhCatalog['runtime.player.publicTag']), '玩家域群组列表渲染角色域群聊并带公开标识');
+  const pGchat = M.VIEWS.renderPage(cs, { app: 'msg', view: 'gchat', params: { id: 'g9' }, stack: [] }, {}, {}, 'player', ps);
+  ok(pGchat.includes('卯时议事') && pGchat.includes('data-marker="msg-gchat"') && pGchat.includes(zhCatalog['runtime.player.publicTag']), '玩家域群聊详情渲染角色域消息并带公开标识');
+  const pGchatMissing = M.VIEWS.renderPage(cs, { app: 'msg', view: 'gchat', params: { id: 'nope' }, stack: [] }, {}, {}, 'player', ps);
+  ok(pGchatMissing.includes(zhCatalog['runtime.player.publicTag']) || !pGchatMissing.includes('卯时议事'), '玩家域群聊缺失 id 显示空态不泄漏');
+  const pChatsTag = M.VIEWS.renderPage(cs, { app: 'msg' }, {}, {}, 'player', ps);
+  ok(!pChatsTag.includes(zhCatalog['runtime.player.publicTag']), '玩家域传讯列表不带公开标识');
+
   // 数据域隔离：玩家域空白时绝不回退渲染角色域私有数据（评审加固）。
   const iso = M.CORE.blankState('iso1');
   iso.tablet.groups = [{ id: 'basic', fields: [{ key: '名字', value: '角色甲' }] }];
