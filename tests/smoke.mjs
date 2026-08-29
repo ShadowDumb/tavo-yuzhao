@@ -1594,6 +1594,26 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   const pMsg = M.VIEWS.renderPage(cs, { app: 'msg' }, {}, {}, 'player', ps);
   ok(pMsg.includes(zhCatalog['runtime.player.startThread']) && pMsg.includes('data-marker="player-chats"'), '未建立会话时显示首讯入口');
 
+  // 数据域隔离：玩家域空白时绝不回退渲染角色域私有数据（评审加固）。
+  const iso = M.CORE.blankState('iso1');
+  iso.tablet.groups = [{ id: 'basic', fields: [{ key: '名字', value: '角色甲' }] }];
+  iso.notes.folders = [{ id: 'f1', name: '秘密册', count: 1 }];
+  iso.notes.notes = [{ id: 'n1', folderId: 'f1', title: '角色备忘', body: 'x', updated: '', locked: false }];
+  iso.space.items = [{ id: 'i1', name: '角色道具', qty: 1, grade: '', desc: '' }];
+  iso.market.orders = [{ id: 'o1', name: '角色订单', status: '', price: '', time: '', side: 'buy' }];
+  iso.chats.contacts = [{ id: 'c9', name: '角色密友', relation: '', time: '', unread: 0, preview: '', messages: [] }];
+  const isoPlayer = M.CORE.blankPlayerState('iso1');
+  const isoTablet = M.VIEWS.renderPage(iso, { app: 'tablet' }, {}, {}, 'player', isoPlayer);
+  ok(!isoTablet.includes('角色甲'), '玩家域玉牌页不渲染角色域数据');
+  const isoNotes = M.VIEWS.renderPage(iso, { app: 'notes' }, {}, {}, 'player', isoPlayer);
+  ok(!isoNotes.includes('秘密册') && !isoNotes.includes('角色备忘'), '玩家域玉册页不渲染角色域备忘');
+  const isoSpace = M.VIEWS.renderPage(iso, { app: 'space' }, {}, {}, 'player', isoPlayer);
+  ok(!isoSpace.includes('角色道具'), '玩家域芥子空间不渲染角色域物品');
+  const isoOrders = M.VIEWS.renderPage(iso, { app: 'market', view: 'orders' }, {}, {}, 'player', isoPlayer);
+  ok(!isoOrders.includes('角色订单'), '玩家域订单页不渲染角色域订单');
+  const isoMsg = M.VIEWS.renderPage(iso, { app: 'msg' }, {}, {}, 'player', isoPlayer);
+  ok(!isoMsg.includes('角色密友'), '玩家域传讯列表不渲染角色域联系人');
+
   const noPersonaHost = fakeHost();
   const noPersona = M.createRuntime(noPersonaHost.api, null, () => ({}));
   await noPersona.switchChat('c1');

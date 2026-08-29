@@ -71,7 +71,7 @@
   "runtime.search.noMatch": "未找到匹配内容",
   "runtime.player.domain": "玩家域",
   "runtime.player.characterDomain": "角色域",
-  "runtime.player.switchAria": "从 {from} 切换到 {to}",
+  "runtime.player.switchAria": "当前在 {from}，点击切换到 {to}",
   "runtime.player.fallbackName": "道友",
   "runtime.player.relation": "外界传讯",
   "runtime.player.threadRelation": "与角色传讯",

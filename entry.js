@@ -4168,7 +4168,9 @@
     ui = ui || {};
     var search = ui.search || '';
     var isPlayer = domain === 'player';
-    var pstate = isPlayer ? (playerState || state) : state;
+    // 玩家域绝不回退渲染角色域数据（数据域隔离）：playerState 缺失/空白时渲染空态，
+    // 不会把角色域私有数据泄漏到玩家域。
+    var pstate = isPlayer ? (playerState || CORE.blankPlayerState(state && state.chatId)) : state;
     var t = I18N.dict();
     var tag = headerTagText(domain, isPlayer, nav, t);
     if (nav.app === 'tablet') return isPlayer ? renderTablet(pstate, search, t.playerEmptyPrivate) : renderTablet(state, search);
@@ -4218,7 +4220,7 @@
     var t = I18N.dict();
     return '<div id="yz1-overlay" aria-hidden="true"><div id="yz1-jade" role="dialog" tabindex="-1" aria-label="' + CORE.escapeHtml(t.appName) + '">' +
       '<div class="yz-topbar"><b>' + CORE.escapeHtml(t.brand.title) + '</b><span class="yz-sub">' + CORE.escapeHtml(t.brand.sub) + '</span>' +
-      '<button type="button" class="yz-btn yz-domain-btn" data-action="toggle-domain" aria-label="' + CORE.escapeHtml(t.playerDomain) + '">' + CORE.escapeHtml(t.playerDomain) + '</button>' +
+      '<button type="button" class="yz-btn yz-domain-btn" data-action="toggle-domain" aria-label="' + CORE.escapeHtml(t.playerCharacterDomain) + '">' + CORE.escapeHtml(t.playerCharacterDomain) + '</button>' +
       '<button type="button" class="yz-btn" data-action="close" aria-label="' + CORE.escapeHtml(t.closePhone) + '">×</button></div>' +
       '<div class="yz-screen">' + renderHome(state, flags) + '<div class="yz-page" data-page hidden></div></div>' +
       '<div class="yz-toast" data-toast></div>' +
@@ -4692,12 +4694,12 @@
       if (sub) sub.textContent = t.brand.sub;
       var closeBtn = overlay.querySelector('[data-action="close"]');
       if (closeBtn) closeBtn.setAttribute('aria-label', t.closePhone);
-      // 域切换按钮：按钮文案 = 目标域（点击后切换到的域），aria 描述当前域。
+      // 域切换按钮：文案 = 当前域（一眼可辨数据归属），aria 说明点击后切换到目标域。
       var domainBtn = overlay.querySelector('[data-action="toggle-domain"]');
       if (domainBtn) {
-        var target = domain === 'player' ? t.playerCharacterDomain : t.playerDomain;
         var current = domain === 'player' ? t.playerDomain : t.playerCharacterDomain;
-        domainBtn.textContent = target;
+        var target = domain === 'player' ? t.playerCharacterDomain : t.playerDomain;
+        domainBtn.textContent = current;
         domainBtn.setAttribute('aria-label', tr('runtime.player.switchAria', { from: current, to: target }));
       }
     }
@@ -4975,6 +4977,9 @@
       clearToast();
       resetManagePanels();
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
+      // 每次打开默认回到角色域：玩家域是本机私有侧，主动切换才进入（升级用户
+      // 首见角色域数据，不会被误认为数据在玩家域）。域偏好不持久化。
+      domain = 'character';
       resetSearch();
       render();
       // 打开时把焦点移入对话框。

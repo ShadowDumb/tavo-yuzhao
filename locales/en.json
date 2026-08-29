@@ -70,7 +70,7 @@
   "runtime.search.noMatch": "No matching entries",
   "runtime.player.domain": "Player",
   "runtime.player.characterDomain": "Character",
-  "runtime.player.switchAria": "Switch from {from} to {to}",
+  "runtime.player.switchAria": "Currently in {from}; click to switch to {to}",
   "runtime.player.fallbackName": "Fellow Daoist",
   "runtime.player.relation": "Outside contact",
   "runtime.player.threadRelation": "Character chat",
