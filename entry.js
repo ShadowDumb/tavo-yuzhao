@@ -150,6 +150,29 @@
   // 每轮基线最多注入的未读传讯行数；超出部分只给一条摘要行（计入 9000 预算但不可淘汰）。
   var MAX_PLAYER_UNREAD_ROWS = 5;
 
+  // 玩家域实体 id 生成：按集合内现有编号取下一个（pn-<n> / pf-<n> / pi-<n> / po-<n>），
+  // 确定性、重载不冲突——与传讯 pm-<seq> 同模式，玩家直写不经模型。
+  function playerNextId(items, prefix) {
+    var max = 0;
+    safeArray(items, 100).forEach(function (item) {
+      var match = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\d+)$').exec(String(item && item.id) || '');
+      if (match) max = Math.max(max, Number(match[1]) || 0);
+    });
+    return prefix + (max + 1);
+  }
+
+  // 玩家域实体查找（纯函数，视图预填表单与运行时 CRUD 共用）：
+  // folder/note → notes，item/currency → space（currency 以种类为键），order → market。
+  function playerFindEntity(pstate, kind, id) {
+    id = String(id == null ? '' : id);
+    if (kind === 'folder') return safeArray(pstate && pstate.notes && pstate.notes.folders, 10).filter(function (f) { return String(f.id) === id; })[0] || null;
+    if (kind === 'note') return safeArray(pstate && pstate.notes && pstate.notes.notes, 30).filter(function (n) { return String(n.id) === id; })[0] || null;
+    if (kind === 'item') return safeArray(pstate && pstate.space && pstate.space.items, 30).filter(function (i) { return String(i.id) === id; })[0] || null;
+    if (kind === 'currency') return safeArray(pstate && pstate.space && pstate.space.currencies, 10).filter(function (c) { return String(c.kind) === id; })[0] || null;
+    if (kind === 'order') return safeArray(pstate && pstate.market && pstate.market.orders, 12).filter(function (o) { return String(o.id) === id; })[0] || null;
+    return null;
+  }
+
   // 玩家域状态：与角色域同构的私有数据容器，但完全不参与模型评估。
   // 没有 revision/processedTurns/指纹/hydration——数据由玩家或本机写入，不经模型。
   function blankPlayerState(chatId) {
@@ -943,6 +966,8 @@
     blankState: blankState,
     blankPlayerState: blankPlayerState,
     normalizePlayerState: normalizePlayerState,
+    playerNextId: playerNextId,
+    playerFindEntity: playerFindEntity,
     FEATURE_FIELDS: FEATURE_FIELDS,
     blankFeatureField: blankFeatureField,
     normalizeState: normalizeState,
@@ -1542,6 +1567,35 @@
       playerDomainShort: tr('runtime.player.domainShort'),
       playerSentToast: tr('runtime.player.sentToast'),
       playerEmptyPrivate: tr('runtime.player.emptyPrivate'),
+      playerEditWord: tr('runtime.player.editWord'),
+      playerNewWord: tr('runtime.player.newWord'),
+      playerWord: {
+        folder: tr('runtime.player.word.folder'), note: tr('runtime.player.word.note'), item: tr('runtime.player.word.item'),
+        currency: tr('runtime.player.word.currency'), order: tr('runtime.player.word.order')
+      },
+      playerFieldName: tr('runtime.player.fieldName'),
+      playerFieldTitle: tr('runtime.player.fieldTitle'),
+      playerFieldBody: tr('runtime.player.fieldBody'),
+      playerFieldLocked: tr('runtime.player.fieldLocked'),
+      playerFieldQty: tr('runtime.player.fieldQty'),
+      playerFieldGrade: tr('runtime.player.fieldGrade'),
+      playerFieldDesc: tr('runtime.player.fieldDesc'),
+      playerFieldKind: tr('runtime.player.fieldKind'),
+      playerFieldAmount: tr('runtime.player.fieldAmount'),
+      playerFieldItemName: tr('runtime.player.fieldItemName'),
+      playerFieldStatus: tr('runtime.player.fieldStatus'),
+      playerFieldPrice: tr('runtime.player.fieldPrice'),
+      playerFieldSide: tr('runtime.player.fieldSide'),
+      playerSideBuy: tr('runtime.player.sideBuy'),
+      playerSideSell: tr('runtime.player.sideSell'),
+      playerSave: tr('runtime.player.save'),
+      playerEdit: tr('runtime.player.edit'),
+      playerDelete: tr('runtime.player.delete'),
+      playerDeleteConfirm: tr('runtime.player.deleteConfirm'),
+      playerSaved: tr('runtime.player.saved'),
+      playerDeleted: tr('runtime.player.deleted'),
+      playerFormRequired: tr('runtime.player.formRequired'),
+      playerFormNeedFolder: tr('runtime.player.formNeedFolder'),
       labels: {
         self: tr('runtime.label.self'), locked: tr('runtime.label.locked'), membersUnit: tr('runtime.label.membersUnit'),
         notesWord: tr('runtime.label.notesWord'), resonance: tr('runtime.label.resonance'), commentsWord: tr('runtime.label.commentsWord'),
@@ -2140,6 +2194,111 @@
       return { id: message.id, seq: seq };
     }
 
+    // ---------- 玩家域 CRUD（二期）：玩家直写，不经模型评估 ----------
+    // kind ∈ folder/note/item/currency/order。写入前校验必填，落盘走后台队列。
+    // 返回 { ok: true } 或 { ok: false, reason }（reason 供 UI 翻译为提示文案）。
+    function playerSaveEntity(kind, raw, existingId) {
+      kind = cleanText(kind, 20);
+      raw = raw || {};
+      existingId = String(existingId == null ? '' : existingId);
+      var player = playerCurrent();
+      var reason = '';
+      function fail() { return { ok: false, reason: reason }; }
+
+      if (kind === 'folder') {
+        var name = cleanText(raw.name, 120);
+        if (!hasText(name)) reason = 'name';
+        var folder = CORE.playerFindEntity(player, 'folder', existingId);
+        if (folder) folder.name = name;
+        // safeArray 返回副本：新建必须把拼接结果写回状态，否则 push 在副本上丢失。
+        else if (!reason) player.notes.folders = safeArray(player.notes.folders, 10).concat([{ id: CORE.playerNextId(player.notes.folders, 'pf-'), name: name, count: 0 }]);
+        if (reason) return fail();
+        player.notes = CORE.normalizeNotes(player.notes);
+      } else if (kind === 'note') {
+        var title = cleanText(raw.title, 200);
+        var body = cleanText(raw.body, 3000);
+        var folderId = cleanText(raw.folderId, 160);
+        if (!hasText(title)) reason = 'title';
+        var folderOk = safeArray(player.notes.folders, 10).some(function (f) { return String(f.id) === String(folderId); });
+        if (!folderOk) reason = 'folder';
+        var note = CORE.playerFindEntity(player, 'note', existingId);
+        if (note) {
+          note.title = title;
+          note.body = body;
+          note.locked = !!raw.locked;
+        } else if (!reason) {
+          player.notes.notes = safeArray(player.notes.notes, 30).concat([{ id: CORE.playerNextId(player.notes.notes, 'pn-'), folderId: folderId, updated: formatDateTime(Date.now()), locked: !!raw.locked, title: title, body: body }]);
+        }
+        if (reason) return fail();
+        player.notes = CORE.normalizeNotes(player.notes);
+      } else if (kind === 'item') {
+        var iname = cleanText(raw.name, 120);
+        if (!hasText(iname)) reason = 'name';
+        var item = CORE.playerFindEntity(player, 'item', existingId);
+        if (item) {
+          item.name = iname;
+          item.qty = Number(raw.qty) || 0;
+          item.grade = cleanText(raw.grade, 60);
+          item.desc = cleanText(raw.desc, 3000);
+        } else if (!reason) player.space.items = safeArray(player.space.items, 30).concat([{ id: CORE.playerNextId(player.space.items, 'pi-'), name: iname, qty: Number(raw.qty) || 0, grade: cleanText(raw.grade, 60), desc: cleanText(raw.desc, 3000) }]);
+        if (reason) return fail();
+        player.space = CORE.normalizeSpace(player.space);
+      } else if (kind === 'currency') {
+        var ckind = cleanText(raw.kind, 60);
+        if (!hasText(ckind)) reason = 'kind';
+        if (reason) return fail();
+        // 种类是唯一键：重命名 = 移除旧种类 + 写入新种类（upsert 语义）。
+        player.space.currencies = safeArray(player.space.currencies, 10).filter(function (c) { return String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
+        player.space = CORE.normalizeSpace(player.space);
+      } else if (kind === 'order') {
+        var oname = cleanText(raw.name, 120);
+        if (!hasText(oname)) reason = 'name';
+        var order = CORE.playerFindEntity(player, 'order', existingId);
+        var side = /^(sell|卖|售)/i.test(String(raw.side)) ? 'sell' : 'buy';
+        if (order) {
+          order.name = oname;
+          order.status = cleanText(raw.status, 40);
+          order.price = cleanText(raw.price, 80);
+          order.side = side;
+        } else if (!reason) player.market.orders = safeArray(player.market.orders, 12).concat([{ id: CORE.playerNextId(player.market.orders, 'po-'), name: oname, status: cleanText(raw.status, 40), price: cleanText(raw.price, 80), time: formatDateTime(Date.now()), side: side }]);
+        if (reason) return fail();
+        player.market = CORE.normalizeMarket(player.market);
+      } else {
+        return { ok: false, reason: 'kind' };
+      }
+
+      player.updatedAt = Date.now();
+      save(activeChatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      return { ok: true };
+    }
+
+    // 玩家域实体删除：玉册夹删除级联其下备忘；货币按种类删除。找不到返回失败。
+    function playerDeleteEntity(kind, id) {
+      kind = cleanText(kind, 20);
+      id = String(id == null ? '' : id);
+      var player = playerCurrent();
+      if (!CORE.playerFindEntity(player, kind, id)) return { ok: false, reason: 'missing' };
+      if (kind === 'folder') {
+        player.notes.folders = safeArray(player.notes.folders, 10).filter(function (f) { return String(f.id) !== id; });
+        player.notes.notes = safeArray(player.notes.notes, 30).filter(function (n) { return String(n.folderId) !== id; });
+        player.notes = CORE.normalizeNotes(player.notes);
+      } else if (kind === 'note') {
+        player.notes.notes = safeArray(player.notes.notes, 30).filter(function (n) { return String(n.id) !== id; });
+        player.notes = CORE.normalizeNotes(player.notes);
+      } else if (kind === 'item') {
+        player.space.items = safeArray(player.space.items, 30).filter(function (i) { return String(i.id) !== id; });
+      } else if (kind === 'currency') {
+        player.space.currencies = safeArray(player.space.currencies, 10).filter(function (c) { return String(c.kind) !== id; });
+      } else if (kind === 'order') {
+        player.market.orders = safeArray(player.market.orders, 12).filter(function (o) { return String(o.id) !== id; });
+      } else {
+        return { ok: false, reason: 'kind' };
+      }
+      player.updatedAt = Date.now();
+      save(activeChatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      return { ok: true };
+    }
+
     async function applyText(text, chatId, source) {
       chatId = CORE.cleanText(chatId || activeChatId, 160);
       if (chatId !== activeChatId) return { changed: false, stale: true, applied: false };
@@ -2422,6 +2581,8 @@
       characterContact: characterContact,
       playerReadCursor: playerReadCursor,
       maxPlayerSeq: maxPlayerSeq,
+      playerSaveEntity: playerSaveEntity,
+      playerDeleteEntity: playerDeleteEntity,
       saveChat: function (chatId) { return save(chatId, current()); },
       savePlayerChat: function (chatId) { return save(chatId, playerCurrent(), { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX }); },
       cachedChatIds: function () { return lru.slice(); },
@@ -3236,20 +3397,128 @@
       yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
   }
 
+  // ---------- 玩家域 CRUD（二期）：表单页与列表页操作控件 ----------
+  // 玩家直写不经模型评估；列表行尾「编辑」按钮 + 列表底部「新建」CTA + 表单页保存/两击删除。
 
-  function renderNotes(state, nav, search) {
+  function playerEntityWord(kind, t) {
+    return t.playerWord[kind] || kind;
+  }
+
+  function playerFormTitle(kind, isEdit, t) {
+    return (isEdit ? t.playerEditWord : t.playerNewWord) + playerEntityWord(kind, t);
+  }
+
+  // 行尾编辑按钮（复用管理页清空按钮的样式语义，操作是进入表单）。
+  function playerEditBtn(kind, id) {
+    return '<button type="button" class="yz-edit-btn" data-action="player-edit" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(id)) + '" aria-label="' + CORE.escapeHtml(I18N.dict().playerEdit) + '">✎</button>';
+  }
+
+  // 可编辑列表行：主区（导航或静态展示）+ 行尾编辑按钮（button 嵌 button 非法，外层用 div）。
+  function editableListRow(mainHtml, kind, id) {
+    return '<div class="yz-row yz-static yz-manage-row">' + mainHtml + playerEditBtn(kind, id) + '</div>';
+  }
+
+  // 列表底部新建 CTA（note 需要携带父玉册夹 id）。
+  function playerAddBtn(kind, folderId) {
+    var t = I18N.dict();
+    var extra = folderId ? ' data-folder="' + CORE.escapeHtml(String(folderId)) + '"' : '';
+    return '<button type="button" class="yz-add-btn" data-action="player-new" data-kind="' + CORE.escapeHtml(kind) + '"' + extra + '>＋ ' + CORE.escapeHtml(t.playerNewWord + playerEntityWord(kind, t)) + '</button>';
+  }
+
+  // 表单字段描述：key 与 data-form-field 对应，保存时由 App 层统一读取。
+  function playerFormFields(kind, entity, t) {
+    function field(key, label, type, value, options) {
+      return { key: key, label: label, type: type || 'text', value: value == null ? '' : value, options: options };
+    }
+    if (kind === 'folder') return [field('name', t.playerFieldName, 'text', entity && entity.name)];
+    if (kind === 'note') {
+      return [
+        field('title', t.playerFieldTitle, 'text', entity && entity.title),
+        field('body', t.playerFieldBody, 'textarea', entity && entity.body),
+        field('locked', t.playerFieldLocked, 'checkbox', !!(entity && entity.locked))
+      ];
+    }
+    if (kind === 'item') {
+      return [
+        field('name', t.playerFieldName, 'text', entity && entity.name),
+        field('qty', t.playerFieldQty, 'number', entity && entity.qty),
+        field('grade', t.playerFieldGrade, 'text', entity && entity.grade),
+        field('desc', t.playerFieldDesc, 'textarea', entity && entity.desc)
+      ];
+    }
+    if (kind === 'currency') {
+      return [
+        field('kind', t.playerFieldKind, 'text', entity && entity.kind),
+        field('amount', t.playerFieldAmount, 'text', entity && entity.amount)
+      ];
+    }
+    if (kind === 'order') {
+      return [
+        field('name', t.playerFieldItemName, 'text', entity && entity.name),
+        field('status', t.playerFieldStatus, 'text', entity && entity.status),
+        field('price', t.playerFieldPrice, 'text', entity && entity.price),
+        field('side', t.playerFieldSide, 'select', entity && entity.side || 'buy', [['buy', t.playerSideBuy], ['sell', t.playerSideSell]])
+      ];
+    }
+    return [];
+  }
+
+  // 玩家域编辑/新建表单页：新建时 id 为空；编辑时预填现有实体。
+  // 删除按钮走两击确认（ui.armed 复用管理页武装状态机）。
+  function renderPlayerForm(pstate, nav, search, ui) {
+    var t = I18N.dict();
+    var params = nav.params || {};
+    var kind = params.kind;
+    var entity = CORE.playerFindEntity(pstate, kind, params.id);
+    var isEdit = !!entity;
+    var fields = playerFormFields(kind, entity, t);
+    var title = playerFormTitle(kind, isEdit, t);
+    var body = '<div class="yz-form">';
+    if (kind === 'note') {
+      var folderId = params.folderId || (entity && entity.folderId) || '';
+      body += '<input type="hidden" data-form-field="folderId" value="' + CORE.escapeHtml(String(folderId)) + '">';
+    }
+    fields.forEach(function (field) {
+      var label = '<label for="yz-form-' + field.key + '">' + CORE.escapeHtml(field.label) + '</label>';
+      if (field.type === 'textarea') {
+        body += label + '<textarea class="yz-form-input" id="yz-form-' + field.key + '" data-form-field="' + field.key + '" rows="4">' + CORE.escapeHtml(String(field.value)) + '</textarea>';
+      } else if (field.type === 'checkbox') {
+        body += '<label class="yz-form-check" for="yz-form-' + field.key + '"><input type="checkbox" id="yz-form-' + field.key + '" data-form-field="' + field.key + '"' + (field.value ? ' checked' : '') + '>' + CORE.escapeHtml(field.label) + '</label>';
+      } else if (field.type === 'select') {
+        body += label + '<select class="yz-form-input" id="yz-form-' + field.key + '" data-form-field="' + field.key + '">' + field.options.map(function (option) {
+          return '<option value="' + CORE.escapeHtml(option[0]) + '"' + (String(field.value) === option[0] ? ' selected' : '') + '>' + CORE.escapeHtml(option[1]) + '</option>';
+        }).join('') + '</select>';
+      } else {
+        body += label + '<input class="yz-form-input" id="yz-form-' + field.key + '" data-form-field="' + field.key + '" type="' + (field.type === 'number' ? 'number' : 'text') + '" value="' + CORE.escapeHtml(String(field.value)) + '">';
+      }
+    });
+    body += '</div>';
+    var armed = !!(ui && ui.armed && ui.armed.id === kind + ':' + String(params.id));
+    body += '<div class="yz-form-actions">' +
+      '<button type="button" class="yz-send" data-action="player-save" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(params.id || '')) + '">' + CORE.escapeHtml(t.playerSave) + '</button>' +
+      (isEdit ? '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="player-delete" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(params.id)) + '">' + CORE.escapeHtml(armed ? t.playerDeleteConfirm : t.playerDelete) + '</button>' : '') +
+      '</div>';
+    return '<main class="yz-page-inner" data-marker="player-form">' +
+      yzHeader(title) + body + '</main>';
+  }
+
+
+  function renderNotes(state, nav, search, player, ui) {
     var t = I18N.dict();
     var notes = CORE.safeObject(state.notes);
     var kw = searchKw(search);
     nav = nav || { app: 'notes', view: 'folders', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'folders';
+    if (player && view === 'form') return renderPlayerForm(state, nav, search, ui);
     if (view === 'note') {
       var rowNote = null;
       CORE.safeArray(notes.notes, 30).forEach(function (note) { if (String(note.id) === String(nav.params && nav.params.id)) rowNote = note; });
       if (!rowNote) return '<main class="yz-page-inner"><div class="yz-empty">' + CORE.escapeHtml(t.guards.note) + '</div></main>';
+      var editBtn = player ? '<div class="yz-form-actions"><button type="button" class="yz-send" data-action="player-edit" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button></div>' : '';
       return '<main class="yz-page-inner" data-marker="note-detail">' +
         yzHeader(t.features.notes) +
         '<div class="yz-note-paper"><small>' + (rowNote.locked ? CORE.escapeHtml(t.labels.locked) : '') + '</small><h2>' + CORE.escapeHtml(rowNote.title) + '</h2><time>' + CORE.escapeHtml(rowNote.updated || '') + '</time><p>' + CORE.escapeHtml(rowNote.body) + '</p></div>' +
+        editBtn +
         '</main>';
     }
     if (view === 'folder') {
@@ -3260,18 +3529,25 @@
         return String(note.folderId) === String(folder.id) && filterMatch(kw, [note.title, note.body]);
       });
       var list = rows.length ? rows.map(function (note) {
+        if (player) {
+          var main = button('navigate', '<b>' + (note.locked ? '🔒 ' : '') + CORE.escapeHtml(note.title) + '</b><p>' + CORE.escapeHtml(note.body) + '</p><time>' + CORE.escapeHtml(note.updated || '') + '</time>', { view: 'note', id: note.id }, 'yz-manage-main');
+          return editableListRow(main, 'note', note.id);
+        }
         return button('navigate', '<b>' + (note.locked ? '🔒 ' : '') + CORE.escapeHtml(note.title) + '</b><p>' + CORE.escapeHtml(note.body) + '</p><time>' + CORE.escapeHtml(note.updated || '') + '</time>', { view: 'note', id: note.id }, 'yz-note-row');
       }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.notes) + '</div>';
+      var cta = player ? playerAddBtn('note', folder.id) : '';
       return '<main class="yz-page-inner" data-marker="notes-list">' +
-        yzHeader(CORE.escapeHtml(folder.name)) + searchBox(search) + '<div class="yz-page-list">' + list + '</div></main>';
+        yzHeader(CORE.escapeHtml(folder.name)) + searchBox(search) + '<div class="yz-page-list">' + list + '</div>' + cta + '</main>';
     }
     var folderCards = CORE.safeArray(notes.folders, 10).filter(function (f) {
       return filterMatch(kw, [f.name]);
     }).map(function (f) {
-      return button('navigate', '<span class="yz-folder-glyph">📁</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(f.name) + '</b><em>' + CORE.escapeHtml(String(f.count || 0) + ' ' + t.labels.notesWord) + '</em></span>', { view: 'folder', id: f.id }, 'yz-row');
+      var main = button('navigate', '<span class="yz-folder-glyph">📁</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(f.name) + '</b><em>' + CORE.escapeHtml(String(f.count || 0) + ' ' + t.labels.notesWord) + '</em></span>', { view: 'folder', id: f.id }, 'yz-manage-main');
+      return player ? editableListRow(main, 'folder', f.id) : button('navigate', '<span class="yz-folder-glyph">📁</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(f.name) + '</b><em>' + CORE.escapeHtml(String(f.count || 0) + ' ' + t.labels.notesWord) + '</em></span>', { view: 'folder', id: f.id }, 'yz-row');
     });
     var body = folderCards.length ? '<div class="yz-page-list">' + folderCards.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.folders) + '</div>';
-    return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + searchBox(search) + body + '</main>';
+    var cta = player ? playerAddBtn('folder', '') : '';
+    return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + searchBox(search) + body + cta + '</main>';
   }
 
   function renderForum(state, nav, search, tag) {
@@ -3310,16 +3586,19 @@
     return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBox(search) + '<div class="yz-page-list">' + list + '</div></main>';
   }
 
-  function marketRow(avatarName, title, sub, meta, foot) {
-    return '<div class="yz-row yz-static">' + ava(avatarName) + '<span class="yz-row-copy"><b>' + title + '<i>' + sub + '</i></b><em>' + meta + '</em></span><time>' + foot + '</time></div>';
+  function marketRow(avatarName, title, sub, meta, foot, asButton) {
+    var inner = ava(avatarName) + '<span class="yz-row-copy"><b>' + title + '<i>' + sub + '</i></b><em>' + meta + '</em></span><time>' + foot + '</time>';
+    // asButton：玩家域可编辑列表的主区（yz-manage-main 是 flex 按钮，布局与行一致）。
+    return asButton ? '<button type="button" class="yz-manage-main">' + inner + '</button>' : '<div class="yz-row yz-static">' + inner + '</div>';
   }
 
-  function renderMarket(state, nav, search, tag) {
+  function renderMarket(state, nav, search, tag, player, ui) {
     var t = I18N.dict();
     var market = CORE.safeObject(state.market);
     var kw = searchKw(search);
     nav = nav || { app: 'market', view: 'listings', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
+    if (player && view === 'form') return renderPlayerForm(state, nav, search, ui);
     var body;
     if (view === 'auctions') {
       var auctions = CORE.safeArray(market.auctions, 12).filter(function (auction) {
@@ -3337,10 +3616,11 @@
       });
       body = orders.length ? '<div class="yz-page-list">' + orders.map(function (order) {
         var side = /^(buy|买|求购|购)/i.test(order.side) ? t.labels.buy : (/^(sell|卖|出售|售)/i.test(order.side) ? t.labels.sell : order.side);
-        return marketRow(order.name,
+        var row = marketRow(order.name,
           CORE.escapeHtml(order.name), '<span class="yz-side">' + CORE.escapeHtml(side || '') + '</span>',
           CORE.escapeHtml(order.status || ''),
-          CORE.escapeHtml(order.time || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(order.price || '') + '</u>');
+          CORE.escapeHtml(order.time || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(order.price || '') + '</u>', !!player);
+        return player ? editableListRow(row, 'order', order.id) : row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.orders) + '</div>';
     } else {
       var listings = CORE.safeArray(market.listings, 20).filter(function (listing) {
@@ -3353,37 +3633,43 @@
           CORE.escapeHtml(listing.seller || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(listing.price || '') + '</u>');
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.listings) + '</div>';
     }
+    var cta = (player && view === 'orders') ? playerAddBtn('order', '') : '';
     return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true, tag) +
-      yzTabs([['listings', t.tabs.listings], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBox(search) + body + '</main>';
+      yzTabs([['listings', t.tabs.listings], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBox(search) + body + cta + '</main>';
   }
 
-  function renderSpace(state, nav, search) {
+  function renderSpace(state, nav, search, player, ui) {
     var t = I18N.dict();
     var space = CORE.safeObject(state.space);
     var kw = searchKw(search);
     nav = nav || { app: 'space', view: 'items', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'items';
+    if (player && view === 'form') return renderPlayerForm(state, nav, search, ui);
     var body;
     if (view === 'currencies') {
       var currencies = CORE.safeArray(space.currencies, 10).filter(function (currency) {
         return filterMatch(kw, [currency.kind, currency.amount]);
       });
       body = currencies.length ? '<div class="yz-page-list">' + currencies.map(function (currency) {
-        return '<div class="yz-row yz-static"><span class="yz-coin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(currency.kind) + '</b></span><time class="yz-amount">' + CORE.escapeHtml(currency.amount || '') + '</time></div>';
+        var inner = '<span class="yz-coin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(currency.kind) + '</b></span><time class="yz-amount">' + CORE.escapeHtml(currency.amount || '') + '</time>';
+        var row = player ? '<button type="button" class="yz-manage-main">' + inner + '</button>' : '<div class="yz-row yz-static">' + inner + '</div>';
+        return player ? editableListRow(row, 'currency', currency.kind) : row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.currencies) + '</div>';
     } else {
       var items = CORE.safeArray(space.items, 30).filter(function (item) {
         return filterMatch(kw, [item.name, item.grade, item.desc]);
       });
       body = items.length ? '<div class="yz-page-list">' + items.map(function (item) {
-        return marketRow(item.name,
+        var row = marketRow(item.name,
           CORE.escapeHtml(item.name), CORE.escapeHtml(item.grade || ''),
           CORE.escapeHtml(item.desc || ''),
-          CORE.escapeHtml(item.qtyText || String(item.qty || '')));
+          CORE.escapeHtml(item.qtyText || String(item.qty || '')), !!player);
+        return player ? editableListRow(row, 'item', item.id) : row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.items) + '</div>';
     }
+    var cta = player ? playerAddBtn(view === 'currencies' ? 'currency' : 'item', '') : '';
     return '<main class="yz-page-inner" data-marker="space-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.space, true) +
-      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBox(search) + body + '</main>';
+      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBox(search) + body + cta + '</main>';
   }
 
   function renderMap(state, search) {
@@ -3523,14 +3809,15 @@
     var tag = headerTagText(domain, isPlayer, nav, t);
     if (nav.app === 'tablet') return isPlayer ? renderTablet(pstate, search, t.playerEmptyPrivate) : renderTablet(state, search);
     if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search) : renderMsg(state, nav, search);
-    if (nav.app === 'notes') return isPlayer ? renderNotes(pstate, nav, search) : renderNotes(state, nav, search);
+    if (nav.app === 'notes') return isPlayer ? renderNotes(pstate, nav, search, true, ui) : renderNotes(state, nav, search);
     if (nav.app === 'forum') return renderForum(state, nav, search, tag);
     if (nav.app === 'market') {
       var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
-      // 坊市订单是私有数据（随域切换）；行情/拍卖是公开数据（跨域一致）。
-      return (isPlayer && view === 'orders') ? renderMarket(pstate, nav, search) : renderMarket(state, nav, search, tag);
+      // 坊市订单是私有数据（随域切换）；行情/拍卖是公开数据（跨域一致）；
+      // 表单视图（玩家域 CRUD）同样只走玩家数据源。
+      return (isPlayer && (view === 'orders' || view === 'form')) ? renderMarket(pstate, nav, search, tag, true, ui) : renderMarket(state, nav, search, tag);
     }
-    if (nav.app === 'space') return renderSpace(state, nav, search);
+    if (nav.app === 'space') return isPlayer ? renderSpace(pstate, nav, search, true, ui) : renderSpace(state, nav, search);
     if (nav.app === 'map') return renderMap(state, search);
     if (nav.app === 'sync') return '<main class="yz-page-inner" data-marker="sync">' + yzHeader(I18N.dict().diag.title) + renderSyncDetail(state) + '</main>';
     if (nav.app === 'manage') return renderManage(state, flags, ui);
@@ -3763,6 +4050,19 @@
     '.yz-send:hover{background:rgba(90,210,165,.55)}',
     '.yz-msg-status{font-style:normal;color:#7fae9a;font-size:9px;letter-spacing:1px;margin-left:6px}',
     '.yz-start-thread{display:block;width:calc(100% - 24px);margin:0 auto;height:38px;border:1px solid rgba(170,255,225,.45);background:rgba(70,180,140,.3);color:#f2fff9;border-radius:19px;font-size:13px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
+    // —— 玩家域 CRUD：表单、行尾编辑、底部新建 ——
+    '.yz-add-btn{display:block;width:calc(100% - 24px);margin:6px auto 4px;height:38px;border:1px solid rgba(170,255,225,.45);background:rgba(70,180,140,.3);color:#f2fff9;border-radius:19px;font-size:13px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
+    '.yz-edit-btn{flex:none;align-self:center;border:1px solid rgba(150,255,215,.2);background:none;color:#9fd8c0;border-radius:10px;height:26px;padding:0 9px;font-size:12px;line-height:1;font-family:inherit;cursor:pointer}',
+    '.yz-form{padding:4px 0 12px}',
+    '.yz-form label{display:block;font-size:11px;letter-spacing:1px;color:#8fc4ac;margin:10px 2px 4px}',
+    '.yz-form-input{width:100%;background:rgba(6,20,16,.85);border:1px solid rgba(150,255,215,.2);border-radius:10px;color:#eef9f3;padding:8px 10px;font-size:13px;font-family:inherit;line-height:1.5}',
+    '.yz-form-input:focus{outline:1px solid rgba(150,255,215,.45)}',
+    '.yz-form textarea.yz-form-input{resize:vertical;min-height:90px}',
+    '.yz-form select.yz-form-input{height:38px}',
+    '.yz-form-check{display:flex!important;align-items:center;gap:8px;cursor:pointer}',
+    '.yz-form-check input{accent-color:#67e6a8;width:16px;height:16px}',
+    '.yz-form-actions{display:flex;gap:8px;padding:10px 0 4px;align-items:center}',
+    '.yz-form-actions .yz-send{flex:1}',
     '.yz-manage-info{font-size:11px;color:#a7d6c2;line-height:1.7;margin:0 0 12px;padding:10px 12px;border-radius:12px;background:rgba(14,44,36,.5);border:1px solid rgba(150,255,215,.1)}',
     '.yz-manage-row .yz-glyph-sm{flex:none;width:34px;height:34px;border-radius:50%;border:1px solid rgba(200,255,230,.24);display:grid;place-items:center;font-size:16px;background:rgba(16,46,38,.62);line-height:1}',
     '.yz-glyph-sm svg{width:22px;height:22px}',
@@ -4241,6 +4541,7 @@
       nav.params = params || {};
       if (view === 'chat' || view === 'gchat') clearUnread(view, params && params.id);
       resetSearch();
+      armedWipe = null;
       render();
     }
 
@@ -4250,6 +4551,7 @@
       nav.params = {};
       nav.stack = [];
       resetSearch();
+      armedWipe = null;
       render();
     }
 
@@ -4265,6 +4567,7 @@
         return;
       }
       resetSearch();
+      armedWipe = null;
       render();
     }
 
@@ -4350,6 +4653,10 @@
           if (action === 'clear-search') { resetSearch(); return render(); }
           if (action === 'toggle-domain') return toggleDomain();
           if (action === 'send-msg') return sendPlayerMessage();
+          if (action === 'player-new') return openPlayerForm(target.getAttribute('data-kind'), '', target.getAttribute('data-folder') || '');
+          if (action === 'player-edit') return openPlayerForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '', '');
+          if (action === 'player-save') return savePlayerForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
+          if (action === 'player-delete') return deletePlayerEntity(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
           return;
         }
         if (event.target === overlay) close();
@@ -4402,6 +4709,68 @@
       showToast(I18N.dict().playerSentToast);
       // 投递到角色域是异步落盘：等通道同步完成再重渲染（未读/状态标记随之更新）。
       runtime.syncPlayerChannel(runtime.activeChatId).then(function () { render(); }).catch(function () { render(); });
+      render();
+    }
+
+    // ---------- 玩家域 CRUD（二期）UI 动作 ----------
+    // 玩家直写不经模型评估；表单页通过 nav.view='form' + params 承载。
+    function openPlayerForm(kind, id, folderId) {
+      if (domain !== 'player') return;
+      clearToast();
+      nav.stack.push({ app: nav.app, view: nav.view, params: nav.params });
+      nav.view = 'form';
+      nav.params = { kind: kind, id: id || '', folderId: folderId || '' };
+      resetSearch();
+      armedWipe = null;
+      render();
+    }
+
+    // 保存：读取表单全部 data-form-field（含隐藏 folderId、checkbox）→ 直写玩家域。
+    function savePlayerForm(kind, id) {
+      if (domain !== 'player') return;
+      var overlay = hostDocument.getElementById(OVERLAY_ID);
+      var scope = overlay && overlay.querySelector('[data-page]');
+      if (!scope) return;
+      var raw = {};
+      var fields = scope.querySelectorAll('[data-form-field]');
+      Array.prototype.forEach.call(fields, function (el) {
+        var key = el.getAttribute('data-form-field');
+        if (el.type === 'checkbox') raw[key] = el.checked;
+        else raw[key] = el.value;
+      });
+      var result = runtime.playerSaveEntity(kind, raw, id);
+      if (!result.ok) {
+        var dict = I18N.dict();
+        showToast(result.reason === 'folder' ? dict.playerFormNeedFolder : dict.playerFormRequired, true);
+        return;
+      }
+      showToast(I18N.dict().playerSaved);
+      backNav();
+    }
+
+    // 删除：两击确认（复用管理页武装状态机，key = kind:id），确认后直写删除。
+    function deletePlayerEntity(kind, id) {
+      if (domain !== 'player') return;
+      var key = kind + ':' + id;
+      var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
+      clearTimeout(wipeTimer);
+      wipeTimer = 0;
+      if (!next) {
+        var result = runtime.playerDeleteEntity(kind, id);
+        armedWipe = null;
+        if (result.ok) {
+          showToast(I18N.dict().playerDeleted);
+          backNav();
+          return;
+        }
+        showToast(I18N.dict().playerFormRequired, true);
+        return;
+      }
+      armedWipe = next;
+      wipeTimer = setTimeout(function () {
+        armedWipe = null;
+        render();
+      }, VIEWS.WIPE_CONFIRM_MS + 50);
       render();
     }
 

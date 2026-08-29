@@ -1578,6 +1578,151 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   eq(await withPersona.resolvePlayerName(), '悦琳', '{{user}} 解析为宿主用户身份名');
 }
 
+// ---------- 玩家域 CRUD（二期）：直写、校验、级联 ----------
+console.log('# 玩家域 CRUD（二期）');
+{
+  // CORE 纯函数：id 生成确定性、实体查找
+  eq(M.CORE.playerNextId([], 'pn-'), 'pn-1', '空集合 id 从 1 开始');
+  eq(M.CORE.playerNextId([{ id: 'pn-1' }, { id: 'pn-3' }], 'pn-'), 'pn-4', 'id 取集合最大编号 +1');
+  eq(M.CORE.playerNextId([{ id: 'pm-9' }], 'pn-'), 'pn-1', '前缀不混（pm- 不算 pn-）');
+  const findSt = M.CORE.blankPlayerState('f');
+  findSt.notes = { folders: [{ id: 'pf-1', name: '杂记' }], notes: [] };
+  eq(M.CORE.playerFindEntity(findSt, 'folder', 'pf-1').name, '杂记', 'playerFindEntity 按 id 查找');
+  eq(M.CORE.playerFindEntity(findSt, 'folder', 'pf-x'), null, '找不到返回 null');
+  eq(M.CORE.playerFindEntity(findSt, 'nope', 'x'), null, '未知 kind 返回 null');
+}
+
+{
+  // Runtime CRUD：创建/编辑/校验/重命名/删除级联；绝不触碰角色域
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-1');
+  const p = () => rt.playerCurrent();
+
+  // 玉册夹：创建 + 必填校验 + 编辑
+  eq(rt.playerSaveEntity('folder', { name: '杂记' }, ''), { ok: true }, '创建玉册夹成功');
+  eq(p().notes.folders.length, 1, '玉册夹落盘玩家域');
+  eq(p().notes.folders[0].id, 'pf-1', '玉册夹 id 从 pf-1 开始');
+  eq(rt.playerSaveEntity('folder', { name: '秘录' }, '').ok, true, '创建第二个玉册夹');
+  eq(rt.playerSaveEntity('folder', { name: '' }, '').reason, 'name', '空名称拒绝保存');
+  eq(rt.playerSaveEntity('folder', { name: '杂记改' }, 'pf-1').ok, true, '编辑玉册夹成功');
+  eq(p().notes.folders[0].name, '杂记改', '玉册夹名称已更新');
+
+  // 备忘：归属校验 + 锁定 + 文件夹计数派生
+  eq(rt.playerSaveEntity('note', { title: '约定', body: '卯时山门', folderId: 'pf-1', locked: true }, '').ok, true, '创建备忘成功');
+  eq(p().notes.notes.length, 1, '备忘落盘');
+  eq(p().notes.notes[0].id, 'pn-1', '备忘 id 从 pn-1 开始');
+  eq(p().notes.notes[0].locked, true, '锁定标记保存');
+  eq(rt.playerSaveEntity('note', { title: 'x', folderId: 'pf-99' }, '').reason, 'folder', '不存在父玉册夹拒绝保存');
+  eq(p().notes.folders.find((f) => f.id === 'pf-1').count, 1, '文件夹计数按笔记派生');
+  eq(rt.playerSaveEntity('note', { title: '', folderId: 'pf-1' }, '').reason, 'title', '空标题拒绝保存');
+  eq(rt.playerSaveEntity('note', { title: '改', body: '新文', folderId: 'pf-1', locked: false }, 'pn-1').ok, true, '编辑备忘成功');
+  eq(p().notes.notes[0].body, '新文', '备忘正文已更新');
+
+  // 芥子空间：物品/钱财创建、编辑、货币重命名（种类为键）
+  eq(rt.playerSaveEntity('item', { name: '养神丹', qty: 2, grade: '中品', desc: '宁神' }, '').ok, true, '创建物品成功');
+  eq(p().space.items[0].id, 'pi-1', '物品 id 从 pi-1 开始');
+  eq(rt.playerSaveEntity('item', { name: '养神丹', qty: 5, grade: '上品', desc: '大补' }, 'pi-1').ok, true, '编辑物品成功');
+  eq(p().space.items[0].qty, 5, '物品数量已更新');
+  eq(rt.playerSaveEntity('currency', { kind: '灵石', amount: '100' }, '').ok, true, '创建钱财成功');
+  eq(rt.playerSaveEntity('currency', { kind: '仙晶', amount: '3' }, '灵石').ok, true, '货币重命名（旧种类移除）');
+  eq(p().space.currencies.length, 1, '货币重命名不产生副本');
+  eq(p().space.currencies[0].kind, '仙晶', '货币种类已更新');
+  eq(rt.playerSaveEntity('currency', { kind: '', amount: '1' }, '').reason, 'kind', '空种类拒绝保存');
+
+  // 坊市订单：创建 + 方向归一 + 编辑
+  eq(rt.playerSaveEntity('order', { name: '符纸', status: '已拍下', price: '5灵石', side: 'sell' }, '').ok, true, '创建订单成功');
+  eq(p().market.orders[0].id, 'po-1', '订单 id 从 po-1 开始');
+  eq(p().market.orders[0].side, 'sell', '卖出方向归一');
+  eq(rt.playerSaveEntity('order', { name: '符纸', status: '已完成', price: '5灵石', side: 'buy' }, 'po-1').ok, true, '编辑订单成功');
+  eq(p().market.orders[0].status, '已完成', '订单状态已更新');
+  eq(rt.playerSaveEntity('order', { name: '', side: 'buy' }, '').reason, 'name', '空物品名拒绝保存');
+  eq(rt.playerSaveEntity('badkind', {}, '').reason, 'kind', '未知 kind 拒绝');
+
+  // 删除：玉册夹级联其下备忘；missing 拒删
+  eq(rt.playerDeleteEntity('note', 'pn-1').ok, true, '删除备忘成功');
+  eq(p().notes.notes.length, 0, '备忘已删除');
+  eq(rt.playerDeleteEntity('folder', 'pf-1').ok, true, '删除玉册夹成功');
+  eq(p().notes.folders.length, 1, '玉册夹已删除');
+  ok(!p().notes.notes.some((n) => n.folderId === 'pf-1'), '删除玉册夹级联删除其下备忘');
+  eq(rt.playerDeleteEntity('folder', 'pf-9').ok, false, '找不到的实体拒绝删除');
+
+  // CRUD 绝不触碰角色域：角色域 chats/notes 保持空白
+  eq(rt.current().chats.contacts.length, 0, '玩家域 CRUD 不写角色域聊天数据');
+  eq(rt.current().notes.folders.length, 0, '玩家域 CRUD 不写角色域玉册');
+
+  // 持久化：CRUD 落盘三层存储，重载可恢复
+  await flushQueue();
+  const host2 = fakeHost();
+  const rt2 = M.createRuntime(host2.api, null, () => ({}));
+  await rt2.switchChat('chat-1');
+  eq(rt2.playerCurrent().notes.folders.length, 0, '新宿主无玩家域数据');
+}
+
+{
+  // 持久化恢复：同一宿主三层存储链
+  const host = fakeHost();
+  host.current.chat = 'chat-c';
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-c');
+  rt.playerSaveEntity('folder', { name: '杂记' }, '');
+  rt.playerSaveEntity('note', { title: '约定', body: '卯时', folderId: 'pf-1' }, '');
+  rt.playerSaveEntity('item', { name: '丹', qty: 1 }, '');
+  await flushQueue();
+  const rt3 = M.createRuntime(host.api, null, () => ({}));
+  await rt3.switchChat('chat-c');
+  const restored = rt3.playerCurrent();
+  eq(restored.notes.folders.length, 1, '重载后玉册夹恢复');
+  eq(restored.notes.notes.length, 1, '重载后备忘恢复');
+  eq(restored.space.items.length, 1, '重载后物品恢复');
+  ok(host.lorebooks().length === 0, '玩家域 CRUD 不进世界书');
+}
+
+{
+  // 视图：表单页预填/新建/删除武装；列表 CTA 与行尾编辑；角色域不受影响
+  const cs = M.CORE.blankState('c1');
+  cs.sync = { status: 'complete', roleName: '李逍遥', summary: 's', applied: [], appliedSeen: [], issues: [], updatedAt: 1 };
+  const ps = M.CORE.blankPlayerState('c1');
+  ps.notes = { folders: [{ id: 'pf-1', name: '杂记', count: 1 }], notes: [{ id: 'pn-1', folderId: 'pf-1', updated: 'x', locked: true, title: '约定', body: '卯时山门' }] };
+  ps.space = { currencies: [{ kind: '灵石', amount: '100' }], items: [{ id: 'pi-1', name: '丹', qty: 1, grade: '', desc: '' }] };
+  ps.market = { listings: [], auctions: [], orders: [{ id: 'po-1', name: '符纸', status: '已拍下', price: '5灵石', time: 'x', side: 'buy' }] };
+
+  // 列表页：玩家域有 CTA 与行尾编辑按钮
+  const pf = M.VIEWS.renderPage(cs, { app: 'notes', view: 'folders' }, {}, {}, 'player', ps);
+  ok(pf.includes('data-action="player-new"') && pf.includes('data-kind="folder"'), '玩家域玉册列表有新建 CTA');
+  ok(pf.includes('data-action="player-edit"') && pf.includes('data-kind="folder"'), '玩家域玉册行尾有编辑按钮');
+  const cf = M.VIEWS.renderPage(cs, { app: 'notes', view: 'folders' }, {}, {}, 'character', ps);
+  ok(!cf.includes('data-action="player-new"') && !cf.includes('data-action="player-edit"'), '角色域玉册列表无 CRUD 控件');
+  const pFolder = M.VIEWS.renderPage(cs, { app: 'notes', view: 'folder', params: { id: 'pf-1' } }, {}, {}, 'player', ps);
+  ok(pFolder.includes('data-action="player-new"') && pFolder.includes('data-kind="note"'), '玩家域玉册夹内有新建备忘 CTA');
+  ok(pFolder.includes('data-kind="note"') && pFolder.includes('data-id="pn-1"'), '备忘行尾有编辑按钮');
+  const pNote = M.VIEWS.renderPage(cs, { app: 'notes', view: 'note', params: { id: 'pn-1' } }, {}, {}, 'player', ps);
+  ok(pNote.includes('data-action="player-edit"') && pNote.includes(zhCatalog['runtime.player.edit']), '备忘详情有编辑入口');
+  const pItems = M.VIEWS.renderPage(cs, { app: 'space', view: 'items' }, {}, {}, 'player', ps);
+  ok(pItems.includes('data-kind="item"') && pItems.includes('data-id="pi-1"'), '物品行尾有编辑按钮');
+  const pCoins = M.VIEWS.renderPage(cs, { app: 'space', view: 'currencies' }, {}, {}, 'player', ps);
+  ok(pCoins.includes('data-kind="currency"') && pCoins.includes('data-id="灵石"'), '钱财按种类为编辑键');
+  const pOrders = M.VIEWS.renderPage(cs, { app: 'market', view: 'orders' }, {}, {}, 'player', ps);
+  ok(pOrders.includes('data-kind="order"') && pOrders.includes('data-id="po-1"'), '订单行尾有编辑按钮');
+  const charOrders = M.VIEWS.renderPage(cs, { app: 'market', view: 'orders' }, {}, {}, 'character', ps);
+  ok(!charOrders.includes('data-action="player-edit"'), '角色域订单无编辑按钮');
+
+  // 表单页：新建无预填 + 保存按钮；编辑预填 + 删除按钮；武装态文案切换
+  const newForm = M.VIEWS.renderPage(cs, { app: 'notes', view: 'form', params: { kind: 'folder' } }, {}, {}, 'player', ps);
+  ok(newForm.includes('data-marker="player-form"') && newForm.includes('data-action="player-save"'), '新建表单页渲染');
+  ok(!newForm.includes('data-action="player-delete"'), '新建态无删除按钮');
+  ok(!newForm.includes('value="杂记"'), '新建表单不预填');
+  const editForm = M.VIEWS.renderPage(cs, { app: 'notes', view: 'form', params: { kind: 'folder', id: 'pf-1' } }, {}, {}, 'player', ps);
+  ok(editForm.includes('value="杂记"'), '编辑表单预填现有值');
+  ok(editForm.includes('data-action="player-delete"') && editForm.includes(zhCatalog['runtime.player.delete']), '编辑态有删除按钮');
+  const armedForm = M.VIEWS.renderPage(cs, { app: 'notes', view: 'form', params: { kind: 'folder', id: 'pf-1' } }, {}, { armed: { id: 'folder:pf-1', expiresAt: Date.now() + 1000 } }, 'player', ps);
+  ok(armedForm.includes(zhCatalog['runtime.player.deleteConfirm']), '两击确认文案武装态');
+  const noteForm = M.VIEWS.renderPage(cs, { app: 'notes', view: 'form', params: { kind: 'note', id: 'pn-1' } }, {}, {}, 'player', ps);
+  ok(noteForm.includes('value="约定"') && noteForm.includes('value="pf-1"'), '备忘表单预填标题与父玉册夹');
+  const orderForm = M.VIEWS.renderPage(cs, { app: 'market', view: 'form', params: { kind: 'order', id: 'po-1' } }, {}, {}, 'player', ps);
+  ok(orderForm.includes('<option value="buy" selected') && orderForm.includes('<option value="sell"'), '订单表单方向选择预填');
+}
+
 // ---------- 结果 ----------
 console.log('');
 if (failures.length) {
