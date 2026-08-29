@@ -1501,6 +1501,95 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
 }
 
 {
+  // Runtime：玩家群聊发言 → 角色域群组（幂等/重建/只读防护）；玩家发言不凑达标
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-g');
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t1｜李逍遥｜同步\n</yz_meta><yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\n</yz_msg></yz_jade>', 'chat-g', 'test');
+
+  const sent = rt.sendPlayerGroupMessage('chat-g', 'g1', '各位道友安好');
+  ok(sent && /^pmg-\d+$/.test(sent.id), '群聊发言返回 pmg id');
+  await rt.syncPlayerGroups('chat-g');
+  const g1 = rt.current().chats.groups.find((g) => g.id === 'g1');
+  eq(g1.messages.length, 3, '玩家发言进角色域群组');
+  const pmg = g1.messages.find((m) => m.id === sent.id);
+  ok(pmg && pmg.side === 'self' && pmg.sender === '道友', '玩家发言以 self + 玩家名入组');
+  await rt.syncPlayerGroups('chat-g');
+  eq(rt.current().chats.groups.find((g) => g.id === 'g1').messages.length, 3, '群聊发言重复同步幂等（无副本）');
+
+  // 模型删改/伪造玩家发言全部被门禁拒绝
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t2｜李逍遥｜diff\n</yz_meta><yz_msg>\n-gmsg｜g1｜pmg-1\n+gmsg｜g1｜pmg-1｜掌门｜self｜今日｜改写发言\n+gmsg｜g1｜pmg-9｜道友｜self｜今日｜伪造发言\n</yz_msg></yz_jade>', 'chat-g', 'test');
+  const g1b = rt.current().chats.groups.find((g) => g.id === 'g1');
+  ok(g1b.messages.some((m) => m.id === 'pmg-1' && m.text === '各位道友安好'), '玩家群聊发言不可删改');
+  ok(!g1b.messages.some((m) => m.id === 'pmg-9'), '模型无法伪造 pmg 玩家发言');
+
+  // 模型后续轮次以普通 gmsg 自然回复，玩家域（渲染角色域）可见
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t3｜李逍遥｜diff\n</yz_meta><yz_msg>\n+gmsg｜g1｜gm3｜掌门｜other｜今日｜欢迎道友\n</yz_msg></yz_jade>', 'chat-g', 'test');
+  ok(rt.current().chats.groups.find((g) => g.id === 'g1').messages.some((m) => m.id === 'gm3'), '模型以普通 gmsg 自然回复群聊');
+
+  // 模型删除群组：玩家已发言的群组经对账自动重建（玩家真实发言不丢）
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t4｜李逍遥｜diff\n</yz_meta><yz_msg>\n-group｜g1\n</yz_msg></yz_jade>', 'chat-g', 'test');
+  const g1c = rt.current().chats.groups.find((g) => g.id === 'g1');
+  ok(g1c && g1c.messages.some((m) => m.id === 'pmg-1'), '模型删除群组后玩家发言由对账重建');
+
+  // 群聊只有玩家发言时群聊底线不达标（玩家发言不凑数）
+  const gOnlyPmg = {
+    contacts: [{ id: 'c1', name: 'n1', messages: [{ id: 'a', side: 'other', text: 'x' }, { id: 'b', side: 'other', text: 'y' }], preview: '' }, { id: 'c2', name: 'n2', messages: [{ id: 'c', side: 'other', text: 'x' }, { id: 'd', side: 'other', text: 'y' }], preview: '' }],
+    groups: [{ id: 'g1', name: 'g', messages: [{ id: 'pmg-1', side: 'self', text: 'x' }, { id: 'pmg-2', side: 'self', text: 'y' }] }]
+  };
+  eq(M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, chats: gOnlyPmg }, {}).msg.groups, false, '群聊仅玩家发言不满足群聊消息底线');
+
+  // 视图：玩家域群聊详情带发言输入框；角色域群聊详情无
+  const pvG = M.VIEWS.renderPage(rt.current(), { app: 'msg', view: 'gchat', params: { id: 'g1' }, stack: [] }, {}, {}, 'player', rt.playerCurrent());
+  ok(pvG.includes('data-group-msg-input') && pvG.includes('data-action="send-group-msg"'), '玩家域群聊详情渲染发言输入框');
+  const cvG = M.VIEWS.renderPage(rt.current(), { app: 'msg', view: 'gchat', params: { id: 'g1' }, stack: [] }, {}, {}, 'character', rt.playerCurrent());
+  ok(!cvG.includes('data-group-msg-input'), '角色域群聊详情无发言输入框');
+}
+
+{
+  // Runtime：玩家论坛评论 → 角色域帖子（幂等/只读防护）；玩家评论不凑达标
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-f');
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t1｜李逍遥｜同步\n</yz_meta><yz_forum>\npost｜p1｜李逍遥｜蜀山弟子｜闲谈｜今日｜蜀山论剑｜明日山下切磋｜5\ncomment｜p1｜林月如｜今日｜来观战\npost｜p2｜酒剑仙｜师尊｜闲谈｜今日｜一醉方休｜今夜对饮｜3\ncomment｜p2｜李逍遥｜今日｜好\n</yz_forum></yz_jade>', 'chat-f', 'test');
+
+  const sentC = rt.sendPlayerComment('chat-f', 'p1', '算我一个');
+  ok(sentC && /^pmc-\d+$/.test(sentC.id), '论坛评论返回 pmc id');
+  await rt.syncPlayerPosts('chat-f');
+  const p1 = rt.current().forum.posts.find((p) => p.id === 'p1');
+  ok(p1.comments.some((c) => c.id === sentC.id && c.owner === 'player' && c.author === '道友'), '玩家评论镜像进角色域帖子');
+  await rt.syncPlayerPosts('chat-f');
+  eq(rt.current().forum.posts.find((p) => p.id === 'p1').comments.filter((c) => c.id === sentC.id).length, 1, '评论重复同步幂等（无副本）');
+
+  // 模型覆盖/删除玩家评论被门禁拒绝
+  const pmc = rt.playerCurrent().myComments.find((c) => c.id === sentC.id);
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t2｜李逍遥｜diff\n</yz_meta><yz_forum>\n-comment｜p1｜道友｜' + pmc.time + '｜算我一个\n+comment｜p1｜道友｜' + pmc.time + '｜算我一个（被改写）\n</yz_forum></yz_jade>', 'chat-f', 'test');
+  const p1b = rt.current().forum.posts.find((p) => p.id === 'p1');
+  ok(p1b.comments.some((c) => c.id === sentC.id && c.text === '算我一个'), '玩家评论本体不可被删改');
+  const forged = p1b.comments.filter((c) => c.text === '算我一个（被改写）');
+  ok(forged.every((c) => /^cm-/.test(c.id)), '改写版本只会成为普通 cm 新评论，不顶替玩家评论');
+
+  // 模型以 +comment 自然回复（角色帖子上追加）
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t3｜李逍遥｜diff\n</yz_meta><yz_forum>\n+comment｜p1｜林月如｜今日｜同去同去\n</yz_forum></yz_jade>', 'chat-f', 'test');
+  ok(rt.current().forum.posts.find((p) => p.id === 'p1').comments.some((c) => c.text === '同去同去'), '模型以 +comment 自然回复');
+
+  // 角色帖只有玩家评论时不满足评论数底线（玩家评论不凑数）
+  const forumOnlyPmc = {
+    posts: [
+      { id: 'p1', author: '角色甲', title: 't1', body: 'b', comments: [{ id: 'pmc-1', owner: 'player', author: '道友', time: 'x', text: 'c' }] },
+      { id: 'p2', author: '角色乙', title: 't2', body: 'b', comments: [{ id: 'cm-1', author: '丙', time: 'x', text: 'c' }] }
+    ]
+  };
+  eq(M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, forum: forumOnlyPmc }, {}).forum.ok, false, '角色帖仅玩家评论不满足评论底线');
+
+  // 视图：玩家域帖子详情带评论输入框；角色域无
+  const pvF = M.VIEWS.renderPage(rt.current(), { app: 'forum', view: 'post', params: { id: 'p1' }, stack: [] }, {}, {}, 'player', rt.playerCurrent());
+  ok(pvF.includes('data-comment-input') && pvF.includes('data-action="send-comment"'), '玩家域帖子详情渲染评论输入框');
+  const cvF = M.VIEWS.renderPage(rt.current(), { app: 'forum', view: 'post', params: { id: 'p1' }, stack: [] }, {}, {}, 'character', rt.playerCurrent());
+  ok(!cvF.includes('data-comment-input'), '角色域帖子详情无评论输入框');
+}
+
+{
   // Runtime：玩家域三层存储（宿主/镜像/备份），宿主清空后可恢复，不涉及世界书
   const host = fakeHost();
   host.current.chat = 'chat-s';
