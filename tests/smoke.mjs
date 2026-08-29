@@ -1399,19 +1399,21 @@ console.log('# P3 · 版本迁移与备份恢复');
 // ---------- 双玉兆 · 玩家域与传讯通道（一期核心）----------
 console.log('# 双玉兆 · 玩家域与传讯通道');
 {
-  // CORE：玩家域空白/归一结构——无模型域字段、无论坛（公开数据不入玩家域存储）
+  // CORE：玩家域空白/归一结构——无模型域字段；forum 分区只承载玩家自己的帖子
   const ps = M.CORE.blankPlayerState('pc1');
   eq(ps.chatId, 'pc1', '空白玩家域带聊天标识');
-  ok(!('sync' in ps) && !('revision' in ps) && !('processedTurns' in ps) && !('hydration' in ps) && !('forum' in ps), '玩家域无模型域字段与论坛');
+  ok(!('sync' in ps) && !('revision' in ps) && !('processedTurns' in ps) && !('hydration' in ps), '玩家域无模型域字段');
+  eq(ps.forum.posts.length, 0, '玩家域论坛分区空白');
   const pn = M.CORE.normalizePlayerState({
     sync: { status: 'complete' }, revision: 99, processedTurns: ['x'], pendingFull: true,
     chats: { contacts: [{ id: M.CORE.PLAYER_THREAD_ID, name: '李逍遥', messages: [{ id: 'pm-1', side: 'self', time: '2026-08-29', text: '在吗' }] }], groups: [] },
     market: { orders: [{ id: 'o1', name: '灵丹', status: '已拍下', price: '5', time: 'x', side: 'buy' }] },
-    forum: { posts: [{ id: 'p1', author: 'a', title: 't', body: 'b' }] }
+    forum: { posts: [{ id: 'p1', author: 'a', title: 't', body: 'b' }, { id: 'fp-1', owner: 'player', author: '悦琳', title: '寻师', body: '求指点' }] }
   }, 'pc2');
   eq(pn.chatId, 'pc2', '玩家域归一保留聊天标识');
-  ok(!('sync' in pn) && !('revision' in pn) && !('processedTurns' in pn) && !('hydration' in pn) && !('pendingFull' in pn) && !('forum' in pn), '玩家域归一剥离模型域字段与论坛');
-  ok(!('forum' in pn), '玩家域归一剥离论坛');
+  ok(!('sync' in pn) && !('revision' in pn) && !('processedTurns' in pn) && !('hydration' in pn) && !('pendingFull' in pn), '玩家域归一剥离模型域字段');
+  eq(pn.forum.posts.length, 1, '玩家域论坛只保留玩家帖子');
+  eq(pn.forum.posts[0].id, 'fp-1', '非玩家帖子被剥离');
   eq(pn.chats.contacts[0].id, M.CORE.PLAYER_THREAD_ID, '玩家线程联系人保留');
   eq(pn.market.orders.length, 1, '玩家域坊市订单归一');
 
@@ -1925,6 +1927,149 @@ console.log('# 坊市求购区');
   ok(rvPlayer.includes('炼丹急用') && rvPlayer.includes(zhCatalog['runtime.player.publicTag']), '玩家域求购区为公开数据带标识');
   const rvOrders = M.VIEWS.renderMarket(mkView, { app: 'market', view: 'orders', params: {} }, '');
   ok(!rvOrders.includes('炼丹急用'), '求购内容不进订单页（tab 栏标签是导航，正常出现）');
+}
+
+// ---------- 五、公开数据玩家身份发布：论坛 owner 维度 ----------
+console.log('# 玩家发帖（forum owner 维度）');
+{
+  // 解析/归一：owner 字段（缺省 = 角色帖子）
+  const pf = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜p5a｜李逍遥｜发帖\n</yz_meta><yz_forum>\npost｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑｜切磋｜1\npost｜p2｜悦琳｜玩家｜闲聊｜今日｜寻师｜求指点｜0｜player\n</yz_forum></yz_jade>');
+  eq(pf.forum.posts[0].owner, '', '缺省 owner = 角色帖子');
+  eq(pf.forum.posts[1].owner, 'player', '行尾 owner 解析');
+  eq(pf.forum.posts[1].body, '求指点', 'owner 在共鸣数之后解析不吞正文');
+  const nf = M.CORE.normalizeForum({ posts: [{ id: 'x', title: 't', owner: 'player' }, { id: 'y', title: 't2' }] });
+  eq(nf.posts[1].owner, '', '归一化 owner 收敛');
+
+  // diff：模型 +post/-post 不得触碰玩家帖子，评论允许（角色帖子补足达标底线）
+  let fs = M.CORE.blankState('fs');
+  fs.forum = M.CORE.normalizeForum({ posts: [
+    { id: 'p1', owner: 'player', author: '悦琳', title: '寻师', body: '求指点' },
+    { id: 'c1', author: '李逍遥', title: '论剑', body: '切磋', comments: [{ id: 'cm1', author: '长老', time: '今日', text: '好' }] },
+    { id: 'c2', author: '李逍遥', title: '论道', body: '坐而论道', comments: [{ id: 'cm2', author: '长老', time: '今日', text: '善' }] },
+    { id: 'c3', author: '李逍遥', title: '论器', body: '法器交流', comments: [{ id: 'cm3', author: '长老', time: '今日', text: '妙' }] }
+  ] });
+  const fd1 = M.CORE.applySnapshot(fs, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜fd1｜李逍遥｜改帖｜diff\n</yz_meta><yz_forum>\n+post｜p1｜李逍遥｜长老｜闲聊｜今日｜被改｜覆盖｜0\n</yz_forum></yz_jade>'), {}).state;
+  eq(fd1.forum.posts.find((p) => p.id === 'p1').title, '寻师', '模型 +post 改写玩家帖子被拒');
+  const fd2 = M.CORE.applySnapshot(fd1, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜fd2｜李逍遥｜删帖｜diff\n</yz_meta><yz_forum>\n-post｜p1\n</yz_forum></yz_jade>'), {}).state;
+  eq(fd2.forum.posts.length, 4, '模型 -post 删除玩家帖子被拒');
+  const fd3 = M.CORE.applySnapshot(fd2, M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜fd3｜李逍遥｜评论｜diff\n</yz_meta><yz_forum>\n+comment｜p1｜李逍遥｜今日｜我来指点\n</yz_forum></yz_jade>'), {}).state;
+  eq(fd3.forum.posts.find((p) => p.id === 'p1').comments.length, 1, '模型可在玩家帖子下评论');
+
+  // 达标：玩家帖子不凑数、不拉低达标（与传讯豁免同语义）
+  const aOnly = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, forum: M.CORE.normalizeForum({ posts: [{ id: 'p1', owner: 'player', title: '寻师' }, { id: 'p2', owner: 'player', title: '寻物' }] }) }, {});
+  ok(aOnly.forum.ok === false, '仅玩家帖子不满足角色论坛底线');
+  const aMixed = M.CORE.assess({ version: 1, turn: { id: 't', roleName: 'r', summary: 's' }, forum: M.CORE.normalizeForum({ posts: [{ id: 'p1', owner: 'player', title: '寻师', comments: [] }, { id: 'c1', title: '论剑', comments: [{ id: 'cm1', author: 'a', time: 't', text: 'x' }] }, { id: 'c2', title: '论道', comments: [{ id: 'cm2', author: 'a', time: 't', text: 'x' }] }] }) }, {});
+  ok(aMixed.forum.ok === true, '角色帖子达标 + 玩家帖子无评论仍达标');
+
+  // 基线：玩家帖子全行注入（owner 字段 + 评论全行、不窗口化）；角色帖子正常窗口化
+  const pc = M.PROMPT.buildCurrent({ forum: M.CORE.normalizeForum({ posts: [{ id: 'p1', owner: 'player', author: '悦琳', title: '寻师', body: '求指点', comments: [{ id: 'cm1', author: '李逍遥', time: '今日', text: '我来指点' }] }, { id: 'c1', author: '李逍遥', title: '帖一', body: 'x' }, { id: 'c2', author: '李逍遥', title: '帖二', body: 'x' }, { id: 'c3', author: '李逍遥', title: '帖三', body: 'x' }, { id: 'c4', author: '李逍遥', title: '帖四', body: 'x' }] }) }, {});
+  const playerRow = pc.find((r) => r.startsWith('post｜p1'));
+  ok(!!playerRow && playerRow.endsWith('｜player'), '玩家帖子行带 owner 字段');
+  ok(pc.some((r) => r.startsWith('comment｜p1｜')), '玩家帖子的评论全行注入');
+  eq(pc.filter((r) => r.startsWith('post｜')).length, 4, '玩家帖子不因窗口化被归档（最旧角色帖子正常归档）');
+  ok(pc.some((r) => r.startsWith('archived｜post｜c1')), '角色旧帖仍走归档摘要');
+
+  // 预算淘汰：压预算时角色明细行先丢，玩家帖子行保留（last 标记仅极端场景让位）
+  const bigPosts = [];
+  for (let i = 1; i <= 16; i += 1) bigPosts.push({ id: 'c' + i, author: '李逍遥', title: '长帖' + i, body: '字'.repeat(2900) });
+  bigPosts.push({ id: 'p1', owner: 'player', author: '悦琳', title: '寻师', body: '求指点' });
+  const pcBig = M.PROMPT.buildCurrent({ forum: M.CORE.normalizeForum({ posts: bigPosts }) }, {});
+  ok(pcBig.some((r) => r.startsWith('post｜p1')), '压预算后玩家帖子仍在基线');
+  ok(pcBig.filter((r) => r.startsWith('post｜c')).length < 3, '压预算后角色明细行被淘汰');
+
+  // 保护规则提示词与引导行
+  const prZh = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
+  ok(prZh.includes('owner 为 player 的帖子是玩家的真实发帖') && prZh.includes('可以用 +comment 行'), 'zh 玩家帖子保护规则');
+  ok(M.PROMPT.buildPrompt('en', {}, { forceFull: true, current: [] }).includes('real posts by the player'), 'en 玩家帖子保护规则');
+  ok(prZh.includes('post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数｜owner'), '引导行含 owner 字段');
+}
+
+{
+  // 运行时：创建/校验/镜像/幂等/对账/删除
+  const ph = fakeHost();
+  const prt = M.createRuntime(ph.api, null, () => ({}));
+  await prt.switchChat('chat-1');
+  eq(prt.playerSaveEntity('post', { title: '寻师', section: '闲聊', body: '求指点' }, ''), { ok: true }, '创建帖子成功');
+  eq(prt.playerCurrent().forum.posts[0].id, 'fp-1', '帖子 id 从 fp-1 开始');
+  eq(prt.playerCurrent().forum.posts[0].owner, 'player', '玩家域帖子 owner=player');
+  eq(prt.playerSaveEntity('post', { title: '', body: 'x' }, '').reason, 'title', '空标题拒绝');
+  eq(prt.playerSaveEntity('post', { title: '寻师改', body: '改文' }, 'fp-1').ok, true, '编辑帖子成功');
+  eq(prt.playerCurrent().forum.posts[0].body, '改文', '帖子正文已更新');
+
+  // 镜像：角色域出现玩家帖子，作者名回填（无 persona 时回退 catalog 名）
+  await prt.syncPlayerPosts('chat-1');
+  const cp = prt.current().forum.posts.find((p) => p.id === 'fp-1');
+  ok(!!cp && cp.owner === 'player', '镜像进角色域论坛');
+  eq(cp.author, zhCatalog['runtime.player.fallbackName'], '作者名回填玩家名');
+  await prt.syncPlayerPosts('chat-1');
+  eq(prt.current().forum.posts.filter((p) => p.id === 'fp-1').length, 1, '重复镜像幂等不产生副本');
+
+  // 对账：全量轮模型漏写玩家帖子 → applyText 后的自动镜像按玩家域补回
+  const fullNoPlayer = '<yz_jade><yz_meta>\nturn｜pp1｜李逍遥｜全量\n</yz_meta><yz_forum>\npost｜c1｜李逍遥｜长老｜闲聊｜今日｜论剑｜切磋｜1\npost｜c2｜李逍遥｜长老｜闲聊｜今日｜论道｜坐而论道｜1\ncomment｜c1｜长老｜今日｜好\ncomment｜c2｜弟子｜今日｜善\n</yz_forum></yz_jade>';
+  const pp1 = await prt.applyText(fullNoPlayer, 'chat-1', 'test');
+  const restored = prt.current().forum.posts.find((p) => p.id === 'fp-1');
+  ok(!!restored && restored.owner === 'player' && restored.body === '改文', '全量轮后自动镜像按玩家域补回被覆盖的帖子');
+  ok(prt.current().forum.posts.some((p) => p.id === 'c1'), '角色自己的帖子保留');
+  // 模型改写过玩家帖子（带 id 无 owner）→ diff 保护拒改，评论允许
+  const pp2 = await prt.applyText('<yz_jade><yz_meta>\nturn｜pp2｜李逍遥｜重写\n</yz_meta><yz_forum>\n+post｜fp-1｜李逍遥｜长老｜闲聊｜今日｜被模型写｜恶意｜0\n+comment｜fp-1｜李逍遥｜今日｜指点\n</yz_forum></yz_jade>', 'chat-1', 'test');
+  const afterPp2 = prt.current().forum.posts.find((p) => p.id === 'fp-1');
+  eq(afterPp2.owner, 'player', '模型改写不剥落 owner 标记');
+  eq(afterPp2.title, '寻师改', '模型 +post 改写玩家帖子被拒');
+  eq(afterPp2.comments.length, 1, '角色侧评论保留');
+
+  // 删除：玩家域删帖后角色域同步移除
+  eq(prt.playerDeleteEntity('post', 'fp-1').ok, true, '删除玩家帖子');
+  await prt.syncPlayerPosts('chat-1');
+  ok(!prt.current().forum.posts.some((p) => p.id === 'fp-1'), '角色域同步移除已删帖子');
+  eq(prt.playerDeleteEntity('post', 'fp-1').ok, false, '重复删除报 missing');
+
+  // {{user}} persona 解析：有 persona 时作者名用 persona.name
+  const ph2 = fakeHost();
+  ph2.api.chat.current = async () => ({ id: ph2.current.chat, persona: { name: '悦琳' } });
+  const prt2 = M.createRuntime(ph2.api, null, () => ({}));
+  await prt2.switchChat('chat-1');
+  prt2.playerSaveEntity('post', { title: '寻师', body: '求指点' }, '');
+  await prt2.syncPlayerPosts('chat-1');
+  eq(prt2.current().forum.posts.find((p) => p.owner === 'player').author, '悦琳', '作者名 = {{user}}（persona.name）');
+
+  // 封印论坛：镜像不工作
+  const ph3 = fakeHost();
+  const prt3 = M.createRuntime(ph3.api, null, () => ({ forum: false }));
+  await prt3.switchChat('chat-1');
+  prt3.playerSaveEntity('post', { title: '寻师', body: '求指点' }, '');
+  await prt3.syncPlayerPosts('chat-1');
+  eq(prt3.current().forum.posts.length, 0, '封印论坛后玩家帖子不镜像角色域');
+}
+
+{
+  // 视图：玩家域论坛 CTA/标记/编辑按钮；角色域无 CRUD 控件；表单路由
+  const fcs = M.CORE.blankState('v-forum');
+  fcs.sync = { status: 'complete', roleName: '李逍遥', summary: 's', applied: [], appliedSeen: [], issues: [], updatedAt: 1 };
+  fcs.forum = M.CORE.normalizeForum({ posts: [{ id: 'fp-1', owner: 'player', author: '悦琳', title: '寻师', body: '求指点', time: '今日', comments: [] }, { id: 'c1', author: '李逍遥', title: '论剑', body: '切磋', time: '今日', comments: [] }] });
+  const fps = M.CORE.blankPlayerState('v-forum');
+  fps.forum = M.CORE.normalizeForum({ posts: [{ id: 'fp-1', owner: 'player', author: '悦琳', title: '寻师', body: '求指点', time: '今日', comments: [] }] });
+
+  const pList = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'root', params: {}, stack: [] }, {}, {}, 'player', fps);
+  ok(pList.includes('data-action="player-new"') && pList.includes('data-kind="post"'), '玩家域论坛有发帖 CTA');
+  ok(pList.includes('data-action="player-edit"') && pList.includes('data-id="fp-1"'), '玩家帖子行尾有编辑按钮');
+  ok(pList.includes(zhCatalog['runtime.player.postTag']), '玩家帖子带身份标记');
+  const cList = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'root', params: {}, stack: [] }, {}, {}, 'character', fps);
+  ok(!cList.includes('data-action="player-edit"') && !cList.includes('data-action="player-new"'), '角色域论坛无 CRUD 控件');
+  ok(cList.includes(zhCatalog['runtime.player.postTag']), '玩家帖子身份标记双域一致（与基线 owner 字段同语义）');
+
+  // 详情页：玩家帖子可编辑入口；角色帖子无
+  const pDetail = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'post', params: { id: 'fp-1' }, stack: [] }, {}, {}, 'player', fps);
+  ok(pDetail.includes('data-action="player-edit"') && pDetail.includes('data-id="fp-1"'), '玩家帖子详情有编辑入口');
+  const cDetail = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'post', params: { id: 'c1' }, stack: [] }, {}, {}, 'player', fps);
+  ok(!cDetail.includes('data-action="player-edit"'), '角色帖子详情无编辑入口');
+
+  // 表单页：post 字段预填 + 新建无预填
+  const form = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'form', params: { kind: 'post', id: 'fp-1' }, stack: [] }, {}, {}, 'player', fps);
+  ok(form.includes('value="寻师"') && form.includes(zhCatalog['runtime.player.fieldSection']), '发帖表单预填标题与版块');
+  const newForm = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'form', params: { kind: 'post' }, stack: [] }, {}, {}, 'player', fps);
+  ok(newForm.includes('data-marker="player-form"') && !newForm.includes('value="寻师"'), '新建发帖表单无预填');
+  const cForm = M.VIEWS.renderPage(fcs, { app: 'forum', view: 'form', params: { kind: 'post' }, stack: [] }, {}, {}, 'character', fps);
+  ok(!cForm.includes('data-marker="player-form"'), '角色域论坛不渲染发帖表单');
 }
 
 // ---------- 结果 ----------

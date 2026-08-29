@@ -166,7 +166,8 @@
   }
 
   // 玩家域实体查找（纯函数，视图预填表单与运行时 CRUD 共用）：
-  // folder/note → notes，item/currency → space（currency 以种类为键），order → market。
+  // folder/note → notes，item/currency → space（currency 以种类为键），order → market，
+  // post → forum（玩家帖子）。
   function playerFindEntity(pstate, kind, id) {
     id = String(id == null ? '' : id);
     if (kind === 'folder') return safeArray(pstate && pstate.notes && pstate.notes.folders, 10).filter(function (f) { return String(f.id) === id; })[0] || null;
@@ -174,11 +175,13 @@
     if (kind === 'item') return safeArray(pstate && pstate.space && pstate.space.items, 30).filter(function (i) { return String(i.id) === id; })[0] || null;
     if (kind === 'currency') return safeArray(pstate && pstate.space && pstate.space.currencies, 10).filter(function (c) { return String(c.kind) === id; })[0] || null;
     if (kind === 'order') return safeArray(pstate && pstate.market && pstate.market.orders, 12).filter(function (o) { return String(o.id) === id; })[0] || null;
+    if (kind === 'post') return safeArray(pstate && pstate.forum && pstate.forum.posts, 20).filter(function (p) { return String(p.id) === id; })[0] || null;
     return null;
   }
 
   // 玩家域状态：与角色域同构的私有数据容器，但完全不参与模型评估。
   // 没有 revision/processedTurns/指纹/hydration——数据由玩家或本机写入，不经模型。
+  // forum 分区仅存玩家帖子（owner=player，镜像进角色域论坛成为公开数据）。
   function blankPlayerState(chatId) {
     return {
       schemaVersion: 1,
@@ -187,6 +190,7 @@
       tablet: blankTablet(),
       chats: { contacts: [], groups: [] },
       notes: { folders: [], notes: [] },
+      forum: { posts: [] },
       market: { listings: [], auctions: [], orders: [], requests: [] },
       space: { currencies: [], items: [] },
       map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] },
@@ -277,6 +281,8 @@
       post = safeObject(post);
       return {
         id: cleanText(post.id, 160),
+        // owner 维度：player = 玩家（{{user}}）真实发帖；空 = 角色/模型数据。
+        owner: cleanText(post.owner, 20),
         author: cleanText(post.author, 120),
         role: cleanText(post.role, 120),
         section: cleanText(post.section, 60),
@@ -403,6 +409,10 @@
     base.tablet = normalizeTablet(raw.tablet);
     base.chats = normalizeChats(raw.chats);
     base.notes = normalizeNotes(raw.notes);
+    // 玩家域论坛只承载玩家自己的帖子（owner=player）：镜像外的帖子不入玩家域存储。
+    var playerForum = normalizeForum(raw.forum);
+    playerForum.posts = playerForum.posts.filter(function (post) { return String(post.owner) === 'player'; });
+    base.forum = playerForum;
     base.market = normalizeMarket(raw.market);
     base.space = normalizeSpace(raw.space);
     base.map = normalizeMap(raw.map);
@@ -474,7 +484,9 @@
 
   function assessForum(forum) {
     forum = safeObject(forum);
-    var posts = safeArray(forum.posts, 20);
+    // 玩家帖子（owner=player）是玩家的真实发帖，不是角色剧情数据：
+    // 不参与帖子数与评论数底线，避免玩家发帖反而拉低/顶替角色域论坛达标度。
+    var posts = safeArray(forum.posts, 20).filter(function (post) { return (post && post.owner) !== 'player'; });
     return { ok: posts.length >= 2 && posts.every(function (post) { return safeArray(post.comments, 20).length >= 1; }), posts: posts.length >= 2 };
   }
 
@@ -623,10 +635,12 @@
       if (!id) return;
       if (op.type === 'post') {
         var pi = indexOfById(out.posts, id);
+        // 玩家帖子是玩家的真实发帖：模型 +post/-post 一律不得触碰（提示词亦明令禁止）。
+        if (pi >= 0 && out.posts[pi].owner === 'player') return;
         if (op.add) {
           var title = cleanText(op.values[5], 200);
           if (!hasText(title)) return;
-          var post = { id: id, author: cleanText(op.values[1], 120), role: cleanText(op.values[2], 120), section: cleanText(op.values[3], 60), time: cleanText(op.values[4], 80), title: title, body: cleanText(op.values[6], 3000), resonance: Number(op.values[7]) || 0, comments: [] };
+          var post = { id: id, owner: cleanText(op.values[8], 20), author: cleanText(op.values[1], 120), role: cleanText(op.values[2], 120), section: cleanText(op.values[3], 60), time: cleanText(op.values[4], 80), title: title, body: cleanText(op.values[6], 3000), resonance: Number(op.values[7]) || 0, comments: [] };
           if (pi >= 0) post.comments = out.posts[pi].comments;
           if (pi >= 0) out.posts[pi] = post;
           else if (out.posts.length < 20) out.posts.push(post);
@@ -1269,11 +1283,12 @@
     var out = { posts: [] };
     var posts = Object.create(null);
     typed(body, ['post', '帖子']).forEach(function (line) {
-      var values = row(line, 9);
+      var values = row(line, 10);
       var id = cleanText(values[1], 160);
       if (!id) return;
       var item = {
         id: id,
+        owner: cleanText(values[9], 20),
         author: cleanText(values[2], 120),
         role: cleanText(values[3], 120),
         section: cleanText(values[4], 60),
@@ -1625,7 +1640,7 @@
       playerNewWord: tr('runtime.player.newWord'),
       playerWord: {
         folder: tr('runtime.player.word.folder'), note: tr('runtime.player.word.note'), item: tr('runtime.player.word.item'),
-        currency: tr('runtime.player.word.currency'), order: tr('runtime.player.word.order')
+        currency: tr('runtime.player.word.currency'), order: tr('runtime.player.word.order'), post: tr('runtime.player.word.post')
       },
       playerFieldName: tr('runtime.player.fieldName'),
       playerFieldTitle: tr('runtime.player.fieldTitle'),
@@ -1640,6 +1655,8 @@
       playerFieldStatus: tr('runtime.player.fieldStatus'),
       playerFieldPrice: tr('runtime.player.fieldPrice'),
       playerFieldSide: tr('runtime.player.fieldSide'),
+      playerFieldSection: tr('runtime.player.fieldSection'),
+      playerPostTag: tr('runtime.player.postTag'),
       playerSideBuy: tr('runtime.player.sideBuy'),
       playerSideSell: tr('runtime.player.sideSell'),
       playerSave: tr('runtime.player.save'),
@@ -1999,12 +2016,14 @@
       if (!playerTouched) playerChats[chatId] = playerLoaded;
       // 跨域通道对齐：把已发送的传讯补回角色域（历史重建/清空后玩家数据仍存续）。
       if (state.revision > 0) await syncPlayerChannel(chatId);
+      if (state.revision > 0) await syncPlayerPosts(chatId);
       var hydrated = await hydrateHistory(chatId, token, state);
       if (hydrated.stale || token !== epoch || chatId !== activeChatId) return current();
       chats[chatId] = hydrated.state;
       if (hydrated.changed || hydrated.marked) await save(chatId, hydrated.state);
       // 水化可能补入新的角色回复：镜像回玩家域会话线程。
       if (hydrated.changed) await syncPlayerChannel(chatId);
+      if (hydrated.changed) await syncPlayerPosts(chatId);
       return current();
     }
 
@@ -2034,6 +2053,7 @@
       await save(chatId, rebuilt.state);
       // 历史重建会清掉玩家传讯联系人（正文从不含玩家消息）：通道按玩家域补投回角色域。
       await syncPlayerChannel(chatId);
+      await syncPlayerPosts(chatId);
       return current();
     }
 
@@ -2317,12 +2337,29 @@
         } else if (!reason) player.market.orders = safeArray(player.market.orders, 12).concat([{ id: CORE.playerNextId(player.market.orders, 'po-'), name: oname, status: cleanText(raw.status, 40), price: cleanText(raw.price, 80), time: formatDateTime(Date.now()), side: side }]);
         if (reason) return fail();
         player.market = CORE.normalizeMarket(player.market);
+      } else if (kind === 'post') {
+        // 玩家发帖（三期）：owner=player 的论坛帖子，源数据在玩家域，经 syncPlayerPosts
+        // 镜像进角色域（公开数据）。作者名由镜像异步解析 {{user}} 后回填。
+        var ptitle = cleanText(raw.title, 200);
+        if (!hasText(ptitle)) reason = 'title';
+        var post = CORE.playerFindEntity(player, 'post', existingId);
+        if (post) {
+          post.title = ptitle;
+          post.section = cleanText(raw.section, 60);
+          post.body = cleanText(raw.body, 3000);
+          post.time = formatDateTime(Date.now());
+        } else if (!reason) {
+          player.forum.posts = safeArray(player.forum.posts, 20).concat([{ id: CORE.playerNextId(player.forum.posts, 'fp-'), owner: 'player', author: '', role: '', section: cleanText(raw.section, 60), time: formatDateTime(Date.now()), title: ptitle, body: cleanText(raw.body, 3000), resonance: 0, comments: [] }]);
+        }
+        if (reason) return fail();
+        player.forum = CORE.normalizeForum(player.forum);
       } else {
         return { ok: false, reason: 'kind' };
       }
 
       player.updatedAt = Date.now();
       save(activeChatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      if (kind === 'post') syncPlayerPosts(activeChatId);
       return { ok: true };
     }
 
@@ -2345,12 +2382,85 @@
         player.space.currencies = safeArray(player.space.currencies, 10).filter(function (c) { return String(c.kind) !== id; });
       } else if (kind === 'order') {
         player.market.orders = safeArray(player.market.orders, 12).filter(function (o) { return String(o.id) !== id; });
+      } else if (kind === 'post') {
+        player.forum.posts = safeArray(player.forum.posts, 20).filter(function (p) { return String(p.id) !== id; });
       } else {
         return { ok: false, reason: 'kind' };
       }
       player.updatedAt = Date.now();
       save(activeChatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      if (kind === 'post') syncPlayerPosts(activeChatId);
       return { ok: true };
+    }
+
+    // 玩家发帖镜像：玩家域帖子（owner=player）幂等同步进角色域论坛（公开数据）并对账——
+    // 玩家帖子的标题/正文/版块/作者以玩家域为准（模型全量轮改写或删除会被还原），
+    // 角色侧对玩家帖子的评论保留；已删除的玩家帖子从角色域移除。
+    // 仅在论坛功能启用时工作；作者名（{{user}}）异步解析后回填双方副本。
+    async function syncPlayerPosts(chatId) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (chatId !== activeChatId) return false;
+      var flags = getFlags() || {};
+      if (flags.forum === false) return false;
+      var state = current();
+      var player = playerCurrent();
+      var mine = safeArray(player.forum && player.forum.posts, 20);
+      var havePlayerRows = safeArray(state.forum && state.forum.posts, 20).some(function (p) { return String(p && p.owner) === 'player'; });
+      if (!mine.length && !havePlayerRows) return false;
+      var name = await resolvePlayerName();
+      var changed = false;
+      var hadPlayerRows = false;
+      var originals = safeArray(state.forum && state.forum.posts, 20);
+      var kept = [];
+      originals.forEach(function (post) {
+        if (!post) return;
+        if (String(post.owner) === 'player') { hadPlayerRows = true; return; }
+        kept.push(post);
+      });
+      if (!mine.length && hadPlayerRows) {
+        // 玩家已删光自己的帖子：角色域同步移除（玩家帖子行以玩家域为准）。
+        state.forum.posts = kept;
+        state.forum = CORE.normalizeForum(state.forum);
+        state.updatedAt = Date.now();
+        save(chatId, state);
+        return true;
+      }
+      mine.forEach(function (post) {
+        if (!post || !post.id) return;
+        // existing 从原始角色域行里找（kept 已剔除玩家行）：命中即对账更新并保留
+        // 角色侧评论；未命中（历史重建/清空后）按玩家域插入。
+        var existing = null;
+        originals.forEach(function (p) { if (p && String(p.id) === String(post.id)) existing = p; });
+        if (!existing) {
+          kept.push({ id: cleanText(post.id, 160), owner: 'player', author: name, role: cleanText(post.role, 120), section: cleanText(post.section, 60), time: cleanText(post.time, 80), title: cleanText(post.title, 200), body: cleanText(post.body, 3000), resonance: Number(post.resonance) || 0, comments: [] });
+          changed = true;
+        } else {
+          if (existing.owner !== 'player' || existing.title !== post.title || existing.body !== post.body || existing.section !== post.section || existing.author !== name) {
+            // 对账：以玩家域为准还原被模型改写的内容（含被剥落的 owner 标记），角色侧评论保留。
+            existing.owner = 'player';
+            existing.title = cleanText(post.title, 200);
+            existing.body = cleanText(post.body, 3000);
+            existing.section = cleanText(post.section, 60);
+            existing.author = name;
+            changed = true;
+          }
+          kept.push(existing);
+        }
+        // 玩家侧作者名回填（创建时为空，表单不暴露作者字段）。
+        if (post.author !== name) {
+          post.author = name;
+          player.updatedAt = Date.now();
+          changed = true;
+        }
+      });
+      if (changed) {
+        state.forum.posts = kept;
+        state.forum = CORE.normalizeForum(state.forum);
+        state.updatedAt = Date.now();
+        save(chatId, state);
+        save(chatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      }
+      return changed;
     }
 
     async function applyText(text, chatId, source) {
@@ -2370,8 +2480,9 @@
       chats[chatId] = applied.state;
       // 重复投递的轮次不重复落盘；解析失败标记需持久化，重开后仍可见。
       if (applied.changed || applied.state.sync.lastError === 'parse-error') save(chatId, applied.state);
-      // 跨域通道：角色回复（self 消息）落盘后镜像回玩家域会话线程。
+      // 跨域通道：角色回复（self 消息）与玩家发帖落盘后分别镜像回玩家域/角色域。
       if (applied.changed) await syncPlayerChannel(chatId);
+      if (applied.changed) await syncPlayerPosts(chatId);
       return {
         changed: applied.changed,
         stale: false,
@@ -2648,6 +2759,7 @@
       resolveCurrentChatId: resolveCurrentChatId,
       resolvePlayerName: resolvePlayerName,
       syncPlayerChannel: syncPlayerChannel,
+      syncPlayerPosts: syncPlayerPosts,
       markPlayerRead: markPlayerRead,
       sendPlayerMessage: sendPlayerMessage,
       playerThread: playerThread,
@@ -2705,13 +2817,13 @@
     {
       id: 'forum',
       en: {
-        constraint: '- World Forum: at least 2 posts, each with at least 1 comment; comment rows must reference declared post ids.',
-        rows: ['<yz_forum>', 'post｜id｜author｜author title｜section｜time｜title｜body｜echo count', 'comment｜post-id｜commenter｜time｜text', '</yz_forum>'],
+        constraint: '- World Forum: at least 2 posts, each with at least 1 comment; comment rows must reference declared post ids. Post rows may end with an owner field: player (posts by the player, read-only) or absent (character posts).',
+        rows: ['<yz_forum>', 'post｜id｜author｜author title｜section｜time｜title｜body｜echo count｜owner (player for player posts, omit otherwise)', 'comment｜post-id｜commenter｜time｜text', '</yz_forum>'],
         name: 'World Forum'
       },
       zh: {
-        constraint: '- 天下论坛：至少 2 个帖子，每帖至少 1 条评论；comment 行的帖子 id 必须来自 post 行。',
-        rows: ['<yz_forum>', 'post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数', 'comment｜帖子id｜评论者｜时间｜内容', '</yz_forum>'],
+        constraint: '- 天下论坛：至少 2 个帖子，每帖至少 1 条评论；comment 行的帖子 id 必须来自 post 行；post 行末尾可带 owner 字段：player（玩家发帖，只读）或缺省（角色发帖）。',
+        rows: ['<yz_forum>', 'post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数｜owner（玩家帖子填 player，其余省略）', 'comment｜帖子id｜评论者｜时间｜内容', '</yz_forum>'],
         name: '天下论坛'
       }
     },
@@ -2879,6 +2991,19 @@
       var posts = safeArray(safeObject(s.forum).posts, 20);
       posts.forEach(function (post, index) {
         if (!post || !hasText(post.title) || !post.id) return;
+        var isPlayerPost = String(post.owner || '') === 'player';
+        if (isPlayerPost) {
+          // 玩家帖子是真实事件（与传讯未读行同级）：永远全行注入、不归档、不淘汰
+          // （drop:false，last 标记让预算淘汰时优先让位给普通明细行），行尾带 owner
+          // 字段供模型识别；角色对玩家帖子的评论同全行注入。
+          var rowText = 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜player';
+          f.rows.push({ text: rowText, drop: false, last: true });
+          safeArray(post.comments, 20).forEach(function (comment) {
+            if (!comment || !hasText(comment.text)) return;
+            f.rows.push({ text: 'comment｜' + v(post.id, 160) + '｜' + v(comment.author, 120) + '｜' + v(comment.time, 80) + '｜' + v(comment.text), drop: false, last: true });
+          });
+          return;
+        }
         if (index < posts.length - RECENT_POST_ROWS) {
           f.rows.push({ text: archived('post', v(post.id, 160), v(post.title, 200)), drop: false });
           return;
@@ -3078,6 +3203,12 @@
       lines.push(en
         ? '- Player channel: the yz-player contact in the baseline is a real player messaging you from outside the world. Its rows and unread count are maintained by the artifact: never rewrite, delete, copy or recreate that contact, and never invent messages from it. To reply, append one +msg｜yz-player｜new-message-id｜self｜absolute date｜your reply.'
         : '- 传讯通道：基线中 yz-player 联系人是持有玉兆的外界玩家与你的传讯。该联系人的消息与未读数是真实事件，由法器维护：不得改写、删除、复制或新建该联系人，也不得凭空编造其消息。要回复时用 +msg｜yz-player｜新消息id｜self｜绝对时间｜回复内容 追加一行即可。');
+    }
+    // 玩家发帖规则：owner=player 的论坛帖子是玩家的真实发帖，只读维护，可用 +comment 评论。
+    if (on('forum')) {
+      lines.push(en
+        ? '- Player posts: forum rows whose owner is player (the trailing field of post rows in the baseline) are real posts by the player. Never rewrite, delete, copy or recreate them, and never invent posts from the player. You may comment on any post, including theirs, with +comment rows.'
+        : '- 玩家发帖：基线中 post 行尾 owner 为 player 的帖子是玩家的真实发帖。不得改写、删除、复制或重建这些帖子，也不得凭空编造玩家的帖子；可以用 +comment 行在任意帖子（包括玩家的）下评论。');
     }
     // issue 回声：当前未达标项（≤3 条，按 lang 选语种），要求模型用 + 行补齐。
     var issueItems = (Array.isArray(ctx.issues) ? ctx.issues : []).slice(0, 3).map(function (issue) {
@@ -3556,6 +3687,13 @@
         field('side', t.playerFieldSide, 'select', entity && entity.side || 'buy', [['buy', t.playerSideBuy], ['sell', t.playerSideSell]])
       ];
     }
+    if (kind === 'post') {
+      return [
+        field('title', t.playerFieldTitle, 'text', entity && entity.title),
+        field('section', t.playerFieldSection, 'text', entity && entity.section),
+        field('body', t.playerFieldBody, 'textarea', entity && entity.body)
+      ];
+    }
     return [];
   }
 
@@ -3646,12 +3784,13 @@
     return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + searchBox(search) + body + cta + '</main>';
   }
 
-  function renderForum(state, nav, search, tag) {
+  function renderForum(state, nav, search, tag, player, ui) {
     var t = I18N.dict();
     var forum = CORE.safeObject(state.forum);
     var kw = searchKw(search);
     nav = nav || { app: 'forum', view: 'root', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'root';
+    if (player && view === 'form') return renderPlayerForm(state, nav, search, ui);
     if (view === 'post') {
       var post = null;
       CORE.safeArray(forum.posts, 20).forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) post = item; });
@@ -3661,9 +3800,11 @@
       }).map(function (comment) {
         return '<div class="yz-comment"><span class="yz-comment-ava">' + ava(comment.author || '?') + '</span><div class="yz-comment-copy"><b>' + CORE.escapeHtml(comment.author || '') + '</b><p>' + CORE.escapeHtml(comment.text) + '</p><time>' + CORE.escapeHtml(comment.time || '') + '</time></div></div>';
       }).join('');
+      var isMine = String(post.owner || '') === 'player';
+      var editBtn = (player && isMine) ? '<div class="yz-form-actions"><button type="button" class="yz-send" data-action="player-edit" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button></div>' : '';
       return '<main class="yz-page-inner" data-marker="forum-post">' +
         yzHeader(t.features.forum) +
-        '<article class="yz-post-paper"><div class="yz-post-meta"><span>' + CORE.escapeHtml(post.author || '') + (CORE.hasText(post.role) ? ' · ' + CORE.escapeHtml(post.role) : '') + '</span><time>' + CORE.escapeHtml(post.time || '') + '</time></div>' +
+        '<article class="yz-post-paper"><div class="yz-post-meta"><span>' + CORE.escapeHtml(post.author || '') + (CORE.hasText(post.role) ? ' · ' + CORE.escapeHtml(post.role) : '') + (isMine ? ' <i class="yz-player-tag">' + CORE.escapeHtml(t.playerPostTag) + '</i>' : '') + '</span><time>' + CORE.escapeHtml(post.time || '') + '</time></div>' +
         '<h2>' + CORE.escapeHtml(post.title) + '</h2>' +
         (CORE.hasText(post.section) ? '<span class="yz-tag">' + CORE.escapeHtml(post.section) + '</span>' : '') +
         '<p>' + CORE.escapeHtml(post.body) + '</p>' +
@@ -3671,15 +3812,22 @@
         (comments.length || !kw
           ? '<section class="yz-comments"><h3>' + CORE.escapeHtml(String(comments.length)) + ' ' + CORE.escapeHtml(t.labels.commentsWord) + '</h3>' + comments + '</section>'
           : '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>') +
+        editBtn +
         '</main>';
     }
     var posts = CORE.safeArray(forum.posts, 20).filter(function (post) {
       return filterMatch(kw, [post.title, post.author, post.section, post.body]);
     });
     var list = posts.length ? posts.map(function (post) {
-      return button('navigate', '<b>' + CORE.escapeHtml(post.title) + '</b><em>' + CORE.escapeHtml((post.author || '') + (CORE.hasText(post.section) ? ' · ' + post.section : '')) + '</em><time>' + CORE.escapeHtml(post.time || '') + '</time>', { view: 'post', id: post.id }, 'yz-row');
+      var isMine = String(post.owner || '') === 'player';
+      var row = '<b>' + CORE.escapeHtml(post.title) + (isMine ? ' <i class="yz-player-tag">' + CORE.escapeHtml(t.playerPostTag) + '</i>' : '') + '</b><em>' + CORE.escapeHtml((post.author || '') + (CORE.hasText(post.section) ? ' · ' + post.section : '')) + '</em><time>' + CORE.escapeHtml(post.time || '') + '</time>';
+      if (player && isMine) {
+        return editableListRow(button('navigate', row, { view: 'post', id: post.id }, 'yz-row'), 'post', post.id);
+      }
+      return button('navigate', row, { view: 'post', id: post.id }, 'yz-row');
     }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.posts) + '</div>';
-    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBox(search) + '<div class="yz-page-list">' + list + '</div></main>';
+    var cta = player ? playerAddBtn('post', '') : '';
+    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBox(search) + '<div class="yz-page-list">' + list + '</div>' + cta + '</main>';
   }
 
   function marketRow(avatarName, title, sub, meta, foot, asButton) {
@@ -3932,7 +4080,11 @@
     if (nav.app === 'tablet') return isPlayer ? renderTablet(pstate, search, t.playerEmptyPrivate) : renderTablet(state, search);
     if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search) : renderMsg(state, nav, search);
     if (nav.app === 'notes') return isPlayer ? renderNotes(pstate, nav, search, true, ui) : renderNotes(state, nav, search);
-    if (nav.app === 'forum') return renderForum(state, nav, search, tag);
+    if (nav.app === 'forum') {
+      // 论坛是公开数据：列表/详情用角色域合并视图（含镜像进来的玩家帖子）；
+      // 玩家域额外提供发帖 CTA、帖子编辑入口，表单视图走玩家域数据源。
+      return renderForum(isPlayer ? (nav.view === 'form' ? pstate : state) : state, nav, search, tag, isPlayer, ui);
+    }
     if (nav.app === 'market') {
       var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
       // 坊市订单是私有数据（随域切换）；行情/拍卖是公开数据（跨域一致）；
@@ -4175,6 +4327,7 @@
     // —— 玩家域 CRUD：表单、行尾编辑、底部新建 ——
     '.yz-add-btn{display:block;width:calc(100% - 24px);margin:6px auto 4px;height:38px;border:1px solid rgba(170,255,225,.45);background:rgba(70,180,140,.3);color:#f2fff9;border-radius:19px;font-size:13px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
     '.yz-edit-btn{flex:none;align-self:center;border:1px solid rgba(150,255,215,.2);background:none;color:#9fd8c0;border-radius:10px;height:26px;padding:0 9px;font-size:12px;line-height:1;font-family:inherit;cursor:pointer}',
+    '.yz-player-tag{font-style:normal;font-size:9px;letter-spacing:1px;color:#ffe9a8;border:1px solid rgba(255,233,168,.45);border-radius:8px;padding:0 5px;margin-left:5px;vertical-align:1px}',
     '.yz-form{padding:4px 0 12px}',
     '.yz-form label{display:block;font-size:11px;letter-spacing:1px;color:#8fc4ac;margin:10px 2px 4px}',
     '.yz-form-input{width:100%;background:rgba(6,20,16,.85);border:1px solid rgba(150,255,215,.2);border-radius:10px;color:#eef9f3;padding:8px 10px;font-size:13px;font-family:inherit;line-height:1.5}',
