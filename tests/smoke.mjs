@@ -2214,6 +2214,24 @@ console.log('# 玩家发帖（forum owner 维度）');
 }
 
 {
+  // 有新回复（未读）的联系人/群聊：列表置顶 + 呼吸光效 class（双域一致）
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-unr');
+  await rt.applyText(jade('u1', TABLET_OK + '<yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\ncontact｜c3｜赵灵儿｜红颜｜今日｜0｜安好\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\nmsg｜c3｜m5｜other｜今日｜安好\nmsg｜c3｜m6｜other｜今日｜保重\ngroup｜g1｜青云内门｜30｜今日｜3｜集合\ngroup｜g2｜蜀山剑派｜12｜今日｜0｜静默\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\ngmsg｜g2｜gm3｜掌门｜other｜今日｜安好\ngmsg｜g2｜gm4｜长老｜other｜今日｜保重\n</yz_msg>'), 'chat-unr', 'test');
+  const rC = M.VIEWS.renderPage(rt.current(), { app: 'msg', view: 'chats', params: {}, stack: [] }, {}, {}, 'character', rt.playerCurrent());
+  const listC = rC.slice(rC.indexOf('yz-page-list'), rC.indexOf('</main>'));
+  ok(listC.indexOf('data-id="c2"') < listC.indexOf('data-id="c1"'), '未读联系人置顶');
+  ok(listC.indexOf('data-id="c2"') < listC.indexOf('data-id="c3"'), '未读联系人排最上方');
+  ok(listC.includes('class="yz-row yz-unread-row"'), '未读联系人行带光效 class');
+  const rG = M.VIEWS.renderPage(rt.current(), { app: 'msg', view: 'groups', params: {}, stack: [] }, {}, {}, 'character', rt.playerCurrent());
+  const gList = rG.slice(rG.indexOf('yz-page-list'), rG.indexOf('</main>'));
+  ok(gList.indexOf('data-id="g1"') < gList.indexOf('data-id="g2"'), '未读群组置顶');
+  const rPG = M.VIEWS.renderPage(rt.current(), { app: 'msg', view: 'groups', params: {}, stack: [] }, {}, {}, 'player', rt.playerCurrent());
+  ok(rPG.includes('class="yz-row yz-unread-row"'), '玩家域群组列表同样带光效 class');
+}
+
+{
   // 运行时：创建/校验/镜像/幂等/对账/删除
   const ph = fakeHost();
   const prt = M.createRuntime(ph.api, null, () => ({}));

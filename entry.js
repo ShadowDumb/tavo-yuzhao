@@ -3871,8 +3871,17 @@
   }
 
   function chatRow(t, row, label, extra) {
-    var unread = Number(row.unread) > 0 ? '<u class="yz-unread">' + CORE.escapeHtml(String(row.unread)) + '</u>' : '';
-    return button('navigate', ava(row.name) + '<span class="yz-row-copy"><b>' + CORE.escapeHtml(row.name) + '<i>' + CORE.escapeHtml(row.relation || extra || '') + '</i></b><em>' + CORE.escapeHtml(row.preview || t.awaitingSync) + '</em></span><time>' + CORE.escapeHtml(row.time || '') + unread + '</time>', { view: label, id: row.id }, 'yz-row');
+    var hasUnread = Number(row.unread) > 0;
+    var unread = hasUnread ? '<u class="yz-unread">' + CORE.escapeHtml(String(row.unread)) + '</u>' : '';
+    // 有新回复（未读）的条目：数字徽标 + 呼吸光效（yz-unread-row），并排在最上方。
+    return button('navigate', ava(row.name) + '<span class="yz-row-copy"><b>' + CORE.escapeHtml(row.name) + '<i>' + CORE.escapeHtml(row.relation || extra || '') + '</i></b><em>' + CORE.escapeHtml(row.preview || t.awaitingSync) + '</em></span><time>' + CORE.escapeHtml(row.time || '') + unread + '</time>', { view: label, id: row.id }, 'yz-row' + (hasUnread ? ' yz-unread-row' : ''));
+  }
+
+  // 有新回复（unread > 0）的条目稳定置顶，其余保持原顺序（渲染层排序，不改数据）。
+  function unreadFirst(rows) {
+    return rows.sort(function (a, b) {
+      return (Number(b.unread) > 0 ? 1 : 0) - (Number(a.unread) > 0 ? 1 : 0);
+    });
   }
 
   function renderChatList(state, nav, search) {
@@ -3883,17 +3892,17 @@
     var body = '';
     var items;
     if (view === 'groups') {
-      items = CORE.safeArray(chats.groups, 6).filter(function (row) {
+      items = unreadFirst(CORE.safeArray(chats.groups, 6).filter(function (row) {
         return filterMatch(kw, [row.name, row.preview, row.time]);
-      }).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
+      })).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
       if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
       else body = '<div class="yz-page-list">' + items.join('') + '</div>';
       return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true) +
         yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
     }
-    items = CORE.safeArray(chats.contacts, 10).filter(function (row) {
+    items = unreadFirst(CORE.safeArray(chats.contacts, 10).filter(function (row) {
       return filterMatch(kw, [row.name, row.relation, row.preview, row.time]);
-    }).map(function (row) { return chatRow(t, row, 'chat', ''); });
+    })).map(function (row) { return chatRow(t, row, 'chat', ''); });
     if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.contacts) + '</div>';
     else body = '<div class="yz-page-list">' + items.join('') + '</div>';
     return '<main class="yz-page-inner" data-marker="msg-chats">' + yzHeader(t.features.msg, true) +
@@ -3956,10 +3965,10 @@
       return renderMsgDetail(characterState, nav, true, search, tag, String(nav.params && nav.params.id) || '', true);
     }
     if (view === 'groups') {
-      // 群组列表（公开）：渲染角色域群组，行内未读徽标与角色域一致。
-      var gitems = CORE.safeArray(characterState.chats && characterState.chats.groups, 6).filter(function (row) {
+      // 群组列表（公开）：渲染角色域群组，行内未读徽标与角色域一致；有新回复的置顶 + 光效。
+      var gitems = unreadFirst(CORE.safeArray(characterState.chats && characterState.chats.groups, 6).filter(function (row) {
         return filterMatch(kw, [row.name, row.preview, row.time]);
-      }).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
+      })).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
       var gbody = gitems.length ? '<div class="yz-page-list">' + gitems.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
       return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true, tag) +
         yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + searchBox(search) + gbody + '</main>';
@@ -4670,6 +4679,8 @@
     '.yz-row-copy em{display:block;font-style:normal;font-size:12px;color:#b7e0cd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}',
     '.yz-row time{font-size:10px;color:#7fae9a;flex:none;text-align:right;align-self:flex-start;display:flex;flex-direction:column;gap:4px;align-items:flex-end}',
     '.yz-unread{font-style:normal;background:#ffd27a;color:#241a05;border-radius:9px;min-width:17px;height:17px;line-height:17px;padding:0 5px;font-size:10px;display:inline-block;text-align:center}',
+    '.yz-row.yz-unread-row{border-color:rgba(255,210,122,.55);animation:yzUnreadGlow 2.2s ease-in-out infinite}',
+    '@keyframes yzUnreadGlow{0%,100%{box-shadow:0 0 0 0 rgba(255,210,122,0)}50%{box-shadow:0 0 16px 2px rgba(255,210,122,.35)}}',
     '.yz-bubbles{padding:10px 2px 4px;display:flex;flex-direction:column;gap:2px}',
     '.yz-bubble-row{display:flex;align-items:flex-end;gap:6px;margin:6px 0}',
     '.yz-bubble-row.self{justify-content:flex-end}',
