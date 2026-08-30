@@ -178,14 +178,34 @@ ok(/featureFlags\.msg === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedMsg
 ok(/featureFlags\.msg === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedMsg, true\); return; \}/.test(source), '封印 msg 后群聊发言明示');
 ok(/featureFlags\.forum === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedForum, true\); return; \}/.test(source), '封印 forum 后评论明示');
 // 回归保护：非聊天页重渲染必须保留滚动位置（发论坛评论/搜索后不再跳顶）。
-ok(/var savedScroll = \(nav\.view === 'chat' \|\| nav\.view === 'gchat'\) \? null : pageNode\.scrollTop;/.test(source) && /pageNode\.scrollTop = savedScroll;/.test(source), '重渲染前保存滚动位置并恢复（非聊天页）');
-// 回归保护：英文「NewFolder/EditNote」必须补空格（动词+名词拼接）。
-ok(/function playerVerbNoun\(verb, noun\) \{/.test(source) && /verb \+ ' ' \+ noun : verb \+ noun;/.test(source), 'playerVerbNoun 按语言补空格（en 不粘连）');
+ok(/var savedScroll = \(\(nav\.view === 'chat' \|\| nav\.view === 'gchat'\) && !search\) \? null : pageNode\.scrollTop;/.test(source) && /pageNode\.scrollTop = savedScroll;/.test(source), '重渲染前保存滚动位置并恢复（非聊天页/检索态）');
 // 回归保护：确认框点遮罩/Esc 关闭（与文档承诺一致），点非按钮区域等同取消。
 ok(/if \(!btn\) \{ cancelConfirm\(\); return; \}/.test(source), '确认框点遮罩等同取消');
 ok(/hostDocument\.addEventListener\('keydown', function \(event\) \{\s*if \(event\.key !== 'Escape'\) return;/.test(source), '确认框支持 Esc 关闭');
 // 回归保护：快照恢复 in-flight 锁——进行中再点不触发误导性「聊天已切换」红 toast。
 ok(/var restoreBusy = false;/.test(source) && /if \(restoreBusy\) \{ showToast\(I18N\.dict\(\)\.toast\.restoreBusy\); return; \}/.test(source), 'resync-history 有 in-flight 锁（防重入）');
+// 回归保护：非聊天页（宿主主页/设置等）侧边栏/输入动作不操作上一个聊天的残留数据。
+ok(/if \(!chatActive\) \{ showToast\(I18N\.dict\(\)\.toast\.noChat, true\); return; \}/.test(source), 'open()/resync/clear 非聊天页统一门控（不作用于残留聊天）');
+// 回归保护：聊天详情检索时不钉底（搜旧消息不被拉回底部）、非聊天页重渲染恢复滚动位置。
+ok(/#yz1-overlay\.loading\{display:flex/.test(source), 'open() 异步加载期间有 loading 态');
+// 回归保护：生成失败/取消回退已读游标（玩家消息不被提前标已读）。
+ok(/var cursorBeforePrepare = null;/.test(source) && /runtime\.restorePlayerReadCursor\(runtime\.activeChatId, cursorBeforePrepare\);/.test(source), '生成失败/取消回退已读游标');
+// 回归保护：自己刚发的消息不计为角色域未读（refreshPlayerContact 排除 ownIds）。
+ok(/var ownIds = \{\};\s*var player = playerCurrent\(\);/.test(source) && /!ownIds\[String\(message\.id\)\]\) unread \+= 1;/.test(source), 'refreshPlayerContact 排除自己发过的消息（不计角色域未读）');
+// 回归保护：卦名允许两行换行（en 长卦名小屏不截断）。
+ok(/\.yz-node b\{[^}]*display:-webkit-box;-webkit-line-clamp:2/.test(source), '卦名两行换行（en 不截断）');
+// 回归保护：英文顶栏窄屏适配（媒体查询隐藏副标、缩字距）。
+ok(/@media \(max-width:374px\)\{\.yz-topbar\{gap:6px\}/.test(source), '窄屏顶栏适配（防 EN 溢出）');
+// 回归保护：封印后给「启封」撤销按钮（误封可一键回退）。
+ok(/toast\.sealed[\s\S]*?label: I18N\.dict\(\)\.unseal/.test(source), '封印后 toast 带「启封」撤销按钮');
+// 回归保护：超长标识行截断按字段边界（不腰斩 id）。
+ok(/var lastSep = cut\.lastIndexOf\('｜'\);\s*if \(lastSep > 0\) cut = cut\.slice\(0, lastSep\);/.test(source), '第五轮截断按「｜」边界切（不腰斩 id）');
+// 回归保护：玩家域主页同步行为纯展示（无手形）。
+ok(/\.yz-sync\.yz-sync-static\{cursor:default\}/.test(source), '玩家域主页同步行纯展示（不伪装可点）');
+// 回归保护：确认框语言切换刷新文案 + 无障碍焦点（aria 关联 + 焦点入取消）。
+ok(/function refreshConfirmText\(\) \{/.test(source) && /box\.setAttribute\('aria-labelledby', titleId\);/.test(source), '确认框语言刷新 + aria 关联 + 焦点入取消');
+// 回归保护：英文「New/Edit+名词」补空格（en 不粘连成 NewFolder）。
+ok(/function playerVerbNoun\(verb, noun\) \{/.test(source) && /verb \+ ' ' \+ noun : verb \+ noun;/.test(source), 'playerVerbNoun 按语言补空格（en 不粘连）');
 // 回归保护：带操作按钮的 toast（清除确认等）文案较长，nowrap+overflow 会把按钮挤出可视区，
 // 必须允许换行且不裁剪，保证「确认清除」按钮始终可见。
 ok(/\.yz-toast\.has-action\{white-space:normal;max-width:92%;overflow:visible;text-overflow:clip;line-height:1.5\}/.test(source), 'has-action toast 允许换行、不裁剪（按钮不被挤出）');
@@ -875,7 +895,7 @@ console.log('# 交互基座 · 检索筛选');
   // renderPage 透传 ui.search 到各页面；无 ui 时缺省空关键词不报错。
   const pageSearch = M.VIEWS.renderPage(ms, { app: 'msg', view: 'chats', params: {}, stack: [] }, {}, { search: '林月如' });
   ok(pageSearch.includes('林月如') && !pageSearch.includes('酒剑仙'), 'renderPage 透传检索关键词');
-  ok(M.VIEWS.renderPage(M.CORE.blankState('f8'), { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}).includes('data-search-input'), '无检索状态时页面正常渲染');
+  ok(M.VIEWS.renderPage(M.CORE.blankState('f8'), { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}).includes('data-marker="map"'), '空地图页正常渲染（无检索框，防纯占位）');
 
   // 回归：检索空态文案与清除按钮键双语齐全。
   ['runtime.search.placeholder', 'runtime.search.clear', 'runtime.search.noMatch'].forEach((k) => {
@@ -1605,7 +1625,7 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   eq(pc.messages.length, 1, '玩家消息投递角色域');
   eq(pc.messages[0].id, sent.id, '消息 id 跨域一致（幂等）');
   eq(pc.messages[0].side, 'other', '角色视角为收到的消息');
-  eq(pc.unread, 1, '未读数 = 已投递未读消息数');
+  eq(pc.unread, 0, '自己刚发的消息不计为角色域未读（已读游标随发送推进）');
 
   await rt.syncPlayerChannel('chat-1');
   eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).messages.length, 1, '重复同步幂等（无副本）');
@@ -1625,7 +1645,10 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
 
   rt.sendPlayerMessage('chat-1', '第二句');
   await rt.syncPlayerChannel('chat-1');
-  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).unread, 1, '新消息未读数为 1');
+  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).unread, 0, '新发消息不计为角色域未读（ownIds 排除）');
+  // 回归：生成失败/取消回退已读游标——prepare 推进后失败，玩家消息重新计未读。
+  rt.restorePlayerReadCursor('chat-1', 0);
+  eq(rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID).unread, 0, '回退游标后自己消息仍不计角色域未读（ownIds 排除）');
   const pv2 = M.VIEWS.renderMsgPlayer(rt.current(), rt.playerCurrent(), { app: 'msg', view: 'chat', params: { id: M.CORE.PLAYER_THREAD_ID }, stack: [] }, '');
   ok(pv2.includes(zhCatalog['runtime.player.statusSent']), '未读未回消息显示已送达');
 

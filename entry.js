@@ -328,6 +328,7 @@
     raw = safeObject(raw);
     var contacts = safeArray(raw.contacts, 10).map(function (contact) {
       contact = safeObject(contact);
+      var rawMessages = safeArray(contact.messages, 100);
       return {
         id: cleanText(contact.id, 160),
         name: cleanText(contact.name, 120),
@@ -335,7 +336,10 @@
         time: cleanText(contact.time, 80),
         unread: nzero(contact.unread),
         preview: cleanText(contact.preview, 300),
-        messages: tail(contact.messages, 20).map(function (message) {
+        // 超窗截断留痕：与玩家域线程一致（archived=true 时详情页顶部显示归档说明），
+        // 否则角色域旧消息悄悄消失，用户会以为被删了。
+        archived: rawMessages.length > 20,
+        messages: tail(rawMessages, 20).map(function (message) {
           message = safeObject(message);
           return {
             id: cleanText(message.id, 160),
@@ -348,6 +352,7 @@
     }).filter(function (contact) { return contact.id && hasText(contact.name); });
     var groups = safeArray(raw.groups, 6).map(function (group) {
       group = safeObject(group);
+      var rawGMessages = safeArray(group.messages, 100);
       return {
         id: cleanText(group.id, 160),
         name: cleanText(group.name, 120),
@@ -355,7 +360,8 @@
         time: cleanText(group.time, 80),
         unread: nzero(group.unread),
         preview: cleanText(group.preview, 300),
-        messages: tail(group.messages, 24).map(function (message) {
+        archived: rawGMessages.length > 24,
+        messages: tail(rawGMessages, 24).map(function (message) {
           message = safeObject(message);
           return {
             id: cleanText(message.id, 160),
@@ -1775,6 +1781,7 @@
       closePhone: tr('runtime.closePhone'),
       back: tr('runtime.back'),
       cancel: tr('runtime.cancel'),
+      unseal: tr('runtime.unseal'),
       awaitingSync: tr('runtime.awaitingSync'),
       homeEmpty: tr('runtime.home.empty'),
       emptyTablet: tr('runtime.emptyTablet'),
@@ -1797,6 +1804,7 @@
         rebuilt: tr('runtime.toast.rebuilt'),
         noSnapshot: tr('runtime.toast.noSnapshot'),
         disabled: tr('runtime.toast.disabled'),
+        noChat: tr('runtime.toast.noChat'),
         restoreFailed: tr('runtime.toast.restoreFailed'),
         restoreBusy: tr('runtime.toast.restoreBusy'),
         stale: tr('runtime.toast.stale'),
@@ -1893,6 +1901,7 @@
       playerMapEmpty: tr('runtime.player.mapEmpty'),
       playerReadOnlyOrders: tr('runtime.player.readOnlyOrders'),
       playerReadOnlySpace: tr('runtime.player.readOnlySpace'),
+      playerLockedHint: tr('runtime.player.lockedHint'),
       playerReadOnlyForum: tr('runtime.player.readOnlyForum'),
       playerEditWord: tr('runtime.player.editWord'),
       playerNewWord: tr('runtime.player.newWord'),
@@ -1914,6 +1923,11 @@
       playerFieldPrice: tr('runtime.player.fieldPrice'),
       playerFieldSide: tr('runtime.player.fieldSide'),
       playerFieldSection: tr('runtime.player.fieldSection'),
+      playerSectionGeneral: tr('runtime.player.sectionGeneral'),
+      playerSectionCultivation: tr('runtime.player.sectionCultivation'),
+      playerSectionArtifact: tr('runtime.player.sectionArtifact'),
+      playerSectionBounty: tr('runtime.player.sectionBounty'),
+      playerSectionMarket: tr('runtime.player.sectionMarket'),
       playerPostTag: tr('runtime.player.postTag'),
       playerSideBuy: tr('runtime.player.sideBuy'),
       playerSideSell: tr('runtime.player.sideSell'),
@@ -2415,6 +2429,17 @@
       var unread = 0;
       var latest = 0;
       var last = null;
+      // ownIds：玩家域线程中玩家自己发过的消息 id 集合。镜像回角色域后仍算「自己发的」，
+      // 不该计为角色域未读（否则玩家切回角色域看到自己消息的未读角标）。其余 pm-N
+      // （角色视角待读）照旧按 seq>游标 计数。所有调用方统一语义。
+      var ownIds = {};
+      var player = playerCurrent();
+      var ownThread = player && CORE.safeArray(player.chats && player.chats.contacts, 10).filter(function (c) {
+        return String(c && c.id) === CORE.PLAYER_THREAD_ID;
+      })[0];
+      CORE.safeArray(ownThread && ownThread.messages, 100).forEach(function (m) {
+        if (m && m.side === 'self' && /^pm-/.test(String(m.id) || '')) ownIds[String(m.id)] = true;
+      });
       // 未读与游标扫全量消息：头部切片会在超过 20 条时漏计/回退。
       safeArray(contact && contact.messages, 100).forEach(function (message) {
         if (!message) return;
@@ -2422,7 +2447,7 @@
         if (n) {
           var seq = Number(n[1]) || 0;
           latest = Math.max(latest, seq);
-          if (message.side === 'other' && seq > cursor) unread += 1;
+          if (message.side === 'other' && seq > cursor && !ownIds[String(message.id)]) unread += 1;
         }
         last = message;
       });
@@ -2494,7 +2519,11 @@
           if (m && m.side === 'self' && String(m.id) === String(message.id)) source = m;
         });
         if (!source) {
+          // 玩家线程里已无此消息（可能被保尾裁剪）。序号超玩家最大 → 模型伪造，删。
           if ((Number(mm[1]) || 0) > maxPlayerSeq) forged.push(index);
+          else if (message.side === 'self') forged.push(index);
+          // 序号 ≤ 玩家最大但 side='self' 的 pm-N 是伪造：玩家消息经镜像一定是 side='other'，
+          // side='self' 的「玩家消息」只可能是模型捏造的角色侧行。
           return;
         }
         if (message.side !== 'other' || message.text !== source.text || message.time !== source.time) {
@@ -2510,6 +2539,7 @@
       });
       if (contactChanged) {
         if (contact.messages.length > 20) contact.messages = tail(contact.messages, 20);
+        // refreshPlayerContact 内部自动排除玩家自己发过的消息（不计角色域未读）。
         refreshPlayerContact(state, contact);
         changed = true;
       }
@@ -2568,6 +2598,21 @@
       save(chatId, state);
     }
 
+    // 生成失败/取消时回退已读游标：恢复为某序号之前的值（把晚于该序号的玩家消息重新
+    // 计为未读），避免「没收到回复却被标成已读、下轮无未读角标提示」。
+    function restorePlayerReadCursor(chatId, beforeSeq) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (chatId !== activeChatId) return;
+      beforeSeq = Math.max(0, Number(beforeSeq) || 0);
+      var state = current();
+      var cursor = playerReadCursor(state);
+      if (cursor <= beforeSeq) return;
+      state.sync.playerReadCursor = beforeSeq;
+      var contact = characterContact(state);
+      if (contact) refreshPlayerContact(state, contact);
+      save(chatId, state);
+    }
+
     // 玩家发讯：写入玩家域会话线程 + 立即投递角色域（异步落盘，不阻塞 UI）。
     // 返回 { id, seq } 摘要；消息 id 按 seq 幂等，重复调用不产生重复行（镜像按 id 去重）。
     function sendPlayerMessage(chatId, text) {
@@ -2594,6 +2639,8 @@
       thread.time = message.time;
       // 玩家自己发讯视为已读当前线程（回复未读清零）。
       thread.unread = 0;
+      // 注意：不在此推进角色域已读游标——那是「角色已读（基线注入）」的语义，随
+      // generation:prepare 推进；自己刚发的消息不计角色域未读由 refreshPlayerContact 排除。
       player.updatedAt = Date.now();
       savePlayer(chatId, player);
       syncPlayerChannel(chatId);
@@ -3411,6 +3458,7 @@
       syncPlayerGroups: syncPlayerGroups,
       syncPlayerPosts: syncPlayerPosts,
       markPlayerRead: markPlayerRead,
+      restorePlayerReadCursor: restorePlayerReadCursor,
       sendPlayerMessage: sendPlayerMessage,
       sendPlayerGroupMessage: sendPlayerGroupMessage,
       sendPlayerComment: sendPlayerComment,
@@ -3854,12 +3902,16 @@
       }
       // 第五轮：标识行全保留也撑爆预算的极端满配态下，把超长标识行截断到短上限
       // （行首 id/name 仍在，diff 可定位；preview/time 等长尾字段放弃）。
+      // 截断按字段边界（最后一个「｜」）切割：绝不把 id 拦腰截断，否则下一轮 diff 无法定位该行。
       if (total > MAX_BASELINE_CHARS) {
         sections.forEach(function (item) {
           item.rows.forEach(function (r) {
             if (!r.last && r.text.length > ROW_HARD_CAP && total > MAX_BASELINE_CHARS) {
               total -= r.text.length;
-              r.text = r.text.slice(0, ROW_HARD_CAP);
+              var cut = r.text.slice(0, ROW_HARD_CAP);
+              var lastSep = cut.lastIndexOf('｜');
+              if (lastSep > 0) cut = cut.slice(0, lastSep);
+              r.text = cut;
               total += r.text.length;
             }
           });
@@ -4020,10 +4072,23 @@
 
   // 字段键显示层本地化：键先按 CANONICAL 别名归一到 canonical id，再查显示字典；
   // 未知键（模型自定义字段）回退原文，绝不显示半生不熟的英文键。
+  // 字段键显示层本地化：键先按 CANONICAL 别名归一到 canonical id，再查显示字典；
+  // 未知键（模型自定义字段）做人性化清洗（下划线/驼峰拆词、首字母大写），
+  // 绝不显示半生不熟的裸英文键（如 luck/sect 直接上屏）。
+  function humanizeKey(key) {
+    var s = String(key == null ? '' : key).trim();
+    if (!s) return s;
+    return s
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^./, function (c) { return c.toUpperCase(); });
+  }
   function fieldName(key) {
     var t = I18N.dict();
     var id = keyId(key);
-    return (id && t.fields[id]) || String(key == null ? '' : key);
+    return (id && t.fields[id]) || humanizeKey(key);
   }
 
   function syncStatusOf(state) {
@@ -4139,7 +4204,7 @@
       // 角色新回复未读：玩家域主页同步行带未读角标（呼吸光效），"等角色回复"可感知。
       var unreadBadge = thread && Number(thread.unread) > 0 ? '<u class="yz-unread">' + CORE.escapeHtml(Number(thread.unread) > 99 ? '99+' : String(thread.unread)) + '</u>' : '';
       hero = '<div class="yz-hero-line"><b>' + CORE.escapeHtml(pname) + '</b><p>' + CORE.escapeHtml(t.playerHomeInfo) + '</p></div>';
-      footer = '<div class="yz-sync complete' + (thread && Number(thread.unread) > 0 ? ' yz-unread-row' : '') + '"><i></i><span>' + CORE.escapeHtml(t.playerSentWord + ' ' + counts.delivered + ' · ' + t.playerRepliedWord + ' ' + counts.replied) + unreadBadge + '</span></div>';
+      footer = '<div class="yz-sync complete yz-sync-static' + (thread && Number(thread.unread) > 0 ? ' yz-unread-row' : '') + '"><i></i><span>' + CORE.escapeHtml(t.playerSentWord + ' ' + counts.delivered + ' · ' + t.playerRepliedWord + ' ' + counts.replied) + unreadBadge + '</span></div>';
     } else {
       hero = '<div class="yz-hero-line"><b>' + CORE.escapeHtml(CORE.hasText(sync.roleName) ? sync.roleName : t.appName) + '</b><p>' + CORE.escapeHtml(sync.summary || t.awaitingSync) + '</p>' +
         // 空数据（从未同步）时给新用户一句「接下来干什么」的行动指引，避免八格卦盘无从下手。
@@ -4183,6 +4248,11 @@
     return '<div class="yz-search"><input type="search" data-search-input value="' + CORE.escapeHtml(value || '') +
       '" placeholder="' + CORE.escapeHtml(t.searchPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.searchPlaceholder) + '">' +
       '<button type="button" class="yz-search-clear' + (value ? '' : ' hidden') + '" data-action="clear-search" aria-label="' + CORE.escapeHtml(t.searchClear) + '">×</button></div>';
+  }
+
+  // 空列表/少条目不渲染检索框（纯占位）：只有有数据（或正在检索）时才值得展示搜索入口。
+  function searchBoxIf(hasItems, search) {
+    return hasItems || searchKw(search) ? searchBox(search) : '';
   }
 
   function renderTablet(state, search, emptyText) {
@@ -4234,7 +4304,7 @@
       body = '<div class="yz-empty">' + CORE.escapeHtml(emptyText || t.emptyTablet) + '</div>';
     }
     return '<main class="yz-page-inner" data-marker="tablet">' +
-      yzHeader(t.features.tablet) + searchBox(search) + body + '</main>';
+      yzHeader(t.features.tablet) + searchBoxIf(CORE.safeArray(tablet.groups, 10).length, search) + body + '</main>';
   }
 
   function ava(label, sizeClass) {
@@ -4270,7 +4340,7 @@
       if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
       else body = '<div class="yz-page-list">' + items.join('') + '</div>';
       return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true) +
-        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
+        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.groups, 6).length, search) + body + '</main>';
     }
     items = unreadFirst(CORE.safeArray(chats.contacts, 10).filter(function (row) {
       return filterMatch(kw, [row.name, row.relation, row.preview, row.time]);
@@ -4278,7 +4348,7 @@
     if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.contacts) + '</div>';
     else body = '<div class="yz-page-list">' + items.join('') + '</div>';
     return '<main class="yz-page-inner" data-marker="msg-chats">' + yzHeader(t.features.msg, true) +
-      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
+      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.contacts, 10).length, search) + body + '</main>';
   }
 
   // 群聊是公开数据（双域同一份角色域数据）。气泡左右按「渲染视角」判定：
@@ -4291,7 +4361,7 @@
     var rows = group ? CORE.safeArray(chats.groups, 6) : CORE.safeArray(chats.contacts, 10);
     var rowItem = null;
     rows.forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) rowItem = item; });
-    if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false, tag) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '</div></main>';
+    if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false, tag) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '</div><div class="yz-empty yz-archived-hint">' + CORE.escapeHtml(t.guards.chatArchived) + '</div></main>';
     var bubbles = CORE.safeArray(rowItem.messages, group ? 24 : 20).filter(function (message) {
       return filterMatch(kw, [message.text, message.sender, message.time]);
     }).map(function (message) {
@@ -4310,6 +4380,11 @@
     // 玩家侧消息窗口截断痕迹（玩家群聊发言最多保留 24 条，更早的已归档）。
     if (archivedFlag) {
       bubbles = '<div class="yz-archived-note">' + CORE.escapeHtml(tr('runtime.player.msgArchived', { n: 24 })) + '</div>' + bubbles;
+    }
+    // 角色域会话截断痕迹：联系人 20 条/群聊 24 条窗口外的更早消息已归档——
+    // 与玩家域一致在会话顶部说明，否则旧消息悄悄消失会误以为被删。
+    if (!archivedFlag && rowItem && rowItem.archived) {
+      bubbles = '<div class="yz-archived-note">' + CORE.escapeHtml(tr('runtime.player.msgArchived', { n: group ? 24 : 20 })) + '</div>' + bubbles;
     }
     var title = CORE.escapeHtml(rowItem.name) + (group && Number(rowItem.members) ? ' <small>(' + CORE.escapeHtml(rowItem.members + t.labels.membersUnit) + ')</small>' : '');
     // 玩家域群聊（公开数据）：底部群聊发言输入框（data-group-msg-input 由 App 层绑定）。
@@ -4353,7 +4428,7 @@
       })).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
       var gbody = gitems.length ? '<div class="yz-page-list">' + gitems.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
       return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true, tag) +
-        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + searchBox(search) + gbody + '</main>';
+        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + searchBoxIf(CORE.safeArray(characterState.chats && characterState.chats.groups, 6).length, search) + gbody + '</main>';
     }
     var thread = null;
     CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).forEach(function (c) {
@@ -4429,7 +4504,7 @@
     else body = '<div class="yz-empty">' + CORE.escapeHtml(t.playerNoThread) + '</div>' +
       button('navigate', t.playerStartThread, { view: 'chat', id: CORE.PLAYER_THREAD_ID }, 'yz-start-thread');
     return '<main class="yz-page-inner" data-marker="player-chats">' + yzHeader(t.features.msg, true) +
-      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
+      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).length, search) + body + '</main>';
   }
 
   // ---------- 玩家域 CRUD：表单页与列表页操作控件 ----------
@@ -4502,9 +4577,22 @@
       ];
     }
     if (kind === 'post') {
+      // 版块用下拉（预设与角色侧一致的版块），避免自由文本把版块碎片化；
+      // 已存在的自定义版块保留为选项，不丢用户已有数据。
+      var sectionOptions = [
+        ['闲聊', t.playerSectionGeneral],
+        ['修炼心得', t.playerSectionCultivation],
+        ['法器交流', t.playerSectionArtifact],
+        ['悬赏委托', t.playerSectionBounty],
+        ['坊市见闻', t.playerSectionMarket]
+      ];
+      var curSection = CORE.cleanText(entity && entity.section, 60);
+      if (curSection && !sectionOptions.some(function (o) { return o[0] === curSection; })) {
+        sectionOptions.push([curSection, curSection]);
+      }
       return [
         field('title', t.playerFieldTitle, 'text', entity && entity.title, null, 200),
-        field('section', t.playerFieldSection, 'text', entity && entity.section, null, 60),
+        field('section', t.playerFieldSection, 'select', curSection || '闲聊', sectionOptions),
         field('body', t.playerFieldBody, 'textarea', entity && entity.body, null, 3000)
       ];
     }
@@ -4525,6 +4613,11 @@
     if (kind === 'note') {
       var folderId = params.folderId || (entity && entity.folderId) || '';
       body += '<input type="hidden" data-form-field="folderId" value="' + CORE.escapeHtml(String(folderId)) + '">';
+      // 锁定是角色扮演标记（剧情里「禁制」），不影响本机编辑——给一句说明，
+      // 否则用户以为锁定后不可改。
+      if (entity && entity.locked) {
+        body += '<div class="yz-io-warn">' + CORE.escapeHtml(t.playerLockedHint) + '</div>';
+      }
     }
     fields.forEach(function (field) {
       var label = '<label for="yz-form-' + field.key + '">' + CORE.escapeHtml(field.label) + '</label>';
@@ -4570,11 +4663,19 @@
       var rowNote = null;
       CORE.safeArray(notes.notes, 30).forEach(function (note) { if (String(note.id) === String(nav.params && nav.params.id)) rowNote = note; });
       if (!rowNote) return '<main class="yz-page-inner"><div class="yz-empty">' + CORE.escapeHtml(t.guards.note) + '</div></main>';
-      var editBtn = player ? '<div class="yz-form-actions"><button type="button" class="yz-send" data-action="player-edit" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button></div>' : '';
+      // 详情页直接提供编辑与删除（删除走两击确认，与表单页一致）——否则删除要经表单，
+      // 用户从详情页找不到删除入口。
+      var actions = '';
+      if (player) {
+        actions = '<div class="yz-form-actions">' +
+          '<button type="button" class="yz-send" data-action="player-edit" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button>' +
+          '<button type="button" class="yz-clear-btn" data-action="player-delete" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerDelete) + '</button>' +
+          '</div>';
+      }
       return '<main class="yz-page-inner" data-marker="note-detail">' +
         yzHeader(t.features.notes) +
         '<div class="yz-note-paper"><small>' + (rowNote.locked ? CORE.escapeHtml(t.labels.locked) : '') + '</small><h2>' + CORE.escapeHtml(rowNote.title) + '</h2><time>' + CORE.escapeHtml(rowNote.updated || '') + '</time><p>' + CORE.escapeHtml(rowNote.body) + '</p></div>' +
-        editBtn +
+        actions +
         '</main>';
     }
     if (view === 'folder') {
@@ -4593,7 +4694,7 @@
       }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.notes) + '</div>';
       var cta = player ? playerAddBtn('note', folder.id) : '';
       return '<main class="yz-page-inner" data-marker="notes-list">' +
-        yzHeader(CORE.escapeHtml(folder.name)) + searchBox(search) + '<div class="yz-page-list">' + list + '</div>' + cta + '</main>';
+        yzHeader(CORE.escapeHtml(folder.name)) + searchBoxIf(CORE.safeArray(notes.notes, 30).length, search) + '<div class="yz-page-list">' + list + '</div>' + cta + '</main>';
     }
     var folderCards = CORE.safeArray(notes.folders, 10).filter(function (f) {
       return filterMatch(kw, [f.name]);
@@ -4603,7 +4704,7 @@
     });
     var body = folderCards.length ? '<div class="yz-page-list">' + folderCards.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.folders) + '</div>';
     var cta = player ? playerAddBtn('folder', '') : '';
-    return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + searchBox(search) + body + cta + '</main>';
+    return '<main class="yz-page-inner" data-marker="notes-folders">' + yzHeader(t.features.notes) + searchBoxIf(CORE.safeArray(notes.folders, 10).length, search) + body + cta + '</main>';
   }
 
   function renderForum(state, nav, search, tag, player, ui) {
@@ -4631,7 +4732,8 @@
       var commentBox = player
         ? '<div class="yz-composer"><input type="text" data-comment-input data-post-id="' + CORE.escapeHtml(post.id) + '" placeholder="' + CORE.escapeHtml(t.playerCommentPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerCommentPlaceholder) + '" maxlength="3000">' +
           '<button type="button" class="yz-send" data-action="send-comment" data-post-id="' + CORE.escapeHtml(post.id) + '">' + CORE.escapeHtml(t.playerComment) + '</button></div>'
-        : readOnlyHint(t.playerReadOnlyForum);
+        // 角色域帖子详情不重复只读提示：列表页已有 sticky 提示，连看多帖不反复见到同一句。
+        : '';
       return '<main class="yz-page-inner yz-page-composer" data-marker="forum-post">' +
         yzHeader(t.features.forum, false, tag) +
         '<article class="yz-post-paper"><div class="yz-post-meta"><span>' + CORE.escapeHtml(post.author || '') + (CORE.hasText(post.role) ? ' · ' + CORE.escapeHtml(post.role) : '') + (isMine ? ' <i class="yz-player-tag">' + CORE.escapeHtml(t.playerPostTag) + '</i>' : '') + '</span><time>' + CORE.escapeHtml(post.time || '') + '</time></div>' +
@@ -4665,7 +4767,7 @@
     var cta = player ? playerAddBtn('post', '') : '';
     // 角色域论坛只读：给出可读性边界说明，避免把「没有发帖/评论入口」误读为缺功能。
     var hint = player ? '' : readOnlyHint(t.playerReadOnlyForum);
-    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBox(search) + '<div class="yz-page-list">' + list + '</div>' + cta + hint + '</main>';
+    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBoxIf(CORE.safeArray(state.forum && state.forum.posts, 20).length, search) + '<div class="yz-page-list">' + list + '</div>' + cta + hint + '</main>';
   }
 
   function marketRow(avatarName, title, sub, meta, foot, asButton, editTarget) {
@@ -4692,6 +4794,11 @@
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
     if (player && view === 'form') return renderPlayerForm(state, nav, ui);
     var body;
+    // 当前 tab 是否有数据：空列表不渲染检索框（纯占位）。
+    var hasRows = view === 'orders' ? CORE.safeArray(market.orders, 12).length
+      : view === 'requests' ? CORE.safeArray(market.requests, 12).length
+      : view === 'auctions' ? CORE.safeArray(market.auctions, 12).length
+      : CORE.safeArray(market.listings, 20).length;
     if (view === 'auctions') {
       var auctions = CORE.safeArray(market.auctions, 12).filter(function (auction) {
         return filterMatch(kw, [auction.name, auction.grade, auction.desc, auction.start, auction.current, auction.timeLeft]);
@@ -4716,7 +4823,8 @@
           CORE.escapeHtml(order.name), '<span class="' + sideCls + '">' + CORE.escapeHtml(side) + '</span>',
           CORE.escapeHtml(order.status || ''),
           CORE.escapeHtml(order.time || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(formatNum(order.price)) + '</u>', !!player, player && { kind: 'order', id: order.id });
-        return player ? editableListRow(row, 'order', order.id) : row;
+        // 整行已是 player-edit 按钮：不再叠加行尾 ✎（双入口同一动作，✎ 冗余）。
+        return player ? row : row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.orders) + '</div>';
     } else if (view === 'requests') {
       // 求购区是公开数据（与行情/拍卖同源，跨域一致）：展示求购公告与出价。
@@ -4745,7 +4853,7 @@
     // 角色域订单是私有数据的只读视图：给出可读性的边界说明，避免「没有新建入口」被误读为缺功能。
     var hint = (!player && view === 'orders') ? readOnlyHint(t.playerReadOnlyOrders) : '';
     return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true, tag) +
-      yzTabs([['listings', t.tabs.listings], ['requests', t.tabs.requests], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBox(search) + body + cta + hint + '</main>';
+      yzTabs([['listings', t.tabs.listings], ['requests', t.tabs.requests], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBoxIf(hasRows, search) + body + cta + hint + '</main>';
   }
 
   // 纯数字串加千分位；非纯数字（含单位/文本）原样返回——金额字段是自由文本。
@@ -4778,7 +4886,8 @@
         var row = player
           ? '<button type="button" class="yz-manage-main" data-action="player-edit" data-kind="currency" data-id="' + CORE.escapeHtml(String(currency.kind)) + '">' + inner + '</button>'
           : '<div class="yz-row yz-static">' + inner + '</div>';
-        return player ? editableListRow(row, 'currency', currency.kind) : row;
+        // 整行已是 player-edit 按钮：不再叠加行尾 ✎（双入口冗余）。
+        return row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.currencies) + '</div>';
     } else {
       var items = CORE.safeArray(space.items, 30).filter(function (item) {
@@ -4791,14 +4900,16 @@
           CORE.escapeHtml(item.name), CORE.escapeHtml(item.grade || ''),
           CORE.escapeHtml(item.desc || ''),
           CORE.escapeHtml(qtyShown), !!player, player && { kind: 'item', id: item.id });
-        return player ? editableListRow(row, 'item', item.id) : row;
+        // 整行已是 player-edit 按钮：不再叠加行尾 ✎（双入口冗余）。
+        return row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.items) + '</div>';
     }
     var cta = player ? playerAddBtn(view === 'currencies' ? 'currency' : 'item', '') : '';
     // 角色域储物只读：给边界说明，避免把「没有管理入口」误读为功能缺失。
     var hint = !player ? readOnlyHint(t.playerReadOnlySpace) : '';
+    var hasRows = view === 'currencies' ? CORE.safeArray(space.currencies, 10).length : CORE.safeArray(space.items, 30).length;
     return '<main class="yz-page-inner" data-marker="space-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.space, true) +
-      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBox(search) + body + cta + hint + '</main>';
+      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBoxIf(hasRows, search) + body + cta + hint + '</main>';
   }
 
   function renderMap(state, search, tag, player) {
@@ -4839,7 +4950,7 @@
     } else if (!hasData) {
       empty = '<div class="yz-empty">' + CORE.escapeHtml(player ? (t.playerMapEmpty || t.guards.tracks) : t.guards.tracks) + '</div>';
     }
-    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map, false, tag) + searchBox(search) + hero + timeline + roster + empty + '</main>';
+    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map, false, tag) + searchBoxIf(hasData, search) + hero + timeline + roster + empty + '</main>';
   }
 
   function diagRow(label, valueHtml) {
@@ -5084,6 +5195,8 @@
     '#yz1-overlay,#yz1-overlay *{box-sizing:border-box}',
     '#yz1-overlay{position:fixed;inset:0;z-index:' + Z_INDEX_TOP + ';display:none;align-items:center;justify-content:center;padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));background:radial-gradient(circle at 50% 32%,rgba(90,190,150,.14),transparent 62%),rgba(2,8,7,.86);backdrop-filter:blur(14px);font-family:"Songti SC","STZhongsong","Noto Serif SC","PingFang SC",serif;user-select:none;color:#e9f3ee;-webkit-tap-highlight-color:transparent}',
     '#yz1-overlay.open{display:flex}',
+    '#yz1-overlay.loading{display:flex;align-items:center;justify-content:center}',
+    '#yz1-overlay.loading::after{content:"☯";font-size:40px;color:#67e6a8;animation:yzSpin 1.2s linear infinite;text-shadow:0 0 18px rgba(120,255,200,.5)}',
     '#yz1-overlay [hidden]{display:none!important}',
     '.yz-home.hidden{display:none!important}',
     '#yz1-overlay button{font-family:inherit;cursor:pointer}',
@@ -5101,7 +5214,9 @@
     '.yz-node{position:absolute;transform:translate(-50%,-50%);width:23%;aspect-ratio:1;border:1px solid rgba(200,255,230,.24);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;background:rgba(16,46,38,.62);cursor:pointer;padding:0;color:#dff7ec;font-family:inherit}',
     '.yz-node:hover{filter:brightness(1.3)}',
     '.yz-node .yz-glyph{font-size:clamp(16px,4.6vw,21px);line-height:1;display:block}',
-    '.yz-node b{font-size:clamp(9px,2.6vw,11px);letter-spacing:.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:90%}',
+    // 卦名：允许两行换行（英文长卦名如 "Artifact Mgmt" 在小屏不被截成 "Artifact…"），
+    // 超出两行才裁剪（中文单行短、英文至多两行，节点尺寸足够容纳）。
+    '.yz-node b{font-size:clamp(9px,2.6vw,11px);letter-spacing:.5px;font-weight:600;line-height:1.15;max-width:92%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;text-align:center;word-break:break-word}',
     '.yz-node em{position:absolute;bottom:3px;right:9px;font-style:normal;font-size:8px;opacity:.8;color:#9fd8c0}',
     '.yz-node.sealed{filter:grayscale(1);opacity:.4;cursor:not-allowed;border-style:dotted}',
     '.yz-node .yz-seal{position:absolute;bottom:3px;left:9px;font-style:normal;font-size:8px;color:#ffd27a}',
@@ -5123,9 +5238,13 @@
     '@keyframes yzSpin{to{transform:rotate(360deg)}}',
     '.yz-hero-line{text-align:center;margin-top:6px}',
     '.yz-hero-line b{font-size:16px;letter-spacing:2px;display:block;text-shadow:0 0 12px rgba(140,255,210,.35)}',
-    '.yz-hero-line p{margin:4px 0 0;font-size:11px;color:#a7d6c2;max-width:290px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    // 玩家域主页引导是一整段新手指引，nowrap 会把后半句吞掉——这里与 .yz-home-empty 一样
+    // 允许换行；角色域摘要行保持单行省略（短）。
+    '.yz-hero-line p{margin:4px 0 0;font-size:11px;color:#a7d6c2;max-width:290px;overflow:hidden;text-overflow:ellipsis;white-space:normal;line-height:1.5}',
     '.yz-home-empty{display:block;margin:8px auto 0;max-width:300px;font-style:normal;font-size:11px;line-height:1.6;color:#8fc4ac;white-space:normal}',
     '.yz-sync{display:flex;align-items:center;gap:7px;color:#a7d6c2;font-size:11px;letter-spacing:1px;margin-top:10px;background:none;border:none;padding:0;font-family:inherit;cursor:pointer}',
+    // 玩家域主页同步行是纯展示（不可点）：去掉 pointer/hover 的手形反馈，避免「可点无动作」。
+    '.yz-sync.yz-sync-static{cursor:default}',
     '.yz-sync:hover span{text-decoration:underline}',
     '.yz-sync i{width:7px;height:7px;border-radius:50%;background:#5b8f7c;display:inline-block}',
     '.yz-sync.complete i{background:#67e6a8;box-shadow:0 0 8px #67e6a8}',
@@ -5329,7 +5448,9 @@
     '.yz-clear-btn{flex:none;align-self:center;border:1px solid rgba(150,255,215,.2);background:none;color:#7fae9a;border-radius:10px;height:26px;padding:0 9px;font-size:10px;letter-spacing:1px;font-family:inherit;cursor:pointer}',
     '.yz-clear-btn.armed{border-color:rgba(255,122,107,.65);background:rgba(255,122,107,.14);color:#ffb0a3;font-weight:600}',
     // —— 导出 / 导入面板 ——
+    // 导出面板默认较高（可滚可核对内容）；导入面板 120px 足够。
     '.yz-io{width:100%;height:120px;margin-top:8px;background:rgba(6,20,16,.85);border:1px solid rgba(150,255,215,.2);border-radius:12px;color:#dff7ec;padding:8px;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5;resize:vertical}',
+    '.yz-io[data-export-output]{height:240px}',
     '.yz-io:focus{outline:1px solid rgba(150,255,215,.45)}',
     '.yz-io-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:8px}',
     '.yz-io-warn{margin-top:6px;padding:6px 8px;border-radius:8px;background:rgba(120,60,20,.35);border:1px dashed rgba(230,180,120,.45);color:#f2d7b0;font-size:11px;letter-spacing:.5px}',
@@ -5345,7 +5466,10 @@
     '#yz1-confirm .yz-confirm-actions{display:flex;gap:10px}',
     '#yz1-confirm .yz-confirm-actions button{flex:1;height:34px;border-radius:10px;font-size:12px;font-family:inherit;cursor:pointer}',
     '#yz1-confirm .yz-confirm-cancel{background:rgba(20,60,50,.5);border:1px solid rgba(150,255,215,.3);color:#c9e6d6}',
-    '#yz1-confirm .yz-confirm-ok{background:rgba(255,122,107,.18);border:1px solid rgba(255,140,120,.65);color:#ffb0a3;font-weight:600}'
+    '#yz1-confirm .yz-confirm-ok{background:rgba(255,122,107,.18);border:1px solid rgba(255,140,120,.65);color:#ffb0a3;font-weight:600}',
+    // —— 窄屏适配：英文顶栏在 320-360px 手机可能溢出（品牌字距+域按钮+关闭），
+    // 缩小字距、隐藏副标、压缩间距，保证一行放下不折行。
+    '@media (max-width:374px){.yz-topbar{gap:6px}.yz-topbar b{font-size:16px;letter-spacing:4px}.yz-topbar .yz-sub{display:none}.yz-domain-btn{min-width:52px;padding:0 7px;font-size:10px}}'
   ].join('\n');
 
   function containsEnvelope(value) {
@@ -5414,6 +5538,9 @@
     // 快照恢复的 in-flight 锁：rebuildFromHistory 是异步的，连点两次会触发第二次
     // stale 分支、报误导性的「聊天已切换」红 toast——进行中再点直接忽略。
     var restoreBusy = false;
+    // 本轮 generation:prepare 推进已读游标前的旧值：生成失败/取消时回退，
+    // 否则玩家消息被提前标已读、下轮没有未读角标提示（虽然其实没收到回复）。
+    var cursorBeforePrepare = null;
     var wipeTimer = 0;
     // 列表页/详情页检索关键词：纯内存过滤瞬态，任何导航（含关闭）都复位。
     var search = '';
@@ -5463,12 +5590,20 @@
       var feature = null;
       VIEWS.FEATURES.forEach(function (item) { if (item.id === featureId) feature = item; });
       if (!feature || !feature.toggleable) return;
-      featureFlags[featureId] = featureFlags[featureId] === false;
+      var nowSealed = featureFlags[featureId] !== false;
+      featureFlags[featureId] = !nowSealed;
       flagsDirty = true;
       // 封印变化持久化为强制全量标记（重启丢失内存标记后下一轮仍全量刷新）。
       runtime.current().pendingFull = true;
       runtime.saveChat(runtime.activeChatId);
       persistFeatureFlags();
+      // 封印是误触高发操作：给「启封」撤销按钮，误封可一键回退（与删除撤销同一模式）。
+      // 启封无需确认（回到默认开放状态，无副作用）。
+      if (nowSealed) {
+        var name = I18N.dict().features[featureId] || featureId;
+        showToast(tr('runtime.toast.sealed', { name: name }), false,
+          { label: I18N.dict().unseal, fn: (function (fid) { return function () { featureFlags[fid] = true; flagsDirty = true; runtime.current().pendingFull = true; runtime.saveChat(runtime.activeChatId); persistFeatureFlags(); render(); }; })(featureId) }, 6000);
+      }
       render();
     }
 
@@ -5605,11 +5740,14 @@
     // 防弹框期间切换聊天后「确认清除」误清新聊天的数据。
     var confirmAction = null;
     var confirmChatId = null;
+    // 最近一次确认框参数：语言切换时重放，保证开着的确认框文案随语言刷新。
+    var confirmLast = null;
     function showConfirm(title, message, okLabel, fn) {
       var host = hostDocument.getElementById('yz1-confirm');
       if (!host) return;
       confirmAction = fn || null;
       confirmChatId = runtime.activeChatId;
+      confirmLast = { title: title, message: message, okLabel: okLabel };
       var titleNode = host.querySelector('.yz-confirm-title');
       var msgNode = host.querySelector('.yz-confirm-msg');
       var okBtn = host.querySelector('.yz-confirm-ok');
@@ -5618,11 +5756,37 @@
       if (msgNode) msgNode.textContent = message;
       if (okBtn) okBtn.textContent = okLabel;
       if (cancelBtn) cancelBtn.textContent = I18N.dict().cancel;
+      // 无障碍：标题/正文与对话框关联（aria-labelledby/describedby），焦点移入「取消」
+      // 按钮——默认焦点放安全动作，避免误触「确认」清空数据。
+      var titleId = 'yz-confirm-title';
+      var msgId = 'yz-confirm-msg';
+      var box = host.querySelector('.yz-confirm-box');
+      if (box) {
+        if (titleNode) titleNode.id = titleId;
+        if (msgNode) msgNode.id = msgId;
+        box.setAttribute('aria-labelledby', titleId);
+        box.setAttribute('aria-describedby', msgId);
+      }
       host.classList.add('show');
+      if (cancelBtn && typeof cancelBtn.focus === 'function') cancelBtn.focus();
+    }
+    // 语言切换后重放确认框文案（按钮/遮罩/Esc 关闭时清掉 confirmLast）。
+    function refreshConfirmText() {
+      var host = hostDocument.getElementById('yz1-confirm');
+      if (!host || !confirmLast || !host.classList.contains('show')) return;
+      var titleNode = host.querySelector('.yz-confirm-title');
+      var msgNode = host.querySelector('.yz-confirm-msg');
+      var okBtn = host.querySelector('.yz-confirm-ok');
+      var cancelBtn = host.querySelector('.yz-confirm-cancel');
+      if (titleNode) titleNode.textContent = confirmLast.title;
+      if (msgNode) msgNode.textContent = confirmLast.message;
+      if (okBtn) okBtn.textContent = confirmLast.okLabel;
+      if (cancelBtn) cancelBtn.textContent = I18N.dict().cancel;
     }
     function hideConfirm() {
       confirmAction = null;
       confirmChatId = null;
+      confirmLast = null;
       var host = hostDocument.getElementById('yz1-confirm');
       if (host) host.classList.remove('show');
     }
@@ -5744,13 +5908,15 @@
         // 注意：shell 初始模板中 page 带 hidden 属性（CSS [hidden]{display:none!important}），
         // 必须用 .hidden property 移除属性本身；classList.remove('hidden') 只能移除同名 class。
         pageNode.hidden = false;
-        // 保留滚动位置：重渲染前记录（聊天详情除外——它固定贴底）。
+        // 保留滚动位置：重渲染前记录（聊天详情未检索时除外——它固定贴底）。
         // 否则发论坛评论/搜索/管理页展开诊断等任何重渲染都会把长页弹回顶部，
-        // 用户每次发一条评论都要重新滚到底部。
-        var savedScroll = (nav.view === 'chat' || nav.view === 'gchat') ? null : pageNode.scrollTop;
+        // 用户每次发一条评论都要重新滚到底部。聊天详情带检索时同样要恢复位置，
+        // 不能每次按键都被钉回底部。
+        var savedScroll = ((nav.view === 'chat' || nav.view === 'gchat') && !search) ? null : pageNode.scrollTop;
         pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, sendFailed: sendFailed }, domain, playerState);
         // 聊天详情（私讯/群聊/传讯）滚动到底部：每次重渲染后都贴最新消息，不把用户弹回最旧。
-        if (nav.view === 'chat' || nav.view === 'gchat') {
+        // 但检索旧消息时不能钉底——否则每次按键都被拉回底部，看不到上面匹配的上下文。
+        if ((nav.view === 'chat' || nav.view === 'gchat') && !search) {
           var bubbles = pageNode.querySelector('.yz-bubbles');
           if (bubbles) bubbles.scrollTop = bubbles.scrollHeight;
         } else if (savedScroll !== null && savedScroll > 0) {
@@ -5865,7 +6031,7 @@
         var nodes = hostDocument.querySelectorAll('#' + OVERLAY_ID + ' .armed');
         Array.prototype.forEach.call(nodes, function (node) {
           if (!node.dataset || !node.dataset.wipeBase) return;
-          node.textContent = node.dataset.wipeBase + '（' + remain + '）';
+          node.textContent = node.dataset.wipeBase + tr('runtime.sep.count', { n: remain });
         });
       }, 500);
     }
@@ -5924,6 +6090,11 @@
     // 小 toast 会被宿主侧边栏等布局遮挡，确认框固定居中 + 遮罩，任何布局下都可见。
     function armSidebarClear() {
       if (!enabled()) { showToast(I18N.dict().toast.disabled, true); return; }
+      // 非聊天页不操作（activeChatId 是上一个聊天的残留）。
+      if (!chatActive) { showToast(I18N.dict().toast.noChat, true); return; }
+      // 启动瞬间 ensureShell 可能还没执行（宿主异步加载），确认框宿主不存在会静默失败：
+      // 先确保 shell（overlay/toast/确认框宿主）已创建再弹框。
+      ensureShell();
       var dict = I18N.dict();
       showConfirm(dict.toast.clearTitle, dict.toast.clearConfirm, dict.toast.clearConfirmAction, clearAllData);
     }
@@ -5985,7 +6156,10 @@
 
     function navigateView(view, params) {
       clearToast();
-      nav.stack.push({ app: nav.app, view: nav.view, params: nav.params });
+      // 同行连点两次不重复压栈：栈顶已是同一页时直接复用，返回不用多按一次。
+      var top = nav.stack.length ? nav.stack[nav.stack.length - 1] : null;
+      var samePage = top && top.app === nav.app && top.view === nav.view && String(top.params && top.params.id) === String(nav.params && nav.params.id);
+      if (!samePage) nav.stack.push({ app: nav.app, view: nav.view, params: nav.params });
       nav.view = view;
       nav.params = params || {};
       if (view === 'chat' || view === 'gchat') clearUnread(view, params && params.id);
@@ -6024,6 +6198,11 @@
 
     function backNav() {
       clearToast();
+      // 离开页面时清理武装态与倒计时定时器：否则武装后返回，3 秒后定时器仍会触发
+      // 一次多余的整页 render（且 armed 按钮已不在页面上）。
+      stopWipeCountdown();
+      clearTimeout(wipeTimer);
+      wipeTimer = 0;
       if (nav.stack.length) {
         var previous = nav.stack.pop();
         nav.app = previous.app;
@@ -6092,11 +6271,17 @@
       // 禁用时也要给反馈（与侧边栏 resync/clear 一致的 disabled toast）：
       // 静默返回会让用户以为点了没反应，尤其经宿主侧边栏「打开玉兆」触发时。
       if (!enabled()) { showToast(I18N.dict().toast.disabled, true); return; }
+      // 非聊天页（宿主主页/角色卡/设置）不弹法器：侧边栏/输入动作与 FAB 同门控，
+      // 否则会在错误页面之上弹出上一个聊天的数据。
+      if (!chatActive) { showToast(I18N.dict().toast.noChat, true); return; }
       ensureShell();
+      var overlay = hostDocument.getElementById(OVERLAY_ID);
+      // 异步加载（切聊水化/从存储读快照）期间先显示 loading 态，避免「点了没反应」。
+      if (overlay) overlay.classList.add('loading');
       var id = await runtime.resolveCurrentChatId();
       if (id !== runtime.activeChatId) await runtime.switchChat(id);
-      var overlay = hostDocument.getElementById(OVERLAY_ID);
       if (!overlay) return;
+      overlay.classList.remove('loading');
       overlay.classList.add('open');
       overlay.setAttribute('aria-hidden', 'false');
       clearToast();
@@ -6474,7 +6659,8 @@
         armedWipe = null;
         if (result.ok) {
           undoSnap = snapshot.entity ? snapshot : null;
-          if (undoSnap) showToast(I18N.dict().playerDeleted, false, { label: I18N.dict().playerUndo, fn: undoDelete });
+          // 撤销 toast 用 6s 窗口：手机端「读 toast + 抬手点击」2.4s 通常不够。
+          if (undoSnap) showToast(I18N.dict().playerDeleted, false, { label: I18N.dict().playerUndo, fn: undoDelete }, 6000);
           else showToast(I18N.dict().playerDeleted);
           backNavSkippingDeleted(kind, id);
           return;
@@ -6677,6 +6863,8 @@
         plugin.onSidebarAction('resync-history', async function () {
           // 禁用态与 open() 同语义：统一门控，不静默、不真实改数据。
           if (!enabled()) { showToast(I18N.dict().toast.disabled, true); return; }
+          // 非聊天页不操作（activeChatId 是上一个聊天的残留，恢复/清除会作用到它）。
+          if (!chatActive) { showToast(I18N.dict().toast.noChat, true); return; }
           // 防重入：异步恢复进行中再点直接忽略（避免误导性的「聊天已切换」红 toast）。
           if (restoreBusy) { showToast(I18N.dict().toast.restoreBusy); return; }
           restoreBusy = true;
@@ -6749,7 +6937,11 @@
         };
         // 传讯通道已读游标：基线注入即已读（评审结论）。玩家消息随基线进入模型上下文，
         // 未读数随之清零；消息本体保留在角色域线程中，模型可继续回复。
-        if (featureFlags.msg !== false) runtime.markPlayerRead(chatId);
+        // 记录推进前的游标：本轮若生成失败/取消则回退，玩家消息不被提前标已读。
+        if (featureFlags.msg !== false) {
+          cursorBeforePrepare = state.sync && state.sync.playerReadCursor;
+          runtime.markPlayerRead(chatId);
+        }
         return PROMPT.mutatePrepareEvent(event, promptLang(), featureFlags, ctx);
       });
 
@@ -6778,6 +6970,8 @@
             if (result.changed) runtime.syncArchive(chatId);
           } catch (error) { dbg('generation:success apply failed', error); }
         }
+        // 生成成功：已读游标推进被确认，清除回退标记。
+        cursorBeforePrepare = null;
         render();
         return event;
       });
@@ -6826,8 +7020,23 @@
         render();
       });
 
-      plugin.on('generation:error', function () { if (enabled()) showToast(I18N.dict().toast.generationError, true); });
-      plugin.on('generation:cancelled', function () { if (enabled()) showToast(I18N.dict().toast.cancelled, true); });
+      plugin.on('generation:error', function () {
+        if (!enabled()) return;
+        // 本轮生成失败：回退已读游标（prepare 时推进了），玩家消息重新计未读。
+        if (cursorBeforePrepare !== null) {
+          runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare);
+          cursorBeforePrepare = null;
+        }
+        showToast(I18N.dict().toast.generationError, true);
+      });
+      plugin.on('generation:cancelled', function () {
+        if (!enabled()) return;
+        if (cursorBeforePrepare !== null) {
+          runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare);
+          cursorBeforePrepare = null;
+        }
+        showToast(I18N.dict().toast.cancelled, true);
+      });
     }
 
     async function start() {
@@ -6836,7 +7045,7 @@
       bindHooks();
       try {
         var i18nApi = tavoApi.plugin && tavoApi.plugin.i18n;
-        if (i18nApi && typeof i18nApi.onChange === 'function') i18nApi.onChange(function () { I18N.invalidate(); render(); });
+        if (i18nApi && typeof i18nApi.onChange === 'function') i18nApi.onChange(function () { I18N.invalidate(); refreshConfirmText(); render(); });
       } catch (_) {}
       await loadFeatureFlags();
       ensureShell();
