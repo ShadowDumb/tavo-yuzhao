@@ -1003,7 +1003,7 @@ console.log('# P1 · 卦位三态徽标');
 console.log('# P1 · 管理页');
 {
   const MS = M.VIEWS.WIPE_CONFIRM_MS;
-  eq(MS, 3000, '两击确认窗口 3 秒');
+  eq(MS, 5000, '两击确认窗口 5 秒');
   let nx = M.VIEWS.nextWipeState(null, 'tablet', 1000);
   ok(nx && nx.id === 'tablet' && nx.expiresAt === 1000 + MS, '首击进入确认态');
   eq(M.VIEWS.nextWipeState(nx, 'tablet', 1000 + MS - 1), null, '窗口内再击确认执行');

@@ -1931,6 +1931,10 @@
       playerPostTag: tr('runtime.player.postTag'),
       playerSideBuy: tr('runtime.player.sideBuy'),
       playerSideSell: tr('runtime.player.sideSell'),
+      orderStatusPending: tr('runtime.player.orderStatusPending'),
+      orderStatusOpen: tr('runtime.player.orderStatusOpen'),
+      orderStatusCompleted: tr('runtime.player.orderStatusCompleted'),
+      orderStatusCancelled: tr('runtime.player.orderStatusCancelled'),
       playerSave: tr('runtime.player.save'),
       playerEdit: tr('runtime.player.edit'),
       playerDelete: tr('runtime.player.delete'),
@@ -2509,7 +2513,6 @@
     // 在同一同步段内完成，否则并发调用（send 的内部调用 + 显式调用）会创建重复联系人。
     async function syncPlayerChannel(chatId) {
       chatId = CORE.cleanText(chatId || activeChatId, 160);
-      if (chatId !== activeChatId) return false;
       var flags = getFlags() || {};
       if (flags.msg === false) return false;
       var state = current();
@@ -4211,7 +4214,7 @@
       var seal = '';
       if (off) { seal = '<i class="yz-seal">' + CORE.escapeHtml(t.sealGlyph) + '</i>'; }
       else if (lockedNode) { seal = '<i class="yz-seal yz-seal-locked">' + CORE.escapeHtml(t.lockGlyph) + '</i>'; aria = name + sep + t.manageLocked; }
-      return '<button type="button" class="' + cls + '" data-action="open-feature" data-feature="' + feature.id + '" style="left:' + feature.pos[0] + '%;top:' + feature.pos[1] + '%" aria-label="' + CORE.escapeHtml(aria) + '"><span class="yz-glyph">' + feature.glyph + '</span><b>' + CORE.escapeHtml(name) + '</b><em>' + CORE.escapeHtml(t.gua[feature.id] || '') + '</em>' + seal + badgeHtml + '</button>';
+      return '<button type="button" class="' + cls + '" data-action="open-feature" data-feature="' + feature.id + '" style="left:' + feature.pos[0] + '%;top:' + feature.pos[1] + '%" aria-label="' + CORE.escapeHtml(aria) + '" title="' + CORE.escapeHtml(name) + ' (' + CORE.escapeHtml(t.gua[feature.id] || '') + ')"><span class="yz-glyph">' + feature.glyph + '</span><b>' + CORE.escapeHtml(name) + '</b><em>' + CORE.escapeHtml(t.gua[feature.id] || '') + '</em>' + seal + badgeHtml + '</button>';
     }).join('');
   }
 
@@ -4405,7 +4408,7 @@
     var rows = group ? CORE.safeArray(chats.groups, 6) : CORE.safeArray(chats.contacts, 10);
     var rowItem = null;
     rows.forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) rowItem = item; });
-    if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false, tag) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '</div><div class="yz-empty yz-archived-hint">' + CORE.escapeHtml(t.guards.chatArchived) + '</div></main>';
+    if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false, tag) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '<br><small class="yz-archived-hint">' + CORE.escapeHtml(t.guards.chatArchived) + '</small></div></main>';
     var bubbles = CORE.safeArray(rowItem.messages, group ? 24 : 20).filter(function (message) {
       return filterMatch(kw, [message.text, message.sender, message.time]);
     }).map(function (message) {
@@ -4430,7 +4433,7 @@
     if (!archivedFlag && rowItem && rowItem.archived) {
       bubbles = '<div class="yz-archived-note">' + CORE.escapeHtml(tr('runtime.player.msgArchived', { n: group ? 24 : 20 })) + '</div>' + bubbles;
     }
-    var title = CORE.escapeHtml(rowItem.name) + (group && Number(rowItem.members) ? ' <small>(' + CORE.escapeHtml(rowItem.members + t.labels.membersUnit) + ')</small>' : '');
+    var title = CORE.escapeHtml(rowItem.name) + (group && Number(rowItem.members) ? ' (' + CORE.escapeHtml(String(rowItem.members)) + CORE.escapeHtml(t.labels.membersUnit) + ')' : '');
     // 玩家域群聊（公开数据）：底部群聊发言输入框（data-group-msg-input 由 App 层绑定）。
     var groupSealed = flags && flags.msg === false;
     var composer;
@@ -4628,7 +4631,7 @@
     if (kind === 'order') {
       return [
         field('name', t.playerFieldItemName, 'text', entity && entity.name, null, 120),
-        field('status', t.playerFieldStatus, 'text', entity && entity.status, null, 40),
+        field('status', t.playerFieldStatus, 'select', entity && entity.status || 'pending', [['pending', t.orderStatusPending], ['open', t.orderStatusOpen], ['completed', t.orderStatusCompleted], ['cancelled', t.orderStatusCancelled]]),
         field('price', t.playerFieldPrice, 'text', entity && entity.price, null, 80),
         field('side', t.playerFieldSide, 'select', entity && entity.side || 'buy', [['buy', t.playerSideBuy], ['sell', t.playerSideSell]])
       ];
@@ -4681,7 +4684,7 @@
       // 超长由 cleanText 静默截断（runtime 兜底），输入侧同步 maxlength 提示上限，避免「存少了一截」。
       var maxAttr = field.max ? ' maxlength="' + field.max + '"' : '';
       if (field.type === 'textarea') {
-        body += label + '<textarea class="yz-form-input" id="yz-form-' + field.key + '" data-form-field="' + field.key + '" rows="4"' + maxAttr + '>' + CORE.escapeHtml(String(field.value)) + '</textarea>';
+        body += label + '<textarea class="yz-form-input" id="yz-form-' + field.key + '" data-form-field="' + field.key + '" rows="6"' + maxAttr + '>' + CORE.escapeHtml(String(field.value)) + '</textarea>';
       } else if (field.type === 'checkbox') {
         body += '<label class="yz-form-check" for="yz-form-' + field.key + '"><input type="checkbox" id="yz-form-' + field.key + '" data-form-field="' + field.key + '"' + (field.value ? ' checked' : '') + '>' + CORE.escapeHtml(field.label) + '</label>';
       } else if (field.type === 'select') {
@@ -4690,8 +4693,9 @@
         }).join('') + '</select>';
       } else if (field.type === 'number') {
         // 数量字段带 −/+ 快捷步进（数量是纯数字，增减无需打开键盘输入）。
+        var minusDisabled = Number(field.value) <= 0 ? ' disabled' : '';
         body += label + '<div class="yz-stepper">' +
-          '<button type="button" class="yz-step" data-action="qty-step" data-delta="-1" aria-label="' + CORE.escapeHtml(t.playerQtyStepDown) + '">−</button>' +
+          '<button type="button" class="yz-step" data-action="qty-step" data-delta="-1" aria-label="' + CORE.escapeHtml(t.playerQtyStepDown) + '"' + minusDisabled + '>−</button>' +
           '<input class="yz-form-input" id="yz-form-' + field.key + '" data-form-field="' + field.key + '" type="number" min="0" step="1" value="' + CORE.escapeHtml(String(field.value)) + '">' +
           '<button type="button" class="yz-step" data-action="qty-step" data-delta="1" aria-label="' + CORE.escapeHtml(t.playerQtyStepUp) + '">+</button></div>';
       } else {
@@ -4724,9 +4728,10 @@
       // 用户从详情页找不到删除入口。
       var actions = '';
       if (player) {
+        var noteArmed = !!(ui && ui.armed && ui.armed.id === 'note:' + String(rowNote.id));
         actions = '<div class="yz-form-actions">' +
           '<button type="button" class="yz-send" data-action="player-edit" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button>' +
-          '<button type="button" class="yz-clear-btn" data-action="player-delete" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerDelete) + '</button>' +
+          '<button type="button" class="yz-clear-btn' + (noteArmed ? ' armed' : '') + '" data-action="player-delete" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '"' + (noteArmed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(noteArmed ? t.playerDeleteConfirm : t.playerDelete) + '</button>' +
           '</div>';
       }
       return '<main class="yz-page-inner" data-marker="note-detail">' +
@@ -4784,7 +4789,9 @@
       // 满额提示「已达上限」，避免用户以为评论没发出去是故障。
       var commentsFull = CORE.safeArray(post.comments, 20).length >= 20 && !kw;
       var isMine = String(post.owner || '') === 'player';
-      var editBtn = (player && isMine) ? '<div class="yz-form-actions"><button type="button" class="yz-send" data-action="player-edit" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button></div>' : '';
+      var postArmed = !!(ui && ui.armed && ui.armed.id === 'post:' + String(post.id));
+      var editBtn = (player && isMine) ? '<div class="yz-form-actions"><button type="button" class="yz-send" data-action="player-edit" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button>' +
+          '<button type="button" class="yz-clear-btn' + (postArmed ? ' armed' : '') + '" data-action="player-delete" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '"' + (postArmed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(postArmed ? t.playerDeleteConfirm : t.playerDelete) + '</button></div>' : '';
       // 玩家域（公开数据）：底部评论输入框（data-comment-input 由 App 层绑定发送）。
       var commentBox = player
         ? '<div class="yz-composer"><input type="text" data-comment-input data-post-id="' + CORE.escapeHtml(post.id) + '" placeholder="' + CORE.escapeHtml(t.playerCommentPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerCommentPlaceholder) + '" maxlength="3000">' +
@@ -4799,7 +4806,7 @@
         '<p>' + CORE.escapeHtml(post.body) + '</p>' +
         '<div class="yz-resonance">❋ ' + CORE.escapeHtml(String(post.resonance || 0)) + ' ' + CORE.escapeHtml(t.labels.resonance) + '</div></article>' +
         (comments.length || !kw
-          ? '<section class="yz-comments"><h3>' + CORE.escapeHtml(String(comments.length)) + ' ' + CORE.escapeHtml(t.labels.commentsWord) + '</h3>' +
+          ? '<section class="yz-comments"><h3>' + CORE.escapeHtml(String(comments.length)) + ' ' + CORE.escapeHtml(t.labels.commentsWord) + ' <small style="font-weight:400;color:#7fae9a">(' + CORE.escapeHtml(String(comments.length)) + '/20)</small></h3>' +
             (commentsFull ? '<div class="yz-archived-note">' + CORE.escapeHtml(t.forumCommentsFull) + '</div>' : '') +
             comments + '</section>'
           : '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>') +
@@ -5055,8 +5062,8 @@
     return body;
   }
 
-  // 单功能清空的两击确认状态机：首击武装，3 秒内再击确认，超时或换目标重新武装。
-  var WIPE_CONFIRM_MS = 3000;
+  // 单功能清空的两击确认状态机：首击武装，5 秒内再击确认，超时或换目标重新武装。
+  var WIPE_CONFIRM_MS = 5000;
   function nextWipeState(armed, featureId, now) {
     if (armed && armed.id === featureId && now < armed.expiresAt) return null;
     return { id: featureId, expiresAt: now + WIPE_CONFIRM_MS };
@@ -5116,6 +5123,7 @@
     }
     return '<main class="yz-page-inner" data-marker="manage">' + yzHeader(t.features.manage) +
       '<p class="yz-manage-info">' + CORE.escapeHtml(t.manage.info) + '</p>' +
+      '<div class="yz-io-actions"><button type="button" class="yz-tab" data-action="nav-manage">' + CORE.escapeHtml(t.manage.openManage || '打开玉兆管理') + '</button></div>' +
       diag +
       '<div class="yz-page-list">' + rows + resetRow + dataRows + '</div>' + panel + '</main>';
   }
@@ -5170,8 +5178,8 @@
     return '';
   }
 
-  function yzHeader(title, tabs, tag) {
-    return '<header class="yz-app-header">' + yzBackButton() + '<b>' + (tabs ? title : String(title)) + '</b>' +
+  function yzHeader(title, tabs, tag, showBack) {
+    return '<header class="yz-app-header">' + yzBackButton(showBack !== false) + '<b>' + (tabs ? title : String(title)) + '</b>' +
       (tag ? '<i class="yz-header-tag">' + CORE.escapeHtml(tag) + '</i>' : '') +
       '<span class="yz-spacer"></span></header>';
   }
@@ -5188,7 +5196,8 @@
     return '<button type="button" class="' + CORE.escapeHtml(cls || '') + '" data-action="' + CORE.escapeHtml(action) + '"' + extra + '>' + label + '</button>';
   }
 
-  function yzBackButton() {
+  function yzBackButton(showBack) {
+    if (showBack === false) return '';
     return '<button type="button" class="yz-btn yz-back" data-action="back" aria-label="' + CORE.escapeHtml(I18N.dict().back) + '">‹</button>';
   }
 
@@ -5250,7 +5259,7 @@
 
   var CSS_TEXT = [
     '#yz1-overlay,#yz1-overlay *{box-sizing:border-box}',
-    '#yz1-overlay{position:fixed;inset:0;z-index:' + Z_INDEX_TOP + ';display:none;align-items:center;justify-content:center;padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));background:radial-gradient(circle at 50% 32%,rgba(90,190,150,.14),transparent 62%),rgba(2,8,7,.86);backdrop-filter:blur(14px);font-family:"Songti SC","STZhongsong","Noto Serif SC","PingFang SC",serif;user-select:none;color:#e9f3ee;-webkit-tap-highlight-color:transparent}',
+    '#yz1-overlay{position:fixed;inset:0;z-index:' + Z_INDEX_TOP + ';display:none;align-items:center;justify-content:center;padding:max(10px,env(safe-area-inset-top)) max(10px,env(safe-area-inset-right)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));background:radial-gradient(circle at 50% 32%,rgba(90,190,150,.14),transparent 62%),rgba(2,8,7,.86);backdrop-filter:blur(14px);font-family:"Songti SC","STZhongsong","Noto Serif SC","PingFang SC",serif;user-select:none;color:#e9f3ee;-webkit-tap-highlight-color:transparent;transition:opacity .2s ease}',
     '#yz1-overlay.open{display:flex}',
     '#yz1-overlay.loading{display:flex;align-items:center;justify-content:center}',
     '#yz1-overlay.loading::after{content:"☯";font-size:40px;color:#67e6a8;animation:yzSpin 1.2s linear infinite;text-shadow:0 0 18px rgba(120,255,200,.5)}',
@@ -5273,7 +5282,7 @@
     '.yz-node .yz-glyph{font-size:clamp(16px,4.6vw,21px);line-height:1;display:block}',
     // 卦名：允许两行换行（英文长卦名如 "Artifact Mgmt" 在小屏不被截成 "Artifact…"），
     // 超出两行才裁剪（中文单行短、英文至多两行，节点尺寸足够容纳）。
-    '.yz-node b{font-size:clamp(9px,2.6vw,11px);letter-spacing:.5px;font-weight:600;line-height:1.15;max-width:92%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;text-align:center;word-break:break-word}',
+    '.yz-node b{font-size:clamp(10px,2.6vw,11px);letter-spacing:.5px;font-weight:600;line-height:1.15;max-width:92%;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;text-align:center;word-break:break-word}',
     '.yz-node em{position:absolute;bottom:3px;right:9px;font-style:normal;font-size:8px;opacity:.8;color:#9fd8c0}',
     '.yz-node.sealed{filter:grayscale(1);opacity:.4;cursor:not-allowed;border-style:dotted}',
     '.yz-node .yz-seal{position:absolute;bottom:3px;left:9px;font-style:normal;font-size:8px;color:#ffd27a}',
@@ -5327,8 +5336,8 @@
     '.yz-field p{margin:0;color:#eef9f3;white-space:pre-wrap;word-break:break-word}',
     '.yz-empty{text-align:center;color:#a7d6c2;font-size:12px;padding:48px 10px;letter-spacing:1px}',
     '.yz-readonly-hint{position:sticky;top:4px;z-index:2;padding:10px 12px;margin:4px 0 10px;color:#bfe0d0;font-size:11px;letter-spacing:.5px;text-align:left;background:rgba(30,70,58,.72);border:1px dashed rgba(160,235,205,.4);border-radius:8px;backdrop-filter:blur(2px)}',
-    '.yz-tabs{display:flex;gap:8px;padding:2px 0 12px}',
-    '.yz-tab{flex:1;height:34px;border:1px solid rgba(160,235,205,.3);background:rgba(20,60,50,.5);color:#d8f5e8;border-radius:17px;padding:0;font-size:12px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
+    '.yz-tabs{display:flex;gap:8px;padding:2px 0 12px;overflow-x:auto;-webkit-overflow-scrolling:touch}',
+    '.yz-tab{flex:none;height:34px;border:1px solid rgba(160,235,205,.3);background:rgba(20,60,50,.5);color:#d8f5e8;border-radius:17px;padding:0 12px;font-size:12px;letter-spacing:2px;font-family:inherit;cursor:pointer;white-space:nowrap}',
     '.yz-tab.active{background:rgba(70,180,140,.35);border-color:rgba(170,255,225,.5);color:#f2fff9}',
     '.yz-page-list{padding-top:4px}',
     '.yz-row{display:flex;gap:10px;align-items:center;width:100%;background:rgba(16,46,38,.6);border:1px solid rgba(150,255,215,.12);border-radius:14px;padding:10px 12px;margin-bottom:8px;cursor:pointer;color:#eef9f3;font-family:inherit;text-align:left}',
@@ -5517,9 +5526,9 @@
     // —— 全局确认对话框（危险操作二次确认）——
     // 独立于 overlay 与 toast 的 body 级居中 modal：小 toast 会被宿主侧边栏等布局遮挡，
     // 确认框固定居中 + 半透明遮罩 + 最高 z-index，任何布局下都可见。
-    '#yz1-confirm{position:fixed;left:0;top:0;width:100%;height:100%;z-index:' + (Z_INDEX_TOP + 2) + ';display:none;align-items:center;justify-content:center;padding:20px;box-sizing:border-box}',
+    '#yz1-confirm{position:fixed;left:0;top:0;width:100%;height:100%;z-index:' + (Z_INDEX_TOP + 2) + ';display:none;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;transition:opacity .2s ease}',
     '#yz1-confirm.show{display:flex}',
-    '#yz1-confirm .yz-confirm-backdrop{position:absolute;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.55)}',
+    '#yz1-confirm .yz-confirm-backdrop{position:absolute;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.55);transition:opacity .2s ease}',
     '#yz1-confirm .yz-confirm-box{position:relative;max-width:340px;width:100%;background:rgba(8,24,20,.97);border:1px solid rgba(255,140,120,.55);border-radius:16px;padding:16px 16px 14px;box-shadow:0 10px 40px rgba(0,0,0,.6)}',
     '#yz1-confirm .yz-confirm-title{margin:0 0 8px;font-size:14px;font-weight:600;color:#ffb0a3;letter-spacing:1px;text-align:center}',
     '#yz1-confirm .yz-confirm-msg{margin:0 0 14px;font-size:12px;line-height:1.7;color:#eaf7f1;text-align:center;word-break:break-word}',
@@ -5738,6 +5747,7 @@
         toastHost.id = 'yz1-toast';
         toastHost.className = 'yz-toast';
         toastHost.setAttribute('role', 'status');
+        toastHost.setAttribute('aria-live', 'polite');
         hostDocument.body.appendChild(toastHost);
         // 内嵌操作按钮（撤销等）：点击先收起 toast 再执行注册的 handler（放微任务，避开清空竞态）。
         toastHost.addEventListener('click', function (event) {
@@ -5812,6 +5822,7 @@
     // 最近一次确认框参数：语言切换时重放，保证开着的确认框文案随语言刷新。
     var confirmLast = null;
     function showConfirm(title, message, okLabel, fn) {
+      clearToast();
       var host = hostDocument.getElementById('yz1-confirm');
       if (!host) return;
       confirmAction = fn || null;
@@ -5906,9 +5917,8 @@
       var domainBtn = overlay.querySelector('[data-action="toggle-domain"]');
       if (domainBtn) {
         var current = domain === 'player' ? t.playerDomain : t.playerCharacterDomain;
-        var target = domain === 'player' ? t.playerCharacterDomain : t.playerDomain;
-        domainBtn.textContent = '→ ' + target;
-        domainBtn.setAttribute('aria-label', tr('runtime.player.switchAria', { from: current, to: target }));
+        domainBtn.textContent = current + ' ▾';
+        domainBtn.setAttribute('aria-label', tr('runtime.player.switchAria', { from: current, to: domain === 'player' ? t.playerCharacterDomain : t.playerDomain }));
       }
     }
 
@@ -5983,6 +5993,9 @@
         // 不能每次按键都被钉回底部。
         var savedScroll = ((nav.view === 'chat' || nav.view === 'gchat') && !search) ? null : pageNode.scrollTop;
         pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, sendFailed: sendFailed, sending: sending }, domain, playerState);
+        // 首页无导航历史时隐藏返回按钮：nav.stack 为空表示当前是入口页。
+        var backBtn = pageNode.querySelector('.yz-back');
+        if (backBtn) backBtn.hidden = nav.stack.length === 0;
         // 聊天详情（私讯/群聊/传讯）滚动到底部：每次重渲染后都贴最新消息，不把用户弹回最旧。
         // 但检索旧消息时不能钉底——否则每次按键都被拉回底部，看不到上面匹配的上下文。
         if ((nav.view === 'chat' || nav.view === 'gchat') && !search) {
@@ -6442,6 +6455,7 @@
           if (action === 'import-submit') return submitImport();
           if (action === 'clear-search') { resetSearch(); return render(); }
           if (action === 'toggle-domain') return toggleDomain();
+          if (action === 'nav-manage') { nav = { app: 'manage', view: 'root', params: {}, stack: nav.stack || [] }; return render(); }
           if (action === 'send-msg') return sendPlayerMessage();
           if (action === 'mark-thread-read') return markThreadAllRead();
           if (action === 'retry-msg') return retryPlayerMessage(target.getAttribute('data-id') || '');
@@ -6458,6 +6472,8 @@
             if (qtyInput) {
               var next = Math.max(0, Math.floor(Number(qtyInput.value) || 0) + (Number(target.getAttribute('data-delta')) || 0));
               qtyInput.value = String(next);
+              var minusBtn = stepper.querySelector('[data-delta="-1"]');
+              if (minusBtn) minusBtn.disabled = next <= 0;
               clearFormErrors();
               qtyInput.focus();
             }
@@ -7035,7 +7051,7 @@
           try {
             var chatId = await runtime.resolveCurrentChatId(event);
             var result = await runtime.applyText(raw, chatId, 'generation:success');
-            if (result.parseError) showToast(I18N.dict().toast.parseError, true);
+            if (result.parseError) showToast(I18N.dict().toast.parseError, true, { label: I18N.dict().diag.title, fn: function () { openSyncDetail(); } });
             if (result.oversized) showToast(I18N.dict().toast.oversized, true);
             // 成功落过一轮全量后清除强制全量标记（内存 + 持久化）。
             if (result.full && result.changed) {
@@ -7048,7 +7064,7 @@
             }
             // 数据有变化时后台刷新世界书（消息归档条目 + 全状态快照；不占用本 Hook 的 5 秒预算等待）。
             if (result.changed) runtime.syncArchive(chatId);
-          } catch (error) { dbg('generation:success apply failed', error); }
+          } catch (error) { dbg('generation:success apply failed', error); if (cursorBeforePrepare !== null) { runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare); cursorBeforePrepare = null; } }
         }
         // 生成成功：已读游标推进被确认，清除回退标记。
         cursorBeforePrepare = null;
@@ -7082,7 +7098,7 @@
         }
         var chatId = await runtime.resolveCurrentChatId(event);
         var result = await runtime.applyText(payload, chatId, event.type || 'message');
-        if (result.parseError) showToast(I18N.dict().toast.parseError, true);
+        if (result.parseError) showToast(I18N.dict().toast.parseError, true, { label: I18N.dict().diag.title, fn: function () { openSyncDetail(); } });
         if (result.oversized) showToast(I18N.dict().toast.oversized, true);
         if (result.changed) runtime.syncArchive(chatId);
         render();
