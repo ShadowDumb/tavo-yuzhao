@@ -2402,7 +2402,7 @@
       var state = current();
       var player = playerCurrent();
       var sources = safeArray(player.chats && player.chats.groups, 6).filter(function (g) {
-        return g && g.id && safeArray(g.messages, 24).some(function (m) { return m && m.side === 'self' && /^pmg-/.test(String(m.id) || ''); });
+        return g && g.id && safeArray(g.messages, 24).some(function (m) { return m && /^pmg-/.test(String(m.id) || ''); });
       });
       if (!sources.length) return false;
       var name = await resolvePlayerName();
@@ -2421,7 +2421,9 @@
         safeArray(source.messages, 24).forEach(function (m) {
           if (!m || m.side !== 'self' || !/^pmg-/.test(String(m.id) || '')) return;
           if (known[String(m.id)]) return;
-          group.messages.push({ id: CORE.cleanText(m.id, 160), sender: name, side: 'self', time: CORE.cleanText(m.time, 80), text: CORE.cleanText(m.text, 3000) });
+          // 玩家消息在角色域是「对方发的」（side=other，与传讯通道同语义）；
+          // 渲染层按视角翻转气泡左右（玩家域：玩家消息在右）。
+          group.messages.push({ id: CORE.cleanText(m.id, 160), sender: name, side: 'other', time: CORE.cleanText(m.time, 80), text: CORE.cleanText(m.text, 3000) });
           known[String(m.id)] = true;
           changed = true;
         });
@@ -3778,7 +3780,10 @@
       yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBox(search) + body + '</main>';
   }
 
-  function renderMsgDetail(state, nav, group, search, tag, composerGroupId) {
+  // 群聊是公开数据（双域同一份角色域数据）。气泡左右按「渲染视角」判定：
+  // 角色域：自己发的（side=self 且非玩家消息）在右，其余（含玩家 pmg-* 消息）在左；
+  // 玩家域：玩家消息（pmg-*，含镜像后的 side=other）在右，角色消息在左。
+  function renderMsgDetail(state, nav, group, search, tag, composerGroupId, playerView) {
     var t = I18N.dict();
     var chats = CORE.safeObject(state.chats);
     var kw = searchKw(search);
@@ -3789,9 +3794,14 @@
     var bubbles = CORE.safeArray(rowItem.messages, group ? 24 : 20).filter(function (message) {
       return filterMatch(kw, [message.text, message.sender, message.time]);
     }).map(function (message) {
-      var sender = group ? '<b class="yz-sender">' + CORE.escapeHtml(message.sender || (message.side === 'self' ? t.labels.self : '')) + '</b>' : '';
-      return '<div class="yz-bubble-row ' + (message.side === 'self' ? 'self' : 'other') + '">' +
-        ((message.side === 'other' && group) ? '<span class="yz-bubble-ava">' + ava(message.sender || '?') + '</span>' : '') +
+      var isPlayerMsg = group && /^pmg-/.test(String(message.id || ''));
+      var mine = message.side === 'self'
+        ? (playerView ? isPlayerMsg : !isPlayerMsg)
+        : (playerView && isPlayerMsg);
+      var showSender = group && !mine;
+      var sender = showSender ? '<b class="yz-sender">' + CORE.escapeHtml(message.sender || (message.side === 'self' ? t.labels.self : '')) + '</b>' : '';
+      return '<div class="yz-bubble-row ' + (mine ? 'self' : 'other') + '">' +
+        (!mine && group ? '<span class="yz-bubble-ava">' + ava(message.sender || '?') + '</span>' : '') +
         '<div class="yz-bubble-wrap">' + sender + '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
         '</div>';
     }).join('');
@@ -3812,7 +3822,6 @@
     if (nav.view === 'gchat') return renderMsgDetail(state, nav, true, search);
     return renderChatList(state, nav, search);
   }
-
   // 玩家域交流讯息：固定「与角色传讯」会话（唯一跨域写入点）。
   // 玩家消息为右侧气泡，附 已送达/已读/已回 状态；角色回复经通道镜像为左侧气泡。
   // 已回 = 线程中该消息之后存在角色回复；已读 = seq ≤ 角色域已读游标（注入即已读）。
@@ -3823,8 +3832,8 @@
     nav = nav || { app: 'msg', view: 'chats', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
     if (view === 'gchat') {
-      // 群聊详情（公开）：复用角色域渲染，玩家域加「公开」标识与群聊发言输入框。
-      return renderMsgDetail(characterState, nav, true, search, tag, String(nav.params && nav.params.id) || '');
+      // 群聊详情（公开）：复用角色域渲染（玩家视角），玩家域加「公开」标识与群聊发言输入框。
+      return renderMsgDetail(characterState, nav, true, search, tag, String(nav.params && nav.params.id) || '', true);
     }
     if (view === 'groups') {
       // 群组列表（公开）：渲染角色域群组，行内未读徽标与角色域一致。

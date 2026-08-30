@@ -1513,7 +1513,7 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   const g1 = rt.current().chats.groups.find((g) => g.id === 'g1');
   eq(g1.messages.length, 3, '玩家发言进角色域群组');
   const pmg = g1.messages.find((m) => m.id === sent.id);
-  ok(pmg && pmg.side === 'self' && pmg.sender === '道友', '玩家发言以 self + 玩家名入组');
+  ok(pmg && pmg.side === 'other' && pmg.sender === '道友', '玩家发言在角色域为对方消息（side=other + 玩家名）');
   await rt.syncPlayerGroups('chat-g');
   eq(rt.current().chats.groups.find((g) => g.id === 'g1').messages.length, 3, '群聊发言重复同步幂等（无副本）');
 
@@ -1544,6 +1544,13 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   ok(pvG.includes('data-group-msg-input') && pvG.includes('data-action="send-group-msg"'), '玩家域群聊详情渲染发言输入框');
   const cvG = M.VIEWS.renderPage(rt.current(), { app: 'msg', view: 'gchat', params: { id: 'g1' }, stack: [] }, {}, {}, 'character', rt.playerCurrent());
   ok(!cvG.includes('data-group-msg-input'), '角色域群聊详情无发言输入框');
+  // 气泡左右按渲染视角：玩家消息在角色域左侧（对方），角色消息在玩家域左侧（对方）。
+  const rowSelf = '<div class="yz-bubble-row self">';
+  const rowOther = '<div class="yz-bubble-row other">';
+  ok(pvG.includes(rowSelf + '<div class="yz-bubble-wrap">') && pvG.indexOf(rowSelf) < pvG.indexOf('各位道友安好'), '玩家域视角：玩家消息在右侧气泡');
+  ok(cvG.includes(rowOther) && cvG.indexOf('各位道友安好') > cvG.indexOf(rowOther), '角色域视角：玩家消息在左侧气泡');
+  ok(cvG.indexOf('卯时议事') > cvG.indexOf(rowSelf), '角色域视角：角色自己消息在右侧气泡');
+  ok(pvG.indexOf('卯时议事') > pvG.indexOf(rowOther) && pvG.indexOf('卯时议事') < pvG.indexOf(rowSelf), '玩家域视角：角色消息在左侧气泡');
 }
 
 {
