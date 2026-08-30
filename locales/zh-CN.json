@@ -30,6 +30,7 @@
   "runtime.sync.invalid": "玉兆数据无效，旧数据已保留",
   "runtime.sync.empty": "等待剧情同步",
   "runtime.toast.parseError": "本轮玉兆数据解析失败，旧数据已保留",
+  "runtime.toast.storageCorrupted": "本地数据异常，已重置为空白状态",
   "runtime.toast.generationError": "本轮生成失败，玉兆旧数据已保留",
   "runtime.toast.cancelled": "本轮生成已取消，玉兆旧数据已保留",
   "runtime.toast.sealed": "「{name}」已被封印，可在玉兆管理中启封",

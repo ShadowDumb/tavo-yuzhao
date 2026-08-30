@@ -30,6 +30,7 @@
   "runtime.sync.invalid": "Invalid artifact data; previous data kept",
   "runtime.sync.empty": "Awaiting story sync",
   "runtime.toast.parseError": "Artifact data parse failed this turn; previous data kept",
+  "runtime.toast.storageCorrupted": "Local data corrupted — reset to blank state",
   "runtime.toast.generationError": "Generation failed; previous artifact data kept",
   "runtime.toast.cancelled": "Generation cancelled; previous artifact data kept",
   "runtime.toast.sealed": "\"{name}\" is sealed; unseal it in Artifact Mgmt",

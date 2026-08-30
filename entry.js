@@ -2064,6 +2064,37 @@
       try { if (local && typeof local.setItem === 'function') local.setItem(key, value); } catch (error) { dbg('local set failed: ' + key, error); }
     }
 
+    // 跨标签页同步：BroadcastChannel 在同一 origin 的 tab 间广播数据变更通知，
+    // 防止两 tab 同时写入导致 last-writer-wins 数据丢失。
+    var syncChannel = null;
+    try { if (typeof BroadcastChannel !== 'undefined') syncChannel = new BroadcastChannel('yz-sync'); } catch (_) {}
+    // render 在 runtime 闭包内定义：handler 在 start() 中绑定（此时 render 已声明）。
+    var syncChannelReady = false;
+    function setupSyncChannel() {
+      if (!syncChannel || syncChannelReady) return;
+      syncChannelReady = true;
+      syncChannel.onmessage = function (event) {
+        var msg = event && event.data;
+        if (!msg || msg.type !== 'yz-storage-changed') return;
+        var key = msg.key;
+        if (!key) return;
+        var isRole = key.indexOf(LOCAL_PREFIX) === 0;
+        var isPlayer = key.indexOf(PLAYER_LOCAL_PREFIX) === 0;
+        if (!isRole && !isPlayer) return;
+        var chatId = key.slice((isRole ? LOCAL_PREFIX : PLAYER_LOCAL_PREFIX).length);
+        if (!chatId) return;
+        var fresh = parseStored(localGet(key));
+        if (!fresh) return;
+        if (isRole && chatId === activeChatId) {
+          chats[chatId] = CORE.normalizeState(fresh, chatId);
+          setTimeout(function () { render(); }, 0);
+        } else if (isPlayer) {
+          playerChats[chatId] = CORE.normalizePlayerState(fresh, chatId);
+          if (chatId === activeChatId) setTimeout(function () { render(); }, 0);
+        }
+      };
+    }
+
     function parseStored(raw) {
       if (raw == null) return null;
       if (typeof raw === 'object') return raw;
@@ -2084,6 +2115,8 @@
       if (serialized.length > MAX_SNAPSHOT_BYTES) dbg('serialized state exceeds snapshot limit: ' + serialized.length);
       saveQueue = saveQueue.then(function () {
         localSet((profile.localPrefix || LOCAL_PREFIX) + chatId, serialized);
+        // 通知其他标签页数据已变更：接收端从 localStorage 重新加载，防止 last-writer-wins。
+        if (syncChannel) { try { syncChannel.postMessage({ type: 'yz-storage-changed', key: (profile.localPrefix || LOCAL_PREFIX) + chatId }); } catch (_) {} }
       }).catch(function (error) { dbg('save failed: ' + chatId, error); });
       // 世界书是权威存储：任何数据变化都排队同步（busy 合并、幂等、失败降级镜像）。
       // 只有"有实际数据"才同步：空白/未加载状态（新聊天、玩家域尚未加载的加载窗口）
@@ -2149,11 +2182,15 @@
     async function load(chatId) {
       var world = await lorebookSnapshotState(chatId);
       var fromWorld = !!world;
-      var mirrored = parseStored(localGet(LOCAL_PREFIX + chatId));
+      var rawMirror = localGet(LOCAL_PREFIX + chatId);
+      var mirrored = parseStored(rawMirror);
       var mirrorRev = Number(mirrored && mirrored.revision) || 0;
       var worldRev = Number(world && world.revision) || 0;
       var mirrorTime = Number(mirrored && mirrored.updatedAt) || 0;
       var worldTime = Number(world && world.updatedAt) || 0;
+      // 数据损坏检测：localStorage 有值但 JSON 解析失败（corrupted），
+      // 或曾经有数据（rev > 0）但现在 sources 全空——静默丢数据给用户造成困惑。
+      var mirrorCorrupted = rawMirror != null && !mirrored;
       var parsed = null;
       if (mirrored && (!world || mirrorRev > worldRev || (mirrorRev === worldRev && mirrorTime >= worldTime))) {
         parsed = mirrored;
@@ -2163,6 +2200,9 @@
       if (parsed) {
         localSet(LOCAL_PREFIX + chatId, JSON.stringify(parsed));
         if (!fromWorld && chatId === activeChatId) syncArchive(chatId);
+      } else if (mirrorCorrupted || ((mirrorRev > 0 || worldRev > 0) && !parsed)) {
+        // 数据丢失：JSON 损坏或所有来源失效——弹警告提示用户，避免「数据没了都不知道」。
+        showToast(I18N.dict().toast.storageCorrupted || '本地数据异常，已重置为空白状态', true);
       }
       return CORE.normalizeState(parsed, chatId);
     }
@@ -2172,7 +2212,9 @@
     async function loadPlayer(chatId) {
       var world = await lorebookSnapshotState(chatId, 'player');
       var fromWorld = !!world;
-      var mirrored = parseStored(localGet(PLAYER_LOCAL_PREFIX + chatId));
+      var rawMirror = localGet(PLAYER_LOCAL_PREFIX + chatId);
+      var mirrored = parseStored(rawMirror);
+      var mirrorCorrupted = rawMirror != null && !mirrored;
       var parsed = null;
       if (mirrored && (!world || (Number(mirrored.updatedAt) || 0) >= (Number(world.updatedAt) || 0))) {
         parsed = mirrored;
@@ -2182,6 +2224,8 @@
       if (parsed) {
         localSet(PLAYER_LOCAL_PREFIX + chatId, JSON.stringify(parsed));
         if (!fromWorld && chatId === activeChatId) syncArchive(chatId);
+      } else if (mirrorCorrupted) {
+        showToast(I18N.dict().toast.storageCorrupted || '本地数据异常，已重置为空白状态', true);
       }
       return CORE.normalizePlayerState(parsed, chatId);
     }
@@ -4354,7 +4398,7 @@
   // 群聊是公开数据（双域同一份角色域数据）。气泡左右按「渲染视角」判定：
   // 角色域：自己发的（side=self 且非玩家消息）在右，其余（含玩家 pmg-* 消息）在左；
   // 玩家域：玩家消息（pmg-*，含镜像后的 side=other）在右，角色消息在左。
-  function renderMsgDetail(state, nav, group, search, tag, composerGroupId, playerView, archivedFlag) {
+   function renderMsgDetail(state, nav, group, search, tag, composerGroupId, playerView, archivedFlag, flags, sending) {
     var t = I18N.dict();
     var chats = CORE.safeObject(state.chats);
     var kw = searchKw(search);
@@ -4388,25 +4432,31 @@
     }
     var title = CORE.escapeHtml(rowItem.name) + (group && Number(rowItem.members) ? ' <small>(' + CORE.escapeHtml(rowItem.members + t.labels.membersUnit) + ')</small>' : '');
     // 玩家域群聊（公开数据）：底部群聊发言输入框（data-group-msg-input 由 App 层绑定）。
-    var composer = composerGroupId
-      ? '<div class="yz-composer"><input type="text" data-group-msg-input data-group-id="' + CORE.escapeHtml(composerGroupId) + '" placeholder="' + CORE.escapeHtml(t.playerGroupMsgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerGroupMsgPlaceholder) + '" maxlength="3000">' +
-        '<button type="button" class="yz-send" data-action="send-group-msg" data-group-id="' + CORE.escapeHtml(composerGroupId) + '">' + CORE.escapeHtml(t.playerSend) + '</button></div>'
-      : '';
+    var groupSealed = flags && flags.msg === false;
+    var composer;
+    if (groupSealed && composerGroupId) {
+      composer = '<div class="yz-composer yz-composer-sealed">' + CORE.escapeHtml(t.toast.sealedMsg) + '</div>';
+    } else {
+      composer = composerGroupId
+        ? '<div class="yz-composer"><input type="text" data-group-msg-input data-group-id="' + CORE.escapeHtml(composerGroupId) + '" placeholder="' + CORE.escapeHtml(t.playerGroupMsgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerGroupMsgPlaceholder) + '" maxlength="3000">' +
+          '<button type="button" class="yz-send" data-action="send-group-msg" data-group-id="' + CORE.escapeHtml(composerGroupId) + '">' + CORE.escapeHtml(t.playerSend) + '</button></div>'
+        : '';
+    }
     return '<main class="yz-page-inner yz-page-composer" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' +
       yzHeader(title, false, tag) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
   }
 
-  function renderMsg(state, nav, search) {
+  function renderMsg(state, nav, search, flags, sending) {
     nav = nav || { app: 'msg', view: 'chats', params: {} };
-    if (nav.view === 'chat') return renderMsgDetail(state, nav, false, search);
-    if (nav.view === 'gchat') return renderMsgDetail(state, nav, true, search);
+    if (nav.view === 'chat') return renderMsgDetail(state, nav, false, search, undefined, undefined, undefined, undefined, flags, sending);
+    if (nav.view === 'gchat') return renderMsgDetail(state, nav, true, search, undefined, undefined, undefined, undefined, flags, sending);
     return renderChatList(state, nav, search);
   }
   // 玩家域交流讯息：固定「与角色传讯」会话（私讯跨域写入点）。
   // 玩家消息为右侧气泡，附 已送达/已读/已回 状态；角色回复经通道镜像为左侧气泡。
   // 已回 = 线程中该消息之后存在角色回复；已读 = seq ≤ 角色域已读游标（注入即已读）。
   // 群聊是公开数据（跨域一致）：玩家域的群组列表/群聊详情渲染角色域数据并带「公开」标识。
-  function renderMsgPlayer(characterState, playerState, nav, search, tag, failedSet) {
+  function renderMsgPlayer(characterState, playerState, nav, search, tag, failedSet, flags, sending) {
     var t = I18N.dict();
     failedSet = failedSet || {};
     var kw = searchKw(search);
@@ -4419,7 +4469,7 @@
       CORE.safeArray(playerState.chats && playerState.chats.groups, 6).forEach(function (g) {
         if (g && String(g.id) === String(nav.params && nav.params.id)) playerGroup = g;
       });
-      return renderMsgDetail(characterState, nav, true, search, tag, String(nav.params && nav.params.id) || '', true, playerGroup && playerGroup.archived);
+      return renderMsgDetail(characterState, nav, true, search, tag, String(nav.params && nav.params.id) || '', true, playerGroup && playerGroup.archived, flags, sending);
     }
     if (view === 'groups') {
       // 群组列表（公开）：渲染角色域群组，行内未读徽标与角色域一致；有新回复的置顶 + 光效。
@@ -4480,9 +4530,16 @@
         bubbles = '<div class="yz-archived-note">' + CORE.escapeHtml(tr('runtime.player.msgArchived', { n: 20 })) + '</div>' + bubbles;
       }
       var title = CORE.escapeHtml(thread ? thread.name : t.playerThreadFallback);
-      // 会话输入框：私讯写入入口（data-msg-input 由 App 层委托绑定发送）。
-      var composer = '<div class="yz-composer"><input type="text" data-msg-input placeholder="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" maxlength="3000">' +
-        '<button type="button" class="yz-send" data-action="send-msg">' + CORE.escapeHtml(t.playerSend) + '</button></div>';
+      // 封印后传讯通道关闭：隐藏输入框，显示封印横幅，防止用户误以为能发消息。
+      var sealed = flags && flags.msg === false;
+      var composer;
+      if (sealed) {
+        composer = '<div class="yz-composer yz-composer-sealed">' + CORE.escapeHtml(t.toast.sealedMsg) + '</div>';
+      } else {
+        var sendDisabled = sending ? ' disabled' : '';
+        composer = '<div class="yz-composer"><input type="text" data-msg-input placeholder="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" maxlength="3000"' + sendDisabled + '>' +
+          '<button type="button" class="yz-send' + (sending ? ' yz-send-busy' : '') + '" data-action="send-msg"' + sendDisabled + '>' + (sending ? '…' : CORE.escapeHtml(t.playerSend)) + '</button></div>';
+      }
       return '<main class="yz-page-inner yz-page-composer" data-marker="player-chat">' +
         yzHeader(title) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
     }
@@ -5091,7 +5148,7 @@
     var t = I18N.dict();
     var tag = headerTagText(isPlayer, nav, t);
     if (nav.app === 'tablet') return isPlayer ? renderTablet(pstate, search, t.playerEmptyPrivate) : renderTablet(state, search);
-    if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search, tag, ui.sendFailed) : renderMsg(state, nav, search);
+    if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search, tag, ui.sendFailed, flags, ui.sending) : renderMsg(state, nav, search, flags, ui.sending);
     if (nav.app === 'notes') return isPlayer ? renderNotes(pstate, nav, search, true, ui) : renderNotes(state, nav, search);
     if (nav.app === 'forum') {
       // 论坛是公开数据：列表/详情用角色域合并视图（含镜像进来的玩家帖子）；
@@ -5354,9 +5411,12 @@
     '.yz-composer{display:flex;gap:8px;padding:10px 0 4px;border-top:1px solid rgba(150,255,215,.12)}',
     '.yz-composer input{flex:1;min-width:0;height:36px;border:1px solid rgba(160,235,205,.3);background:rgba(14,44,36,.6);border-radius:18px;color:#eef9f3;padding:0 14px;font-size:13px;font-family:inherit;letter-spacing:.5px}',
     '.yz-composer input:focus{outline:1px solid rgba(150,255,215,.45)}',
+    '.yz-composer input:disabled{opacity:.5;cursor:not-allowed}',
     '.yz-composer input::placeholder{color:#7fae9a}',
     '.yz-send{flex:none;height:36px;border:1px solid rgba(170,255,225,.5);background:rgba(70,180,140,.4);color:#f2fff9;border-radius:18px;padding:0 16px;font-size:12px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
     '.yz-send:hover{background:rgba(90,210,165,.55)}',
+    '.yz-send:disabled,.yz-send-busy{opacity:.45;cursor:not-allowed;pointer-events:none}',
+    '.yz-composer-sealed{justify-content:center;align-items:center;color:#7fae9a;font-size:12px;letter-spacing:1px;border-color:rgba(242,165,154,.3);background:rgba(90,30,24,.35)}',
     '.yz-msg-status{font-style:normal;color:#7fae9a;font-size:9px;letter-spacing:1px;margin-left:6px}',
     '.yz-msg-status.bad{color:#f2a59a}',
     '.yz-retry-btn{margin:3px 6px 0;padding:2px 10px;border:1px solid rgba(242,165,154,.5);background:rgba(90,30,24,.55);color:#f5c8c0;border-radius:10px;font-size:10px;font-family:inherit;cursor:pointer}',
@@ -5525,6 +5585,12 @@
     // 是否处于聊天会话中：chat:opened 置真、chat:closed 置假。
     // 宿主没有「当前路由是否为聊天页」的查询 API，这是控制 FAB 只在聊天内显示的唯一信号。
     var chatActive = false;
+    // 清除标记：clearAllData/clearFeatureData 执行时置真，generation:success 时检查并丢弃
+    // protocol block——防止生成中清除后数据复活（清空 → 旧 protocol 写回 = 数据复活）。
+    var clearPending = false;
+    // overlay 开关 epoch：open() 是异步的，用户快速关闭后异步完成会重新 addClass('open')。
+    // 递增 epoch 后 async 完成时校验未变则 abort，防止 overlay 意外重开。
+    var openEpoch = 0;
     var featureFlags = {};
     VIEWS.FEATURES.forEach(function (feature) { if (feature.toggleable) featureFlags[feature.id] = true; });
     var nav = { app: 'home', view: 'root', params: {}, stack: [] };
@@ -5538,6 +5604,9 @@
     // 快照恢复的 in-flight 锁：rebuildFromHistory 是异步的，连点两次会触发第二次
     // stale 分支、报误导性的「聊天已切换」红 toast——进行中再点直接忽略。
     var restoreBusy = false;
+    // 传讯发送中锁：快速双击发送按钮时，第二次调用在第一次 syncPlayerChannel 完成前
+    // 直接忽略——防止并发同步导致角色回复被镜像两次。
+    var sending = false;
     // 本轮 generation:prepare 推进已读游标前的旧值：生成失败/取消时回退，
     // 否则玩家消息被提前标已读、下轮没有未读角标提示（虽然其实没收到回复）。
     var cursorBeforePrepare = null;
@@ -5913,7 +5982,7 @@
         // 用户每次发一条评论都要重新滚到底部。聊天详情带检索时同样要恢复位置，
         // 不能每次按键都被钉回底部。
         var savedScroll = ((nav.view === 'chat' || nav.view === 'gchat') && !search) ? null : pageNode.scrollTop;
-        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, sendFailed: sendFailed }, domain, playerState);
+        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, sendFailed: sendFailed, sending: sending }, domain, playerState);
         // 聊天详情（私讯/群聊/传讯）滚动到底部：每次重渲染后都贴最新消息，不把用户弹回最旧。
         // 但检索旧消息时不能钉底——否则每次按键都被拉回底部，看不到上面匹配的上下文。
         if ((nav.view === 'chat' || nav.view === 'gchat') && !search) {
@@ -6046,6 +6115,8 @@
       // 强制下一轮全量重建：单功能清空后 sync 状态/旧摘要/issue 回声仍指向旧数据，
       // 不清 pendingFull 的话 meta-only diff 轮提前返回，假「complete」绿点残留。
       runtime.current().pendingFull = true;
+      // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
+      clearPending = true;
       runtime.saveChat(runtime.activeChatId);
       if (featureId === 'forum') runtime.syncPlayerPosts(runtime.activeChatId);
       if (featureId === 'msg') runtime.syncPlayerChannel(runtime.activeChatId);
@@ -6075,6 +6146,8 @@
       // 空数据却显示「已同步」，模型可能连续多轮空转。processedTurns 不清
       // （防历史水化把已清除数据复活），revision 保留同理。
       state.pendingFull = true;
+      // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
+      clearPending = true;
       state.sync = { status: 'empty', turnId: '', roleName: '', summary: '', applied: [], appliedSeen: [], issues: [], updatedAt: 0 };
       runtime.saveChat(chatId);
       runtime.savePlayerChat(chatId, player);
@@ -6278,9 +6351,11 @@
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       // 异步加载（切聊水化/从存储读快照）期间先显示 loading 态，避免「点了没反应」。
       if (overlay) overlay.classList.add('loading');
+      var epoch = ++openEpoch;
       var id = await runtime.resolveCurrentChatId();
       if (id !== runtime.activeChatId) await runtime.switchChat(id);
-      if (!overlay) return;
+      // async 期间用户可能已关闭 overlay：epoch 变了则 abort，防止意外重开。
+      if (epoch !== openEpoch || !overlay) return;
       overlay.classList.remove('loading');
       overlay.classList.add('open');
       overlay.setAttribute('aria-hidden', 'false');
@@ -6313,6 +6388,7 @@
     function close() {
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       if (!overlay) return;
+      ++openEpoch;
       clearToast();
       // 关闭法器时一并收起确认对话框（弹框期间切聊天/关闭后继续确认会误操作）。
       hideConfirm();
@@ -6463,7 +6539,7 @@
     // 玩家发讯（私讯通道的 UI 侧）：读取输入框 → 写入玩家域 → 投递角色域。
     function sendPlayerMessage() {
       if (!enabled() || domain !== 'player') return;
-      // 封印 msg 后传讯通道停止：必须明示，否则消息写入玩家域却永远到不了角色，看着像已发送。
+      if (sending) return;
       if (featureFlags.msg === false) { showToast(I18N.dict().toast.sealedMsg, true); return; }
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       var box = overlay && overlay.querySelector('[data-msg-input]');
@@ -6471,24 +6547,26 @@
       var text = String(box.value || '');
       if (!CORE.hasText(text.trim())) { showToast(I18N.dict().playerEmptyInput, true); return; }
       box.value = '';
+      sending = true;
+      render();
       var sent = runtime.sendPlayerMessage(runtime.activeChatId, text);
-      if (!sent) return;
+      if (!sent) { sending = false; render(); return; }
       showToast(I18N.dict().playerSentToast);
-      // 投递到角色域是异步落盘：成功清失败标记并重渲染；失败标记「未送达」供重发。
       runtime.syncPlayerChannel(runtime.activeChatId).then(function () {
         delete sendFailed[sent.id];
+        sending = false;
         render();
       }).catch(function () {
         sendFailed[sent.id] = true;
         showToast(I18N.dict().playerSendFailed, true);
+        sending = false;
         render();
       });
-      render();
     }
 
     // 重发未送达的传讯：重新执行镜像（幂等，id 去重不会产生重复行）。
     function retryPlayerMessage(messageId) {
-      if (!enabled() || domain !== 'player') return;
+      if (!enabled() || domain !== 'player' || sending) return;
       runtime.syncPlayerChannel(runtime.activeChatId).then(function () {
         delete sendFailed[String(messageId)];
         showToast(I18N.dict().playerSentToast);
@@ -6502,7 +6580,7 @@
     // 玩家群聊发言（公开数据上的真实发言）：读输入框 → 写入玩家域源 → 镜像角色域群组。
     function sendPlayerGroupMessage() {
       if (!enabled() || domain !== 'player') return;
-      // 封印 msg 后群聊镜像停止：明示而非假成功。
+      if (sending) return;
       if (featureFlags.msg === false) { showToast(I18N.dict().toast.sealedMsg, true); return; }
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       var box = overlay && overlay.querySelector('[data-group-msg-input]');
@@ -6947,6 +7025,8 @@
 
       plugin.on('generation:success', async function (event) {
         if (!enabled()) return event;
+        // 清除进行中时丢弃本轮 protocol block：用户在生成期间清了数据，旧协议写回会复活已清除的数据。
+        if (clearPending) { clearPending = false; cursorBeforePrepare = null; render(); return event; }
         var raw = pickEnvelopePayload(event);
         // 该 Hook 每个 handler 只有约 5 秒预算且超时整体丢弃：先同步完成纯字符串的正文剥离
         // （阻止协议块进入已保存消息的关键动作），快照应用走异步、持久化已在 runtime 后台化。
@@ -7022,6 +7102,7 @@
 
       plugin.on('generation:error', function () {
         if (!enabled()) return;
+        clearPending = false;
         // 本轮生成失败：回退已读游标（prepare 时推进了），玩家消息重新计未读。
         if (cursorBeforePrepare !== null) {
           runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare);
@@ -7031,6 +7112,7 @@
       });
       plugin.on('generation:cancelled', function () {
         if (!enabled()) return;
+        clearPending = false;
         if (cursorBeforePrepare !== null) {
           runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare);
           cursorBeforePrepare = null;
@@ -7043,6 +7125,7 @@
       if (started) return;
       started = true;
       bindHooks();
+      setupSyncChannel();
       try {
         var i18nApi = tavoApi.plugin && tavoApi.plugin.i18n;
         if (i18nApi && typeof i18nApi.onChange === 'function') i18nApi.onChange(function () { I18N.invalidate(); refreshConfirmText(); render(); });

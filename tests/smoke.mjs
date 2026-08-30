@@ -149,7 +149,7 @@ ok(/showConfirm\(dict\.toast\.clearTitle, dict\.toast\.clearConfirm, dict\.toast
 ok(/Object\.keys\(CORE\.FEATURE_FIELDS\)\.forEach/.test(source) && /player\.myComments = \[\];/.test(source), 'clearAllData 归零角色域与玩家域全部功能字段 + 评论源');
 // 回归保护：清除后必须重置同步状态并强制下一轮全量重建——否则 status 残留
 // 「complete」假绿、旧角色名/摘要继续显示、meta-only diff 轮提前返回，空数据却显示已同步。
-ok(/state\.pendingFull = true;\s*state\.sync = \{ status: 'empty'/.test(source), 'clearAllData 置 pendingFull 并重置 sync（清假绿 + 强制重建）');
+ok(/state\.pendingFull = true;[\s\S]*?state\.sync = \{ status: 'empty'/.test(source), 'clearAllData 置 pendingFull 并重置 sync（清假绿 + 强制重建）');
 ok(/function clearFeatureData\(featureId\) \{\s*var blank/.test(source) && /pendingFull = true;/.test(source), '单功能清空同样置 pendingFull 强制重建');
 ok(/plugin\.onSidebarAction\('resync-history'/.test(source) && /plugin\.onSidebarAction\('clear-data'/.test(source), '侧边栏 resync-history 与 clear-data 双动作并存');
 // 回归保护：确认框必须是 body 级居中 modal（独立于 overlay 与 toast），最高 z-index，
@@ -190,6 +190,16 @@ ok(/if \(!chatActive\) \{ showToast\(I18N\.dict\(\)\.toast\.noChat, true\); retu
 ok(/#yz1-overlay\.loading\{display:flex/.test(source), 'open() 异步加载期间有 loading 态');
 // 回归保护：生成失败/取消回退已读游标（玩家消息不被提前标已读）。
 ok(/var cursorBeforePrepare = null;/.test(source) && /runtime\.restorePlayerReadCursor\(runtime\.activeChatId, cursorBeforePrepare\);/.test(source), '生成失败/取消回退已读游标');
+// S1 回归：发送按钮防抖——sending 锁防止并发 syncPlayerChannel。
+ok(/var sending = false;/.test(source) && /if \(sending\) return;/.test(source), '发送按钮有 sending 防抖锁');
+// S2 回归：封印时发送区域显示封印横幅（非活跃输入框）。
+ok(/var sealed = flags && flags\.msg === false;/.test(source) && /yz-composer-sealed/.test(source), '封印时传讯区显示封印横幅');
+// S4 回归：清除标记——clearAllData/clearFeatureData 置 clearPending，generation:success 时丢弃。
+ok(/var clearPending = false;/.test(source) && /clearPending = true;/.test(source), '清除操作设置 clearPending 防数据复活');
+// S5 回归：overlay 开关 epoch——open()/close() 增减 epoch 防异步竞态。
+ok(/var openEpoch = 0;/.test(source) && /var epoch = \+\+openEpoch;/.test(source), 'overlay 开关有 epoch 计数器防异步竞态');
+// S6 回归：本地数据损坏警告——load() 检测 JSON 损坏并弹 toast。
+ok(/var rawMirror = localGet\(/.test(source) && /mirrorCorrupted/.test(source), 'load() 检测 localStorage 数据损坏并警告');
 // 回归保护：自己刚发的消息不计为角色域未读（refreshPlayerContact 排除 ownIds）。
 ok(/var ownIds = \{\};\s*var player = playerCurrent\(\);/.test(source) && /!ownIds\[String\(message\.id\)\]\) unread \+= 1;/.test(source), 'refreshPlayerContact 排除自己发过的消息（不计角色域未读）');
 // 回归保护：卦名允许两行换行（en 长卦名小屏不截断）。

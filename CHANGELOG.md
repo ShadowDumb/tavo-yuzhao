@@ -7,6 +7,12 @@
 
 ### 修复
 
+- **发送按钮无防抖**：快速双击导致两次 `syncPlayerChannel` 并发，角色回复可能被镜像两次。加 `sending` 锁，发送中禁用按钮+输入框
+- **封印时发送按钮无视觉禁用**：封印状态下按钮仍可点击，用户连点才看到 toast。封印时禁用输入框+按钮，显示封印横幅
+- **双标签页数据竞争**：两 tab 共享 localStorage + 世界书无跨 tab 同步，最后写入者覆盖前者。加 `BroadcastChannel` 通知其他标签页重载
+- **生成中点清除数据复活**：`clearAllData` 清零后进行中的 generation 写回旧 protocol block。加 `clearPending` 标记，success 时丢弃
+- **open()/close() 异步竞态**：快速开/关 overlay，`open()` 异步完成后重新打开。加 `openEpoch` 计数器，close 后 abort
+- **localStorage 损坏静默丢数据**：`parseStored` 返回 null → `blankState` 替换，用户无感知。load() 检测损坏弹警告 toast
 - **Toast 连续弹窗串接/残留按钮**：`showToast` 现开头先 `clearToast()`——2.4s 内连续两条 toast 不再文字拼接，上一条的内嵌按钮（撤销等）不再残留在 DOM 里触发被替换后的错误动作
 - **英文卦名小屏截断 + 顶栏窄屏溢出**：卦名允许两行换行（"Artifact Mgmt" 不再截成 "Artifact…"）；新增窄屏媒体查询（≤374px 缩字距、隐藏副标）防英文顶栏溢出
 - **玩家域主页新手引导被截断**：`.yz-hero-line p` 从 nowrap 改为允许换行，引导文案不再被吞掉后半句
