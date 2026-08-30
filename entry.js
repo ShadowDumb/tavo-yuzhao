@@ -5341,6 +5341,9 @@
       var sent = runtime.sendPlayerGroupMessage(runtime.activeChatId, groupId, text);
       if (!sent) return;
       showToast(I18N.dict().playerGroupSentToast);
+      // 群聊详情渲染的是角色域数据（公开数据）：镜像需先 await resolvePlayerName，
+      // 镜像完成后必须再重渲染一次，否则发送的消息要等下次导航才出现。
+      runtime.syncPlayerGroups(runtime.activeChatId).then(function () { render(); }).catch(function () { render(); });
       render();
     }
 
@@ -5357,6 +5360,9 @@
       var sent = runtime.sendPlayerComment(runtime.activeChatId, postId, text);
       if (!sent) return;
       showToast(I18N.dict().playerCommentSentToast);
+      // 帖子详情渲染的是角色域数据（公开数据）：镜像完成后必须再重渲染一次，
+      // 否则玩家评论要等下次导航才出现。
+      runtime.syncPlayerPosts(runtime.activeChatId).then(function () { render(); }).catch(function () { render(); });
       render();
     }
 
