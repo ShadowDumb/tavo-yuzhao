@@ -1946,15 +1946,15 @@
     };
   }
 
-  var STATE_KEY = 'yz_jade_v1';
   var LOCAL_PREFIX = 'yz-jade-v1:';
-  // 全局备份键：chat 作用域在插件卸载/更新时可能被宿主清理，global 备份与本地镜像互为兜底。
-  var BACKUP_PREFIX = 'yz-jade-v1-backup:';
-  // 玩家域存储：与角色域完全独立的键（三层：宿主 chat 键 + 本地镜像 + 全局备份）。
-  // 玩家域不进世界书——世界书快照/归档只服务角色域（评审结论）。
-  var PLAYER_STATE_KEY = 'yz_jade_player_v1';
+  // 本地镜像只是启动加速缓存：权威数据在世界书（玉兆档案·<chatId> 的分片快照条目），
+  // 缓存可随时丢弃（宿主存储不再参与持久化，世界书恢复链见 load）。
+  // 玩家域存储：与角色域完全独立的键（本地镜像 + 世界书分片快照）。
   var PLAYER_LOCAL_PREFIX = 'yz-jade-player-v1:';
-  var PLAYER_BACKUP_PREFIX = 'yz-jade-player-v1-backup:';
+  // 世界书快照分片：单片内容上限（字符）与单域最多片数。整本世界书 update 原子替换，
+  // 快照拆片保证单条目不超宿主单条上限；超出总片数上限时放弃快照（仅诊断提示）。
+  var SNAP_SHARD_CHARS = 90000;
+  var MAX_SNAP_SHARDS = 5;
   // 插件版本：状态里记录生成时的版本，版本变化置持久化强制全量标记（见 doSwitchChat），
   // 让更新后的第一轮生成按新提示词重写全部数据——旧格式数据不再粘滞。
   // 发布时必须与 manifest.json 的 version 保持一致（冒烟契约测试校验）。
@@ -1965,8 +1965,8 @@
     var local = arguments[1] || null;
     var getFlags = typeof arguments[2] === 'function' ? arguments[2] : function () { return null; };
 
-    // 内存态只保留最近使用的少量聊天；淘汰无损——每次写入都会落盘，
-    // 重新进入被淘汰的聊天时从宿主/本地存储重新加载。
+    // 内存态只保留最近使用的少量聊天；淘汰无损——每次写入都会落盘（镜像缓存 + 世界书），
+    // 重新进入被淘汰的聊天时从镜像缓存/世界书重新加载。
     var MAX_ACTIVE_CHATS = 5;
     var chats = Object.create(null);
     // 玩家域与角色域同一生命周期：随 switchChat 加载、随 LRU 一并淘汰。
@@ -1998,51 +1998,18 @@
       try { if (local && typeof local.setItem === 'function') local.setItem(key, value); } catch (error) { dbg('local set failed: ' + key, error); }
     }
 
-    async function hostGet(key, scope) {
-      try { return typeof tavoApi.get === 'function' ? await Promise.resolve(tavoApi.get(key, scope || 'chat')) : null; } catch (error) { dbg('host get failed: ' + key, error); return null; }
-    }
-
-    async function hostSet(key, value, scope) {
-      try { if (typeof tavoApi.set === 'function') await Promise.resolve(tavoApi.set(key, value, scope || 'chat')); } catch (error) { dbg('host set failed: ' + key, error); }
-    }
-
     function parseStored(raw) {
-      if (!raw) return null;
+      if (raw == null) return null;
       if (typeof raw === 'object') return raw;
       try { return JSON.parse(String(raw)); } catch (_) { return null; }
     }
 
-    // 宿主 chat 作用域键绑定的是宿主「当前聊天」而非插件视角的聊天：
-    // 插件与宿主短暂不同步（事件延迟窗口）时，把本聊天数据写进宿主当前聊天的键会造成跨聊天污染。
-    // 写入前确认宿主真实当前聊天；读（chat.current）与写（tavoApi.set）在同一个微任务内连续执行，
-    // 中间没有 await 让出——若复查本身跨微任务，宿主在读取后、写入前切换聊天时仍会写错键。
-    // 拿不到宿主信息（API 缺失/异常）时保守按旧行为写入。
-    function writeHostScoped(chatId, serialized, profile) {
-      profile = profile || {};
-      var stateKey = profile.stateKey || STATE_KEY;
-      var backupPrefix = profile.backupPrefix || BACKUP_PREFIX;
-      try {
-        if (tavoApi.chat && typeof tavoApi.chat.current === 'function') {
-          return Promise.resolve(tavoApi.chat.current()).then(function (chat) {
-            var hostChatId = chat && chat.id != null ? String(chat.id) : '';
-            if (hostChatId && hostChatId !== chatId) return;
-            return hostSet(stateKey, serialized, 'chat');
-          }).then(function () {
-            // 全局备份：chat 作用域随插件卸载/更新被清理时，global 备份可恢复（load 回退链）。
-            return hostSet(backupPrefix + chatId, serialized, 'global');
-          });
-        }
-      } catch (error) { dbg('chat current failed', error); }
-      return hostSet(stateKey, serialized, 'chat').then(function () {
-        return hostSet(backupPrefix + chatId, serialized, 'global');
-      });
-    }
-
     // 落盘走后台串行队列：内存态已同步更新，调用方无需等待写完成，
     // 关键路径（generation:success）因此不被存储 IO 占用预算；同 key 写入按入队顺序生效。
-    // 玩家域三层存储落盘（宿主 chat 键 + 本地镜像 + 全局备份），不经世界书。
+    // 持久化语义：本地镜像（缓存，同步写穿）+ 世界书（权威，排队合并同步）。
+    // 玩家域与角色域同链路（savePlayer 只换镜像键）。
     function savePlayer(chatId, player) {
-      save(chatId, player, { localPrefix: PLAYER_LOCAL_PREFIX, stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+      save(chatId, player, { localPrefix: PLAYER_LOCAL_PREFIX });
     }
     function save(chatId, state, profile) {
       profile = profile || {};
@@ -2051,16 +2018,22 @@
       if (serialized.length > MAX_SNAPSHOT_BYTES) dbg('serialized state exceeds snapshot limit: ' + serialized.length);
       saveQueue = saveQueue.then(function () {
         localSet((profile.localPrefix || LOCAL_PREFIX) + chatId, serialized);
-        // 宿主 chat 作用域绑定的是写入执行时的当前聊天：入队期间若已切换聊天，
-        // 把旧聊天数据写进新聊天的宿主键会造成跨聊天污染，执行时复查当前聊天。
-        if (chatId === activeChatId) return writeHostScoped(chatId, serialized, profile);
       }).catch(function (error) { dbg('save failed: ' + chatId, error); });
+      // 世界书是权威存储：任何数据变化都排队同步（busy 合并、幂等、失败降级镜像）。
+      // 只有"有实际数据"才同步：空白/未加载状态（新聊天、玩家域尚未加载的加载窗口）
+      // 不得覆盖已有世界书（否则用空状态清掉权威快照）。
+      var p = playerChats[chatId];
+      var playerTouched = !!p && ((Number(p.updatedAt) || 0) > 0 || CORE.safeArray(p.chats && p.chats.contacts, 10).length > 0);
+      var roleTouched = (Number(state && state.revision) || 0) > 0 || Number(state && state.sync && state.sync.updatedAt) > 0;
+      if (chatId === activeChatId && (roleTouched || playerTouched)) syncArchive(chatId);
       return saveQueue;
     }
 
-    // 世界书快照恢复：宿主存储（chat/global/本地镜像）全被清理（卸载后重装）时的最后兜底。
-    // 快照是世界书里 identifier 为 yz-snap 的禁用条目（永不注入），内容为整份状态 JSON。
-    async function lorebookSnapshotState(chatId) {
+    // 世界书快照读取：玉兆档案·<chatId> 书里的分片快照条目（yz-snap-N / yz-psnap-N，
+    // enabled:false 永不注入）按 index 拼接还原整份状态；兼容旧版单条 yz-snap
+    // （内容直接为状态 JSON，无分片包装）。片序缺失/包装损坏时整体放弃（降级镜像）。
+    async function lorebookSnapshotState(chatId, kind) {
+      kind = kind === 'player' ? 'player' : 'role';
       var lore = tavoApi.lorebook;
       if (!lore || typeof lore.find !== 'function') return null;
       try {
@@ -2068,79 +2041,81 @@
         var book = Array.isArray(found) && found[0] && Array.isArray(found[0].entries) ? found[0] : null;
         if (!book) return null;
         var entries = safeArray(book.entries, 200);
-        for (var i = 0; i < entries.length; i += 1) {
-          var entry = entries[i];
-          if (entry && entry.identifier === 'yz-snap' && hasText(entry.content)) {
-            var parsed = parseStored(entry.content);
+        var shards = [];
+        entries.forEach(function (entry) {
+          var m = /^(yz-snap|yz-psnap)-(\d+)$/.exec(String(entry && entry.identifier) || '');
+          if (!m) return;
+          if ((m[1] === 'yz-psnap') !== (kind === 'player')) return;
+          shards.push({ n: Number(m[2]) || 0, content: entry.content });
+        });
+        if (shards.length) {
+          shards.sort(function (a, b) { return a.n - b.n; });
+          var bodies = [];
+          var valid = true;
+          for (var i = 0; i < shards.length; i += 1) {
+            var shard = parseStored(shards[i].content);
+            if (!shard || shard.v !== 2 || shard.kind !== kind || shard.index !== i + 1 || shard.total !== shards.length) { valid = false; break; }
+            bodies.push(String(shard.body == null ? '' : shard.body));
+          }
+          if (valid) {
+            var parsed = parseStored(bodies.join(''));
             if (parsed) return parsed;
+          }
+        }
+        // 兼容旧版单条 yz-snap（仅角色域；玩家域从未写过单条格式）。
+        if (kind === 'role') {
+          for (var j = 0; j < entries.length; j += 1) {
+            var entry = entries[j];
+            if (entry && entry.identifier === 'yz-snap' && hasText(entry.content)) {
+              var legacy = parseStored(entry.content);
+              if (legacy) return legacy;
+            }
           }
         }
       } catch (error) { dbg('lorebook snapshot restore failed', error); }
       return null;
     }
 
-    // 存储回退链：宿主 chat 键 → 本地镜像 → 全局备份 → 世界书快照 → 空白。
-    // 宿主键可能因写路径竞态留旧（save 的宿主复查跳过写入）或含版本迁移的空白占位：
-    // 镜像带聊天标识、归属无歧义，镜像更新（revision 更高）时以镜像为准。
-    // 任何非宿主来源读到的数据都回写宿主 chat 键与本地镜像，避免每次开聊重走恢复链。
+    // 存储恢复链：世界书（权威）→ 本地镜像（缓存）→ 空白。
+    // 镜像与世界书同源同内容时取最新：save 先写镜像后排队写世界书（还可能被 busy 合并），
+    // 所以镜像的 updatedAt 恒不早于世界书；revision 严格更高或平局时更新者胜。
+    // 任何非世界书来源读到的数据都回写世界书（首次使用自动迁移）；世界书读到则回写镜像。
     async function load(chatId) {
-      var raw = await hostGet(STATE_KEY, 'chat');
-      var parsed = parseStored(raw);
-      var fromHost = !!parsed;
+      var world = await lorebookSnapshotState(chatId);
+      var fromWorld = !!world;
       var mirrored = parseStored(localGet(LOCAL_PREFIX + chatId));
-      // 镜像与宿主同源同内容时取最新：save 先写镜像后写宿主（宿主写还可能被切聊复查跳过），
-      // 所以镜像的 updatedAt 恒不早于宿主；revision 严格更高或平局时更新者胜——
-      // 避免 rev-0 聊天/游标未读等 revision 中性变更后，陈旧宿主键覆盖更新的镜像。
       var mirrorRev = Number(mirrored && mirrored.revision) || 0;
-      var hostRev = Number(parsed && parsed.revision) || 0;
+      var worldRev = Number(world && world.revision) || 0;
       var mirrorTime = Number(mirrored && mirrored.updatedAt) || 0;
-      var hostTime = Number(parsed && parsed.updatedAt) || 0;
-      if (mirrored && (!parsed || mirrorRev > hostRev || (mirrorRev === hostRev && mirrorTime >= hostTime))) {
+      var worldTime = Number(world && world.updatedAt) || 0;
+      var parsed = null;
+      if (mirrored && (!world || mirrorRev > worldRev || (mirrorRev === worldRev && mirrorTime >= worldTime))) {
         parsed = mirrored;
-        fromHost = false;
-      }
-      if (!parsed) {
-        parsed = parseStored(await hostGet(BACKUP_PREFIX + chatId, 'global'));
-        fromHost = false;
-      }
-      if (!parsed) {
-        parsed = await lorebookSnapshotState(chatId);
-        fromHost = false;
+      } else if (world) {
+        parsed = world;
       }
       if (parsed) {
-        // 数据来自宿主时保留原文回写镜像（防规范化改动覆盖存储）；来自镜像/备份/快照时
-        // 序列化回写，宿主键陈旧时借此更新。
-        var serialized = fromHost && typeof raw === 'string' ? raw : JSON.stringify(parsed);
-        localSet(LOCAL_PREFIX + chatId, serialized);
-        if (chatId === activeChatId && !fromHost) {
-          // 从备份/镜像/快照恢复后回写宿主键前确认宿主当前聊天：宿主已切走时
-          // 跳过回写，避免把数据写进其它聊天的宿主作用域。
-          await writeHostScoped(chatId, serialized);
-        }
+        localSet(LOCAL_PREFIX + chatId, JSON.stringify(parsed));
+        if (!fromWorld && chatId === activeChatId) syncArchive(chatId);
       }
       return CORE.normalizeState(parsed, chatId);
     }
 
-    // 玩家域存储回退链：宿主 chat 键 → 本地镜像 → 全局备份 → 空白。
-    // 不进世界书（快照/归档只服务角色域）；无 revision 可比，按 updatedAt 取最新。
-    // 任何非宿主来源读到的数据都回写宿主 chat 键与本地镜像，避免每次开聊重走恢复链。
+    // 玩家域存储恢复链：世界书（yz-psnap 分片）→ 本地镜像 → 空白。
+    // 无 revision 可比，按 updatedAt 取最新。
     async function loadPlayer(chatId) {
-      var raw = await hostGet(PLAYER_STATE_KEY, 'chat');
-      var parsed = parseStored(raw);
-      var fromHost = !!parsed;
+      var world = await lorebookSnapshotState(chatId, 'player');
+      var fromWorld = !!world;
       var mirrored = parseStored(localGet(PLAYER_LOCAL_PREFIX + chatId));
-      if (mirrored && (!parsed || (Number(mirrored.updatedAt) || 0) > (Number(parsed.updatedAt) || 0))) {
+      var parsed = null;
+      if (mirrored && (!world || (Number(mirrored.updatedAt) || 0) >= (Number(world.updatedAt) || 0))) {
         parsed = mirrored;
-        fromHost = false;
-      }
-      if (!parsed) {
-        parsed = parseStored(await hostGet(PLAYER_BACKUP_PREFIX + chatId, 'global'));
-        fromHost = false;
+      } else if (world) {
+        parsed = world;
       }
       if (parsed) {
-        var serialized = fromHost && typeof raw === 'string' ? raw : JSON.stringify(parsed);
-        localSet(PLAYER_LOCAL_PREFIX + chatId, serialized);
-        if (chatId === activeChatId && !fromHost) await writeHostScoped(chatId, serialized, { stateKey: PLAYER_STATE_KEY, backupPrefix: PLAYER_BACKUP_PREFIX });
+        localSet(PLAYER_LOCAL_PREFIX + chatId, JSON.stringify(parsed));
+        if (!fromWorld && chatId === activeChatId) syncArchive(chatId);
       }
       return CORE.normalizePlayerState(parsed, chatId);
     }
@@ -2226,7 +2201,7 @@
       activeChatId = chatId;
       rememberChat(chatId);
       evictChats();
-      // 读存储前等落盘队列排空：上一聊天未写完的 save 会在队列里落镜像/宿主，
+      // 读存储前等落盘队列排空：上一聊天未写完的 save 会在队列里落镜像缓存，
       // 直接读会读到陈旧/空白数据（rev-0 聊天首条玩家消息曾因此丢失）。
       await saveQueue;
       var loaded = await load(chatId);
@@ -3047,34 +3022,55 @@
       return lines;
     }
 
-    // 全状态快照备份：整份状态写入世界书的禁用条目（enabled:false 永不注入）。
-    // 插件卸载/更新时宿主存储可能被清空，世界书是用户数据、最可能存续；
-    // 重装后 load() 的恢复链从快照还原状态（配合版本变化触发强制全量刷新）。
-    function buildSnapshotEntry(state) {
-      if (!state || state.revision < 1) return null;
-      var serialized;
-      try { serialized = JSON.stringify(state); } catch (error) { return null; }
-      if (serialized.length > MAX_SNAPSHOT_BYTES / 2) return null;
-      return {
-        identifier: 'yz-snap',
-        name: '玉兆快照',
-        content: serialized,
-        enabled: false,
-        strategy: 'keyword',
-        keywords: [],
-        secondaryKeywords: [],
-        secondaryKeywordStrategy: 'none',
-        scanDepth: 0,
-        caseSensitive: false,
-        matchWholeWord: false,
-        injectionPosition: 'atDepth',
-        injectionDepth: 0,
-        injectionRole: 'system',
-        probability: 0,
-        sticky: 0,
-        cooldown: 0,
-        delay: 0
-      };
+    // 全状态快照备份：角色域 + 玩家域整份状态分片写入世界书的禁用条目
+    // （enabled:false 永不注入，probability 0）。世界书是用户数据、跨设备存续，
+    // 是权威存储；本地镜像被清/换设备后由分片快照还原。
+    // 分片包装 {v, ver, rev, updatedAt, kind, index, total, body}：body 为状态 JSON
+    // 字符串切片，读取时按 index 拼接还原。单片超 SNAP_SHARD_CHARS、单域超过
+    // MAX_SNAP_SHARDS 片时放弃快照（状态超出容量，仅诊断提示）。
+    function buildSnapshotEntries(state, playerState) {
+      var entries = [];
+      function shard(kind, serialized, rev, updatedAt) {
+        if (!serialized) return;
+        var total = Math.ceil(serialized.length / SNAP_SHARD_CHARS);
+        if (total < 1) total = 1;
+        if (total > MAX_SNAP_SHARDS) { dbg('snapshot exceeds shard cap: ' + serialized.length); return; }
+        for (var i = 0; i < total; i += 1) {
+          entries.push({
+            identifier: (kind === 'player' ? 'yz-psnap-' : 'yz-snap-') + (i + 1),
+            name: kind === 'player' ? '玉兆玩家快照' : '玉兆快照',
+            content: JSON.stringify({ v: 2, ver: PLUGIN_VERSION, rev: Number(rev) || 0, updatedAt: Number(updatedAt) || 0, kind: kind, index: i + 1, total: total, body: serialized.slice(i * SNAP_SHARD_CHARS, (i + 1) * SNAP_SHARD_CHARS) }),
+            enabled: false,
+            strategy: 'keyword',
+            keywords: [],
+            secondaryKeywords: [],
+            secondaryKeywordStrategy: 'none',
+            scanDepth: 0,
+            caseSensitive: false,
+            matchWholeWord: false,
+            injectionPosition: 'atDepth',
+            injectionDepth: 0,
+            injectionRole: 'system',
+            probability: 0,
+            sticky: 0,
+            cooldown: 0,
+            delay: 0
+          });
+        }
+      }
+      if (state && Number(state.revision) >= 1) {
+        var roleJson;
+        try { roleJson = JSON.stringify(state); } catch (error) { roleJson = null; }
+        shard('role', roleJson, state.revision, state.updatedAt);
+      }
+      var touched = !!playerState && ((Number(playerState.updatedAt) || 0) > 0 ||
+        CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).length > 0);
+      if (touched) {
+        var playerJson;
+        try { playerJson = JSON.stringify(playerState); } catch (error) { playerJson = null; }
+        shard('player', playerJson, 0, playerState.updatedAt);
+      }
+      return entries;
     }
 
     // 纯函数：由 state 构建世界书条目列表（封印交流讯息时不归档；封印舆图时地点名录不归档）。
@@ -3176,16 +3172,16 @@
         var state = chats[chatId];
         if (!state) return { ok: false, reason: 'missing' };
         var entries = buildArchiveEntries(state);
-        var snapshot = buildSnapshotEntry(state);
-        if (snapshot) entries.push(snapshot);
+        // 快照分片：角色域（rev ≥ 1）+ 玩家域（有数据时），与归档条目同一本原子替换。
+        buildSnapshotEntries(state, playerChats[chatId]).forEach(function (entry) { entries.push(entry); });
+        // 无可写内容时不触碰已有书：空白/未加载状态不得用空 entries 覆盖权威快照。
+        if (!entries.length) return { ok: true, entries: 0 };
         var name = ARCHIVE_NAME_PREFIX + chatId.slice(0, 40);
         var found = [];
         try { found = await Promise.resolve(lore.find(name, { match: 'exact' })); } catch (error) { dbg('lorebook find failed', error); }
         var book = Array.isArray(found) ? found[0] : null;
         var bookId = book ? book.id : null;
         if (bookId == null) {
-          // 从未同步且没有可归档内容时不建书：避免给每个新聊天都挂一本空世界书。
-          if (!entries.length) return { ok: true, entries: 0 };
           try {
             var created = await Promise.resolve(lore.create({ name: name, entries: [] }));
             // create 的返回形状随宿主实现而异（可能直接返回 id，也可能返回整本世界书）：
@@ -3233,9 +3229,7 @@
 
     return {
       LOCAL_PREFIX: LOCAL_PREFIX,
-      PLAYER_STATE_KEY: PLAYER_STATE_KEY,
       PLAYER_LOCAL_PREFIX: PLAYER_LOCAL_PREFIX,
-      PLAYER_BACKUP_PREFIX: PLAYER_BACKUP_PREFIX,
       switchChat: switchChat,
       settle: settle,
       rebuildFromHistory: rebuildFromHistory,
@@ -3245,6 +3239,7 @@
       importState: importState,
       syncArchive: syncArchive,
       buildArchiveEntries: buildArchiveEntries,
+      buildSnapshotEntries: buildSnapshotEntries,
       eventChatId: eventChatId,
       resolveCurrentChatId: resolveCurrentChatId,
       resolvePlayerName: resolvePlayerName,

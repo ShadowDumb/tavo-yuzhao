@@ -404,16 +404,18 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
 - 按 `chatId` 隔离；`chat:opened` 切换、`message:deleted` 从历史重建。
 - `processedTurns` 去重，防同一轮重复应用；重复投递的轮次不重复落盘。
 - 快照超阈值（200KB）拒收；解析失败转 Toast 并保留旧数据。
-- **多级备份链（v2.1.0 更新/卸载容灾）**：存储回退链 = 宿主 chat 键 → 本地镜像
-  （`yz-jade-v1:<chatId>`）→ 全局备份键（`yz-jade-v1-backup:<chatId>`，save 时随 chat
-  键双写）→ 世界书快照（`玉兆档案·<chatId>` 书内 `yz-snap` 禁用条目，内容为整份状态
-  JSON，≤100KB 才写）→ 空白。任何非宿主来源读到的数据都回写宿主 chat 键与本地镜像，
-  避免每次开聊重走恢复链。世界书是用户数据，卸载插件时最可能存续——历史正文被剥离后
-  无法从消息重建，这是卸载重装后唯一的完整恢复路径。
-- **镜像/宿主 tie-break**：save 先写镜像后写宿主键（宿主键还带当前聊天复查，切走时
-  跳过宿主写入），因此镜像的 updatedAt 恒不早于宿主；load 时 revision 严格更高或
-  revision 平局且 updatedAt 更新者胜——rev-0 聊天与游标/未读/作者回填等 revision 中性
-  变更不会被陈旧宿主键覆盖，宿主键陈旧时由镜像治愈回写。
+- **世界书为主存储（v2.2.0 持久化改造）**：权威数据在世界书 `玉兆档案·<chatId>` 的
+  分片快照条目（角色域 `yz-snap-N` / 玩家域 `yz-psnap-N`，enabled:false 永不注入，
+  每片 ≤90KB、单域 ≤5 片，包装 `{v, ver, rev, updatedAt, kind, index, total, body}`，
+  读取按 index 拼接还原；兼容旧版单条 `yz-snap`）。本地镜像（`yz-jade-v1:<chatId>` /
+  `yz-jade-player-v1:<chatId>`）只是启动加速缓存，可随时丢弃。存储回退链 = 世界书
+  （权威）→ 本地镜像（缓存）→ 空白。save 只在"有实际数据"时排队同步（空白/未加载
+  状态不得覆盖已有书）；syncArchive 无可写内容时不触碰已有书。宿主 chat 键与全局
+  备份已移除（不再有切聊复查竞态）；UI 偏好（封印开关/FAB 位置）仍走 global 键。
+- **镜像/世界书 tie-break**：save 先写镜像（同步）后排队写世界书（async busy 合并），
+  因此镜像的 updatedAt 恒不早于世界书；load 时 revision 严格更高或 revision 平局且
+  updatedAt 更新者胜——rev-0 聊天与游标/未读等 revision 中性变更不会被陈旧世界书
+  覆盖，陈旧世界书由镜像治愈回写。
 - **并发写安全**：镜像同步在 await 后复查状态对象同一性（双通道交错不覆盖新轮次）；
   hydrateHistory 写回前引用复查（水化窗口内新轮次不被静默回滚）；落盘队列与 load
   协同（切聊前先排空队列，rev-0 首条玩家消息不再丢失）。
@@ -504,6 +506,16 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   known 覆盖全部现有 id；裁剪豁免 pmg（保留原位，从最旧非玩家消息裁起）；重插按 pmg 序号锚点
   插入（无锚点才追加尾部）。新增回归测试 8 项（窗口外恒注入/全量轮原位保留/裁剪豁免/序号锚点
   重插/最新消息仍是模型回复），802 项全绿。 |
+  持久化改造（世界书为主存储）：权威数据迁到世界书 `玉兆档案·<chatId>` 的分片快照
+  条目（角色域 yz-snap-N / 玩家域 yz-psnap-N，每片 ≤90KB、单域 ≤5 片，包装
+  {v,ver,rev,updatedAt,kind,index,total,body} 按 index 拼接还原；读取兼容旧版单条
+  yz-snap）；本地镜像降级为启动缓存；移除宿主 chat 键与全局备份（tavoApi.set 不再
+  参与状态持久化，切聊复查竞态消失）；玩家域首次进世界书（savePlayer 同样触发
+  syncArchive）；save 仅在"有实际数据"时排队同步（空白/未加载状态不覆盖已有书）、
+  syncArchive 无可写内容时不触碰已有书（防加载窗口空状态清掉权威快照）；镜像/世界书
+  按 revision 与 updatedAt tie-break，陈旧世界书由镜像治愈回写。新增测试：世界书
+  分片 round-trip（>90KB 多片拼接）、旧单条快照兼容、玩家域快照、镜像恢复回写迁移、
+  tie-break 治愈、按聊天独立成书无跨聊污染，805 项全绿。 |
 
 冒烟测试基线：`node tests/smoke.mjs`（无外部依赖），覆盖 i18n 字典、manifest/catalog 结构（sidebar 动作、yz_current 基线回环与防累积）、Core 消毒与增量矩阵场景、Protocol 解析（mode/skip/digest/current/diff 边界）与剥离、Prompt 注入/
 封印/diff 规则/回声/归档规则、diff 协议（upsert/删除/幂等/未声明 mode 识别/meta-only/底线保护/full 标志）、最新消息保尾保留（full/diff 满员追加）、文件夹计数派生、基线窗口与字符硬上限、世界书归档（建书/条目/关键词/挂接/窗口滑动/降级/封印）、Runtime 状态机（内容指纹去重/水化签名/切聊竞态/重载后 settle/空白占位保护/重建/appliedSeen/importState）、持久化队列与

@@ -48,8 +48,6 @@ const probe = head + `
     stripEventFields: APP.stripEventFields,
     i18n: I18N,
     MAX_SNAPSHOT_BYTES: MAX_SNAPSHOT_BYTES,
-    STATE_KEY: STATE_KEY,
-    BACKUP_PREFIX: BACKUP_PREFIX,
     PLUGIN_VERSION: PLUGIN_VERSION
   };
 })();
@@ -283,11 +281,8 @@ console.log('# Runtime 状态机');
 
 function fakeHost() {
   const current = { chat: 'chat-1', lorebooks: [] };
-  const chatScope = new Map(); // chatId -> Map(key -> value)，模拟宿主按当前聊天隔离的 chat 存储
-  const globalScope = new Map();
   let history = [];
   let findCalls = 0;
-  let setCalls = 0;
   const queriedRoles = [];
   const lorebooks = new Map(); // id -> {id, name, entries}
   let loreSeq = 0;
@@ -297,26 +292,18 @@ function fakeHost() {
     setHistory(rows) { history = rows; },
     history() { return history.slice(); },
     findCalls() { return findCalls; },
-    setCalls() { return setCalls; },
     rolesQueried() { return queriedRoles.slice(); },
-    chatKeys() { return Array.from((chatScope.get(current.chat) || new Map()).keys()); },
-    seedChat(key, value) { if (!chatScope.has(current.chat)) chatScope.set(current.chat, new Map()); chatScope.get(current.chat).set(key, value); },
-    seedGlobal(key, value) { globalScope.set(key, value); },
-    clearChat() { chatScope.delete(current.chat); },
-    clearGlobal() { globalScope.clear(); },
     lorebooks() { return Array.from(lorebooks.values()); },
     chatUpdates() { return chatUpdates.slice(); },
+    // 测试辅助：直接以整本书写入世界书（模拟旧数据/另一客户端已写入的权威数据）。
+    seedBook(name, entries) {
+      const b = Array.from(lorebooks.values()).find((x) => x.name === name);
+      if (b) { b.entries = (entries || []).slice(); return b.id; }
+      loreSeq += 1;
+      lorebooks.set(loreSeq, { id: loreSeq, name, entries: (entries || []).slice() });
+      return loreSeq;
+    },
     api: {
-      get(key, scope) {
-        if (scope === 'global') return globalScope.get(key) ?? null;
-        return (chatScope.get(current.chat) || new Map()).get(key) ?? null;
-      },
-      set(key, value, scope) {
-        setCalls += 1;
-        if (scope === 'global') { globalScope.set(key, value); return; }
-        if (!chatScope.has(current.chat)) chatScope.set(current.chat, new Map());
-        chatScope.get(current.chat).set(key, value);
-      },
       chat: {
         current: async () => ({ id: current.chat, lorebooks: (current.lorebooks || []).map((id) => ({ id })) }),
         update: async (patch) => {
@@ -515,13 +502,17 @@ console.log('# Runtime · 重载后重新生成竞态');
   await seed.switchChat('chat-1');
   await seed.applyText(jade('s1', TABLET_OK), 'chat-1', 'test');
   await seed.saveChat('chat-1');
+  await seed.syncArchive('chat-1');
 
   let delay = 0;
   const slowApi = {
-    get: async (key, scope) => { await new Promise((r) => setTimeout(r, delay)); return host.api.get(key, scope); },
-    set: (key, value, scope) => host.api.set(key, value, scope),
     chat: host.api.chat,
-    message: host.api.message
+    message: host.api.message,
+    lorebook: {
+      find: async (name) => { await new Promise((r) => setTimeout(r, delay)); return host.api.lorebook.find(name); },
+      create: async (book) => { await new Promise((r) => setTimeout(r, delay)); return host.api.lorebook.create(book); },
+      update: async (book) => { await new Promise((r) => setTimeout(r, delay)); return host.api.lorebook.update(book); }
+    }
   };
 
   // settle：prepare 注入基线前等到异步加载完成，不再读到空白态
@@ -550,8 +541,9 @@ console.log('# Runtime · 重载后重新生成竞态');
 // ---------- Runtime 持久化与缓存 ----------
 console.log('# Runtime 持久化与缓存');
 const flushQueue = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flushWorld = async () => { await flushQueue(); await flushQueue(); };
 {
-  // 后台落盘队列：applyText 返回即完成内存更新，清空微任务后本地与宿主均已写入
+  // 后台落盘队列：applyText 返回即完成内存更新，清空微任务后本地镜像与宿主均写入
   const host = fakeHost();
   host.current.chat = 'chat-save';
   const store = new Map();
@@ -563,21 +555,20 @@ const flushQueue = () => new Promise((resolve) => setTimeout(resolve, 0));
   await rt.switchChat('chat-save');
   await rt.applyText(jade('t-save', TABLET_OK), 'chat-save', 'test');
   eq(rt.current().revision, 1, 'applyText 同步更新内存态，不等落盘');
-  await flushQueue();
-  ok(store.has(rt.LOCAL_PREFIX + 'chat-save'), '后台队列把状态写入本地镜像');
-  ok(host.chatKeys().includes(M.STATE_KEY), '活跃聊天同步写宿主存储');
+  await flushWorld();
+  ok(store.has(rt.LOCAL_PREFIX + 'chat-save'), '后台队列把状态写入本地镜像（缓存）');
+  const snapBook = host.lorebooks().find((b) => b.name === '玉兆档案·chat-save');
+  ok(snapBook && snapBook.entries.some((e) => e.identifier === 'yz-snap-1'), '数据变化即同步世界书快照分片');
 
-  // 单向镜像规则：host 读成功即回写本地
+  // 世界书权威：新会话（无本地镜像）从世界书分片快照恢复
   const host2 = fakeHost();
-  const store2 = new Map();
-  host2.api.set(M.STATE_KEY, JSON.stringify({ revision: 3 }), 'chat');
-  const rt2 = M.createRuntime(host2.api, {
-    getItem: () => null,
-    setItem: (k, v) => { store2.set(k, String(v)); }
-  }, () => ({}));
+  host2.seedBook('玉兆档案·chat-1', [{
+    identifier: 'yz-snap-1', name: '玉兆快照', enabled: false,
+    content: JSON.stringify({ v: 2, ver: M.PLUGIN_VERSION, rev: 3, updatedAt: 0, kind: 'role', index: 1, total: 1, body: JSON.stringify({ revision: 3, chats: { contacts: [], groups: [] } }) })
+  }]);
+  const rt2 = M.createRuntime(host2.api, null, () => ({}));
   await rt2.switchChat('chat-1');
-  eq(rt2.current().revision, 3, '宿主存储中的状态可加载');
-  ok(store2.has(rt2.LOCAL_PREFIX + 'chat-1'), 'host 读成功时回写本地镜像');
+  eq(rt2.current().revision, 3, '世界书快照分片可加载（无本地缓存）');
 
   // 重复投递轮次不再触发落盘
   const host3 = fakeHost();
@@ -585,16 +576,13 @@ const flushQueue = () => new Promise((resolve) => setTimeout(resolve, 0));
   const rt3 = M.createRuntime(host3.api, null, () => ({}));
   await rt3.switchChat('chat-dup');
   await rt3.applyText(jade('t-dup', TABLET_OK), 'chat-dup', 'test');
-  await flushQueue();
-  const savesAfterFirst = host3.setCalls();
+  await flushWorld();
+  const booksAfterFirst = JSON.stringify(host3.lorebooks());
   await rt3.applyText(jade('t-dup', TABLET_OK), 'chat-dup', 'test');
-  await flushQueue();
-  eq(host3.setCalls(), savesAfterFirst, '重复轮次不重复写宿主存储');
+  await flushWorld();
+  eq(JSON.stringify(host3.lorebooks()), booksAfterFirst, '重复轮次不重复写世界书');
 
-  // 宿主已切走（插件尚未收到 chat:opened 的事件延迟窗口）：save 跳过宿主 chat 键，
-  // 本地镜像与全局备份仍照常落盘；回到该聊天后 load 回退链恢复数据。
-  // 真实时序：宿主切聊天是用户事件（宏任务），只会发生在插件微任务链清空之后，
-  // 因此先让写 A 的 save 全部落盘，再模拟宿主切走后的新一轮 save。
+  // 切聊后对新聊天写入只影响自己的镜像键与世界书（按聊天独立成书，无跨聊天污染）
   const hostRace = fakeHost();
   const raceStore = new Map();
   const raceLocal = {
@@ -605,19 +593,21 @@ const flushQueue = () => new Promise((resolve) => setTimeout(resolve, 0));
   const rtRace = M.createRuntime(hostRace.api, raceLocal, () => ({}));
   await rtRace.switchChat('chat-a');
   await rtRace.applyText(jade('t-race', TABLET_OK), 'chat-a', 'test');
-  await flushQueue();
+  await flushWorld();
+  ok(raceStore.has(rtRace.LOCAL_PREFIX + 'chat-a'), 'chat-a 写入本地镜像');
   hostRace.current.chat = 'chat-b';
-  await rtRace.applyText(jade('t-race2', TABLET_OK.replace('炼气', '筑基')), 'chat-a', 'test');
-  await flushQueue();
-  ok(!hostRace.chatKeys().includes(M.STATE_KEY), '宿主已切走时不写宿主 chat 键（防跨聊天污染）');
-  ok(raceStore.has(rtRace.LOCAL_PREFIX + 'chat-a'), '宿主切走时本地镜像仍落盘');
-  ok(!!hostRace.api.get(M.BACKUP_PREFIX + 'chat-a', 'global'), '宿主切走时全局备份仍落盘');
+  await rtRace.switchChat('chat-b');
+  await rtRace.applyText(jade('t-race2', TABLET_OK.replace('炼气', '筑基')), 'chat-b', 'test');
+  await flushWorld();
+  ok(raceStore.has(rtRace.LOCAL_PREFIX + 'chat-a') && raceStore.has(rtRace.LOCAL_PREFIX + 'chat-b'), '各聊天镜像键独立，无跨聊天污染');
+  const booksA = hostRace.lorebooks().find((b) => b.name === '玉兆档案·chat-a');
+  const booksB = hostRace.lorebooks().find((b) => b.name === '玉兆档案·chat-b');
+  ok(booksA && booksB, '每个聊天独立成书');
+  // 回到 chat-a：镜像恢复的数据完整（chat-a 最后一次保存的是切走前的数据）
   hostRace.current.chat = 'chat-a';
   const rtRace2 = M.createRuntime(hostRace.api, raceLocal, () => ({}));
   await rtRace2.switchChat('chat-a');
-  const restored = rtRace2.current();
-  eq(restored.tablet.name, '李逍遥', '镜像恢复的玉牌数据完整（名字）');
-  ok(restored.tablet.groups.some((g) => g.id === 'cult' && g.fields.some((f) => f.key === '境界' && f.value === '筑基')), '镜像恢复包含最新一轮写入（宿主键陈旧时以镜像为准）');
+  eq(rtRace2.current().tablet.name, '李逍遥', '镜像恢复的玉牌数据完整（名字）');
 
   // 内存聊天缓存 LRU 淘汰
   const host4 = fakeHost();
@@ -633,6 +623,38 @@ const flushQueue = () => new Promise((resolve) => setTimeout(resolve, 0));
   const rt5 = M.createRuntime(host5.api, null, () => ({}));
   await rt5.switchChat('chat-role');
   ok(host5.rolesQueried().length > 0 && host5.rolesQueried().every((r) => r === 'assistant'), '历史查询只使用 assistant 角色');
+
+  // 快照分片 round-trip：超过单片上限的状态拆多片写入，读取时按 index 拼接还原
+  const hostBig = fakeHost();
+  hostBig.current.chat = 'chat-big';
+  const bigState = M.CORE.blankState('chat-big');
+  bigState.revision = 2;
+  bigState.updatedAt = Date.now();
+  const bigText = '字'.repeat(1300);
+  bigState.chats = {
+    contacts: [{ id: 'c1', name: '长谈', messages: Array.from({ length: 80 }, (_, i) => ({ id: 'm' + i, side: 'other', time: 'x', text: bigText + i })), preview: '' }],
+    groups: []
+  };
+  const bigRt = M.createRuntime(hostBig.api, null, () => ({}));
+  const bigEntries = bigRt.buildSnapshotEntries(bigState, M.CORE.blankPlayerState('chat-big'));
+  ok(bigEntries.length > 1, '大状态拆为多片快照');
+  ok(bigEntries.every((e) => e.enabled === false && e.probability === 0), '所有快照分片永不注入');
+  hostBig.seedBook('玉兆档案·chat-big', bigEntries.map((e) => ({ ...e })));
+  const bigRt2 = M.createRuntime(hostBig.api, null, () => ({}));
+  await bigRt2.switchChat('chat-big');
+  eq(bigRt2.current().revision, 2, '多片快照拼接还原');
+  const bigRestored = bigRt2.current().chats.contacts[0].messages;
+  eq(bigRestored.length, 20, '多片快照数据完整（归一保尾 20 条）');
+  ok(bigRestored[19].text === bigText + '79', '分片边界无截断');
+
+  // 旧版单条 yz-snap（无分片包装，内容为状态 JSON）读取兼容
+  const hostLegacy = fakeHost();
+  const legacyState = { revision: 7, pluginVersion: '2.0.2', chats: { contacts: [{ id: 'c1', name: '旧人', messages: [], preview: '' }], groups: [] } };
+  hostLegacy.seedBook('玉兆档案·chat-legacy', [{ identifier: 'yz-snap', name: '玉兆快照', enabled: false, content: JSON.stringify(legacyState) }]);
+  const legacyRt = M.createRuntime(hostLegacy.api, null, () => ({}));
+  await legacyRt.switchChat('chat-legacy');
+  eq(legacyRt.current().revision, 7, '旧版单条 yz-snap 兼容读取');
+  eq(legacyRt.current().chats.contacts[0].name, '旧人', '旧快照数据完整');
 }
 
 // ---------- Views ----------
@@ -1298,10 +1320,12 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   eq(books.length, 1, '归档建书一次');
   eq(books[0].name, '玉兆档案·chat-1', '书名带聊天标识');
   const entries = books[0].entries;
-  ok(entries.length === 3, '归档条目 + 全状态快照条目');
-  const snapEntry = entries.find((e) => e.identifier === 'yz-snap');
+  ok(entries.length === 3, '归档条目 + 全状态快照分片条目');
+  const snapEntry = entries.find((e) => e.identifier === 'yz-snap-1');
   ok(snapEntry && snapEntry.enabled === false, '快照条目为禁用备份（永不注入）');
-  ok(JSON.parse(snapEntry.content).chats.contacts.some((c) => c.id === 'c1'), '快照内容为整份状态');
+  const snapWrap = JSON.parse(snapEntry.content);
+  ok(snapWrap.v === 2 && snapWrap.kind === 'role' && snapWrap.total === 1 && snapWrap.index === 1, '快照分片带包装（版本/域/片序）');
+  ok(JSON.parse(snapWrap.body).chats.contacts.some((c) => c.id === 'c1'), '快照内容为整份状态');
   const cEntry = entries.find((e) => e.identifier === 'yz-c-c1');
   ok(cEntry && cEntry.keywords.indexOf('林月如') >= 0, '关键词为实体名');
   ok(cEntry.strategy === 'keyword' && cEntry.scanDepth === 4, '条目为关键词触发');
@@ -1323,7 +1347,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
 
   // 无世界书能力：归档静默降级，不抛错
   const ah2 = fakeHost();
-  const art2 = M.createRuntime({ get: ah2.api.get, set: ah2.api.set, chat: ah2.api.chat, message: ah2.api.message }, null, () => ({}));
+  const art2 = M.createRuntime({ chat: ah2.api.chat, message: ah2.api.message }, null, () => ({}));
   await art2.switchChat('chat-1');
   const degraded = await art2.syncArchive('chat-1');
   eq(degraded.ok, false, '无世界书能力时归档降级不报错');
@@ -1336,7 +1360,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   await art3.syncArchive('chat-1');
   eq(ah3.lorebooks().length, 1, '同步过的聊天建快照书');
   const snapOnly = ah3.lorebooks()[0].entries;
-  ok(snapOnly.length === 1 && snapOnly[0].identifier === 'yz-snap', '仅有快照条目无归档条目');
+  ok(snapOnly.length === 1 && snapOnly[0].identifier === 'yz-snap-1', '仅有快照条目无归档条目');
   eq(ah3.chatUpdates().length, 1, '快照书同样挂接当前聊天');
 
   // 封印交流讯息：不生成归档条目
@@ -1356,7 +1380,7 @@ console.log('# P3 · 版本迁移与备份恢复');
   oldState.revision = 5;
   oldState.pluginVersion = '2.0.2';
   oldState.chats = { contacts: [{ id: 'c1', name: '林月如', messages: [{ id: 'm1', side: 'other', time: '今日', text: '旧消息' }] }], groups: [] };
-  vh.seedChat(M.STATE_KEY, JSON.stringify(oldState));
+  vh.seedBook('玉兆档案·chat-1', [{ identifier: 'yz-snap-1', name: '玉兆快照', enabled: false, content: JSON.stringify({ v: 2, ver: '2.0.2', rev: 5, updatedAt: 0, kind: 'role', index: 1, total: 1, body: JSON.stringify(oldState) }) }]);
   const vrt = M.createRuntime(vh.api, null, () => ({}));
   await vrt.switchChat('chat-1');
   eq(vrt.current().pluginVersion, M.PLUGIN_VERSION, '更新后版本号立即落盘');
@@ -1384,33 +1408,42 @@ console.log('# P3 · 版本迁移与备份恢复');
   eq(ns.pluginVersion, '2.1.0', 'normalizeState 保留版本号');
   eq(ns.pendingFull, true, 'normalizeState 保留强制全量标记');
 
-  // 3. 宿主 chat 存储被清（卸载场景）→ 全局备份兜底恢复并回写
+  // 3. 世界书为空、本地镜像有数据（旧宿主键迁移场景）→ 镜像恢复并回写世界书
   const gh = fakeHost();
   const gs = M.CORE.blankState('chat-1');
   gs.revision = 3;
   gs.chats = { contacts: [{ id: 'c1', name: '林月如', messages: [{ id: 'm1', side: 'other', time: '丙午年五月十二 午时', text: '重要消息' }] }], groups: [] };
-  gh.seedGlobal(M.BACKUP_PREFIX + 'chat-1', JSON.stringify(gs));
-  const grt = M.createRuntime(gh.api, null, () => ({}));
+  const gStore = new Map();
+  gStore.set('yz-jade-v1:chat-1', JSON.stringify(gs));
+  const gLocal = {
+    getItem: (k) => (gStore.has(k) ? gStore.get(k) : null),
+    setItem: (k, v) => { gStore.set(k, String(v)); }
+  };
+  const grt = M.createRuntime(gh.api, gLocal, () => ({}));
   await grt.switchChat('chat-1');
-  eq(grt.current().revision, 3, 'chat 存储被清后从全局备份恢复');
+  eq(grt.current().revision, 3, '世界书为空时从本地镜像恢复');
   eq(grt.current().chats.contacts[0].messages[0].text, '重要消息', '恢复的数据完整');
-  ok(gh.chatKeys().indexOf(M.STATE_KEY) >= 0, '备份恢复后回写宿主 chat 键');
   eq(grt.current().pendingFull, true, '恢复后版本变化仍触发强制全量');
+  await flushWorld();
+  const gBook = gh.lorebooks().find((b) => b.name === '玉兆档案·chat-1');
+  ok(gBook && gBook.entries.some((e) => e.identifier === 'yz-snap-1'), '镜像恢复后回写世界书（自动迁移）');
 
-  // 4. 宿主存储全清（卸载重装）→ 世界书快照恢复
+  // 4. 本地镜像被清（换设备）→ 世界书快照恢复并回写镜像
   const sh = fakeHost();
-  const srt = M.createRuntime(sh.api, null, () => ({}));
+  const sStore = new Map();
+  const sLocal = {
+    getItem: (k) => (sStore.has(k) ? sStore.get(k) : null),
+    setItem: (k, v) => { sStore.set(k, String(v)); }
+  };
+  const srt = M.createRuntime(sh.api, sLocal, () => ({}));
   await srt.switchChat('chat-1');
   await srt.applyText(jade('s1', MSG_ARCH), 'chat-1', 'test');
   await srt.syncArchive('chat-1');
   eq(sh.lorebooks().length, 1, '快照建书一次');
-  sh.clearChat();
-  sh.clearGlobal();
   const srt2 = M.createRuntime(sh.api, null, () => ({}));
   await srt2.switchChat('chat-1');
-  eq(srt2.current().revision, 1, '宿主存储全清后从世界书快照恢复');
+  eq(srt2.current().revision, 1, '本地镜像被清后从世界书快照恢复');
   ok(srt2.current().chats.contacts.some((c) => c.id === 'c1'), '快照恢复的联系人完整');
-  ok(sh.chatKeys().indexOf(M.STATE_KEY) >= 0, '快照恢复后回写宿主 chat 键');
 
   // 5. 零同步数据聊天（revision 0）不建快照书
   const eh = fakeHost();
@@ -1679,7 +1712,7 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
 }
 
 {
-  // Runtime：玩家域三层存储（宿主/镜像/备份），宿主清空后可恢复，不涉及世界书
+  // Runtime：玩家域持久化（本地镜像缓存 + 世界书 yz-psnap 快照分片），镜像清空后可恢复
   const host = fakeHost();
   host.current.chat = 'chat-s';
   const store = new Map();
@@ -1688,16 +1721,16 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   await rt.switchChat('chat-s');
   rt.sendPlayerMessage('chat-s', '存储测试');
   await rt.syncPlayerChannel('chat-s');
-  await flushQueue();
+  await flushWorld();
   ok(store.has(rt.PLAYER_LOCAL_PREFIX + 'chat-s'), '玩家域写入本地镜像');
-  ok(!!host.api.get(rt.PLAYER_STATE_KEY, 'chat'), '玩家域写入宿主 chat 键');
-  ok(!!host.api.get(rt.PLAYER_BACKUP_PREFIX + 'chat-s', 'global'), '玩家域写入全局备份');
-  eq(host.lorebooks().length, 0, '玩家域数据不进世界书');
-  host.clearChat();
-  host.clearGlobal();
-  const rt2 = M.createRuntime(host.api, local, () => ({}));
+  const pbook = host.lorebooks().find((b) => b.name === '玉兆档案·chat-s');
+  const psnap = pbook && pbook.entries.find((e) => e.identifier === 'yz-psnap-1');
+  ok(psnap && psnap.enabled === false, '玩家域快照进世界书（禁用条目）');
+  const pWrap = JSON.parse(psnap.content);
+  ok(pWrap.kind === 'player' && JSON.parse(pWrap.body).chats.contacts[0].id === M.CORE.PLAYER_THREAD_ID, '玩家域快照内容为玩家线程');
+  const rt2 = M.createRuntime(host.api, null, () => ({}));
   await rt2.switchChat('chat-s');
-  eq(rt2.playerThread(rt2.playerCurrent()).messages.length, 1, '宿主清空后玩家域从本地镜像恢复');
+  eq(rt2.playerThread(rt2.playerCurrent()).messages.length, 1, '本地镜像清空后玩家域从世界书快照恢复');
 }
 
 {
@@ -1896,7 +1929,7 @@ console.log('# 玩家域 CRUD（二期）');
 }
 
 {
-  // 持久化恢复：同一宿主三层存储链
+  // 持久化恢复：本地镜像 → 世界书快照，玩家域数据进世界书
   const host = fakeHost();
   host.current.chat = 'chat-c';
   const rt = M.createRuntime(host.api, null, () => ({}));
@@ -1904,14 +1937,15 @@ console.log('# 玩家域 CRUD（二期）');
   rt.playerSaveEntity('folder', { name: '杂记' }, '');
   rt.playerSaveEntity('note', { title: '约定', body: '卯时', folderId: 'pf-1' }, '');
   rt.playerSaveEntity('item', { name: '丹', qty: 1 }, '');
-  await flushQueue();
+  await flushWorld();
   const rt3 = M.createRuntime(host.api, null, () => ({}));
   await rt3.switchChat('chat-c');
   const restored = rt3.playerCurrent();
   eq(restored.notes.folders.length, 1, '重载后玉册夹恢复');
   eq(restored.notes.notes.length, 1, '重载后备忘恢复');
   eq(restored.space.items.length, 1, '重载后物品恢复');
-  ok(host.lorebooks().length === 0, '玩家域 CRUD 不进世界书');
+  const cbook = host.lorebooks().find((b) => b.name === '玉兆档案·chat-c');
+  ok(cbook && cbook.entries.some((e) => e.identifier === 'yz-psnap-1'), '玩家域 CRUD 进世界书快照');
 }
 
 {
@@ -2569,27 +2603,28 @@ const GUARD_FULL = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜�
 }
 
 {
-  // 评审加固：镜像/宿主 tie-break——revision 平局时取更新时间更新的镜像，
-  // 陈旧宿主键不得覆盖新镜像（rev-0 聊天 + 切走后 save 只落镜像的场景）
+  // 评审加固：镜像/世界书 tie-break——revision 平局时取更新时间更新的镜像，
+  // 陈旧世界书快照不得覆盖新镜像（rev-0 聊天 + 切走后 save 只落镜像的场景）
   const host = fakeHost();
   host.current.chat = 'chat-tie';
   const store = new Map();
   const local = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) };
-  const staleHost = M.CORE.normalizeState(M.CORE.blankState('chat-tie'), 'chat-tie');
-  staleHost.sync = { status: 'complete', roleName: '李逍遥', summary: '旧', applied: [], appliedSeen: [], issues: [], updatedAt: 100 };
-  host.seedChat('yz_jade_v1', JSON.stringify(staleHost));
-  const freshMirror = JSON.parse(JSON.stringify(staleHost));
+  const staleWorld = M.CORE.normalizeState(M.CORE.blankState('chat-tie'), 'chat-tie');
+  staleWorld.revision = 5;
+  staleWorld.sync = { status: 'complete', roleName: '李逍遥', summary: '旧', applied: [], appliedSeen: [], issues: [], updatedAt: 100 };
+  host.seedBook('玉兆档案·chat-tie', [{ identifier: 'yz-snap-1', name: '玉兆快照', enabled: false, content: JSON.stringify({ v: 2, ver: M.PLUGIN_VERSION, rev: 5, updatedAt: 100, kind: 'role', index: 1, total: 1, body: JSON.stringify(staleWorld) }) }]);
+  const freshMirror = JSON.parse(JSON.stringify(staleWorld));
   freshMirror.sync.summary = '新';
   freshMirror.sync.updatedAt = 200;
   store.set('yz-jade-v1:chat-tie', JSON.stringify(freshMirror));
   const rt = M.createRuntime(host.api, local, () => ({}));
   await rt.switchChat('chat-tie');
   eq(rt.current().sync.summary, '新', 'revision 平局时更新的镜像胜出');
-  eq(rt.current().sync.updatedAt, 200, '镜像数据未被陈旧宿主覆盖');
-  await flushQueue();
-  ok(host.chatKeys().includes('yz_jade_v1'), '镜像胜出后回写宿主键');
-  const healed = JSON.parse(host.chatKeys().includes('yz_jade_v1') ? (host.api.get('yz_jade_v1', 'chat')) : '{}');
-  eq(healed.sync.summary, '新', '宿主键被镜像数据治愈');
+  eq(rt.current().sync.updatedAt, 200, '镜像数据未被陈旧世界书覆盖');
+  await flushWorld();
+  const healed = host.lorebooks().find((b) => b.name === '玉兆档案·chat-tie');
+  const healedWrap = JSON.parse(healed.entries.find((e) => e.identifier === 'yz-snap-1').content);
+  eq(JSON.parse(healedWrap.body).sync.summary, '新', '世界书被镜像数据治愈（回写）');
 }
 
 {
