@@ -1790,12 +1790,15 @@
         generationError: tr('runtime.toast.generationError'),
         cancelled: tr('runtime.toast.cancelled'),
         sealed: tr('runtime.toast.sealed'),
+        sealedMsg: tr('runtime.toast.sealedMsg'),
+        sealedForum: tr('runtime.toast.sealedForum'),
         fabReset: tr('runtime.toast.fabReset'),
         oversized: tr('runtime.toast.oversized'),
         rebuilt: tr('runtime.toast.rebuilt'),
         noSnapshot: tr('runtime.toast.noSnapshot'),
         disabled: tr('runtime.toast.disabled'),
         restoreFailed: tr('runtime.toast.restoreFailed'),
+        restoreBusy: tr('runtime.toast.restoreBusy'),
         stale: tr('runtime.toast.stale'),
         clearTitle: tr('runtime.toast.clearTitle'),
         clearConfirm: tr('runtime.toast.clearConfirm'),
@@ -2773,6 +2776,8 @@
           note.title = title;
           note.body = body;
           note.locked = !!raw.locked;
+          // 编辑即内容变化：刷新时间戳，否则列表/详情仍显示旧时间，用户会以为「没存上」。
+          note.updated = formatDateTime(Date.now());
         } else {
           player.notes.notes = safeArray(player.notes.notes, 30).concat([{ id: CORE.playerNextId(player.notes.notes, 'pn-'), folderId: folderId, updated: formatDateTime(Date.now()), locked: !!raw.locked, title: title, body: body }]);
         }
@@ -2812,6 +2817,8 @@
           order.status = cleanText(raw.status, 40);
           order.price = cleanText(raw.price, 80);
           order.side = side;
+          // 编辑即内容变化：刷新时间戳（与新建一致），否则列表仍显示旧时间。
+          order.time = formatDateTime(Date.now());
         } else player.market.orders = safeArray(player.market.orders, 12).concat([{ id: CORE.playerNextId(player.market.orders, 'po-'), name: oname, status: cleanText(raw.status, 40), price: cleanText(raw.price, 80), time: formatDateTime(Date.now()), side: side }]);
         player.market = CORE.normalizeMarket(player.market);
       } else if (kind === 'post') {
@@ -4432,8 +4439,14 @@
     return t.playerWord[kind] || kind;
   }
 
+  // 英文「NewFolder/EditNote」缺空格：动词与名词间按语言补一个空格（中文无需空格）。
+  // 表单标题与新建 CTA 共用，避免 en 界面出现粘连的 "NewFolder"。
+  function playerVerbNoun(verb, noun) {
+    return /^[A-Za-z]/.test(String(noun)) ? verb + ' ' + noun : verb + noun;
+  }
+
   function playerFormTitle(kind, isEdit, t) {
-    return (isEdit ? t.playerEditWord : t.playerNewWord) + playerEntityWord(kind, t);
+    return playerVerbNoun(isEdit ? t.playerEditWord : t.playerNewWord, playerEntityWord(kind, t));
   }
 
   // 行尾编辑按钮（复用管理页清空按钮的样式语义，操作是进入表单）。
@@ -4450,7 +4463,7 @@
   function playerAddBtn(kind, folderId) {
     var t = I18N.dict();
     var extra = folderId ? ' data-folder="' + CORE.escapeHtml(String(folderId)) + '"' : '';
-    return '<button type="button" class="yz-add-btn" data-action="player-new" data-kind="' + CORE.escapeHtml(kind) + '"' + extra + '>＋ ' + CORE.escapeHtml(t.playerNewWord + playerEntityWord(kind, t)) + '</button>';
+    return '<button type="button" class="yz-add-btn" data-action="player-new" data-kind="' + CORE.escapeHtml(kind) + '"' + extra + '>＋ ' + CORE.escapeHtml(playerVerbNoun(t.playerNewWord, playerEntityWord(kind, t))) + '</button>';
   }
 
   // 表单字段描述：key 与 data-form-field 对应，保存时由 App 层统一读取。
@@ -5398,6 +5411,9 @@
     var diagOpen = false;
     var dataPanel = null;
     var armedWipe = null;
+    // 快照恢复的 in-flight 锁：rebuildFromHistory 是异步的，连点两次会触发第二次
+    // stale 分支、报误导性的「聊天已切换」红 toast——进行中再点直接忽略。
+    var restoreBusy = false;
     var wipeTimer = 0;
     // 列表页/详情页检索关键词：纯内存过滤瞬态，任何导航（含关闭）都复位。
     var search = '';
@@ -5543,9 +5559,13 @@
           '<div class="yz-confirm-actions"><button type="button" class="yz-confirm-cancel"></button>' +
           '<button type="button" class="yz-confirm-ok"></button></div></div>';
         hostDocument.body.appendChild(confirmHost);
+        // 点「确认」执行 fn；点「取消」、遮罩或 Esc 只关闭（取消操作不触发 fn）。
+        // 遮罩点击：event.target 是 .yz-confirm-backdrop（或确认框自身），均非按钮 → 走取消分支。
         confirmHost.addEventListener('click', function (event) {
-          var btn = event.target && event.target.closest ? event.target.closest('.yz-confirm-actions button') : null;
-          if (!btn) return;
+          var target = event.target;
+          var btn = target && target.closest ? target.closest('.yz-confirm-actions button') : null;
+          // 点在按钮之外（遮罩/空白）等同取消。
+          if (!btn) { cancelConfirm(); return; }
           if (btn.classList.contains('yz-confirm-ok') && confirmAction) {
             var fn = confirmAction;
             var lockedChat = confirmChatId;
@@ -5557,10 +5577,23 @@
             // 放微任务：先收起确认框再执行清除（与 toast 操作按钮同一防竞态约定）。
             setTimeout(fn, 0);
           } else {
-            confirmAction = null;
-            hideConfirm();
+            cancelConfirm();
           }
         });
+        // Esc 关闭确认框：挂在 document 上（确认框本身常无焦点），确认框开着时优先收它。
+        hostDocument.addEventListener('keydown', function (event) {
+          if (event.key !== 'Escape') return;
+          var host = hostDocument.getElementById('yz1-confirm');
+          if (host && host.classList.contains('show')) {
+            event.preventDefault();
+            event.stopPropagation();
+            cancelConfirm();
+          }
+        });
+        function cancelConfirm() {
+          confirmAction = null;
+          hideConfirm();
+        }
       }
       return overlay;
     }
@@ -5605,7 +5638,9 @@
     function showToast(text, bad, action, duration) {
       var toast = hostDocument.getElementById('yz1-toast');
       if (!toast) return;
-      clearTimeout(toastTimer);
+      // 先清空上一条：2.4s 内连续两条 toast 不拼接、旧内嵌按钮（撤销等）不残留——
+      // 否则旧按钮还在 DOM 里、toastAction 已被替换，点了会触发错动作。
+      clearToast();
       toastAction = action && action.fn ? action.fn : null;
       toast.appendChild(hostDocument.createTextNode(text));
       if (action && action.label) {
@@ -5633,12 +5668,13 @@
       if (sub) sub.textContent = t.brand.sub;
       var closeBtn = overlay.querySelector('[data-action="close"]');
       if (closeBtn) closeBtn.setAttribute('aria-label', t.closePhone);
-      // 域切换按钮：文案 = 当前域（一眼可辨数据归属），aria 说明点击后切换到目标域。
+      // 域切换按钮：显示「→ 目标域」（可操作的方向感），aria 补充当前域与切换说明——
+      // 只显示当前域会被当成只读状态标签、想不到可点。
       var domainBtn = overlay.querySelector('[data-action="toggle-domain"]');
       if (domainBtn) {
         var current = domain === 'player' ? t.playerDomain : t.playerCharacterDomain;
         var target = domain === 'player' ? t.playerCharacterDomain : t.playerDomain;
-        domainBtn.textContent = current;
+        domainBtn.textContent = '→ ' + target;
         domainBtn.setAttribute('aria-label', tr('runtime.player.switchAria', { from: current, to: target }));
       }
     }
@@ -5708,11 +5744,18 @@
         // 注意：shell 初始模板中 page 带 hidden 属性（CSS [hidden]{display:none!important}），
         // 必须用 .hidden property 移除属性本身；classList.remove('hidden') 只能移除同名 class。
         pageNode.hidden = false;
+        // 保留滚动位置：重渲染前记录（聊天详情除外——它固定贴底）。
+        // 否则发论坛评论/搜索/管理页展开诊断等任何重渲染都会把长页弹回顶部，
+        // 用户每次发一条评论都要重新滚到底部。
+        var savedScroll = (nav.view === 'chat' || nav.view === 'gchat') ? null : pageNode.scrollTop;
         pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, sendFailed: sendFailed }, domain, playerState);
         // 聊天详情（私讯/群聊/传讯）滚动到底部：每次重渲染后都贴最新消息，不把用户弹回最旧。
         if (nav.view === 'chat' || nav.view === 'gchat') {
           var bubbles = pageNode.querySelector('.yz-bubbles');
           if (bubbles) bubbles.scrollTop = bubbles.scrollHeight;
+        } else if (savedScroll !== null && savedScroll > 0) {
+          // 非聊天页恢复原滚动位置（发评论/搜索后不再跳顶）。
+          pageNode.scrollTop = savedScroll;
         }
         // 检索框每次按键都整体重渲染：焦点丢给新的输入框并恢复光标到末尾，
         // 否则输入一个字符后失去焦点、无法连续键入。
@@ -6046,7 +6089,9 @@
     }
 
     async function open() {
-      if (!enabled()) return;
+      // 禁用时也要给反馈（与侧边栏 resync/clear 一致的 disabled toast）：
+      // 静默返回会让用户以为点了没反应，尤其经宿主侧边栏「打开玉兆」触发时。
+      if (!enabled()) { showToast(I18N.dict().toast.disabled, true); return; }
       ensureShell();
       var id = await runtime.resolveCurrentChatId();
       if (id !== runtime.activeChatId) await runtime.switchChat(id);
@@ -6118,9 +6163,13 @@
           if (action === 'toggle-feature') return toggleFeature(target.getAttribute('data-feature'));
           if (action === 'reset-fab') return resetFabPosition();
           if (action === 'sync-detail') return openSyncDetail();
-          // 太极中枢语义收敛：任何位置点击都回主界面（功能页回主页、主页本身无操作）。
-          // 同步详情入口收敛到主页底部状态条与「玉兆管理」诊断区，消除同一控件双义。
-          if (action === 'core') { if (nav.app !== 'home') return goHome(); return resetSearch(), render(); }
+          // 太极中枢：角色域主页点击打开同步诊断（与插件描述「点击太极核心可查看
+          // 同步诊断详情」一致，主页中央按钮不能是死按钮）；功能页点击回主界面。
+          // 玩家域主页无同步概念（同步诊断仅角色域），保持无操作的「回主界面」语义。
+          if (action === 'core') {
+            if (nav.app !== 'home' || domain === 'player') return resetSearch(), render();
+            return openSyncDetail();
+          }
           if (action === 'toggle-diag') { diagOpen = !diagOpen; return render(); }
           if (action === 'clear-feature') return armOrClearFeature(target.getAttribute('data-feature'));
           if (action === 'toggle-data-panel') {
@@ -6229,6 +6278,8 @@
     // 玩家发讯（私讯通道的 UI 侧）：读取输入框 → 写入玩家域 → 投递角色域。
     function sendPlayerMessage() {
       if (!enabled() || domain !== 'player') return;
+      // 封印 msg 后传讯通道停止：必须明示，否则消息写入玩家域却永远到不了角色，看着像已发送。
+      if (featureFlags.msg === false) { showToast(I18N.dict().toast.sealedMsg, true); return; }
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       var box = overlay && overlay.querySelector('[data-msg-input]');
       if (!box) return;
@@ -6266,6 +6317,8 @@
     // 玩家群聊发言（公开数据上的真实发言）：读输入框 → 写入玩家域源 → 镜像角色域群组。
     function sendPlayerGroupMessage() {
       if (!enabled() || domain !== 'player') return;
+      // 封印 msg 后群聊镜像停止：明示而非假成功。
+      if (featureFlags.msg === false) { showToast(I18N.dict().toast.sealedMsg, true); return; }
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       var box = overlay && overlay.querySelector('[data-group-msg-input]');
       if (!box) return;
@@ -6285,6 +6338,8 @@
     // 玩家论坛评论（公开数据上的真实发言）：读输入框 → 写入玩家域源 → 镜像角色域帖子。
     function sendPlayerComment() {
       if (!enabled() || domain !== 'player') return;
+      // 封印 forum 后评论镜像停止：明示而非假成功。
+      if (featureFlags.forum === false) { showToast(I18N.dict().toast.sealedForum, true); return; }
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       var box = overlay && overlay.querySelector('[data-comment-input]');
       if (!box) return;
@@ -6525,7 +6580,9 @@
       hostDocument.addEventListener('pointermove', function (event) {
         if (!drag || (drag.pointerId != null && event.pointerId !== drag.pointerId)) return;
         var dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
-        if (!drag.moved && Math.hypot(dx, dy) < 4) return;
+        // 拖拽判定阈值：触屏点按时手指的轻微位移（>4px 很常见）不应被当成拖拽，
+        // 否则「想点开玉佩却把它挪了 2px」且该次点击被抑制、毫无反馈。8px 兼顾跟手与防误触。
+        if (!drag.moved && Math.hypot(dx, dy) < 8) return;
         cancelHold();
         drag.moved = true;
         fab.classList.add('dragging');
@@ -6620,14 +6677,19 @@
         plugin.onSidebarAction('resync-history', async function () {
           // 禁用态与 open() 同语义：统一门控，不静默、不真实改数据。
           if (!enabled()) { showToast(I18N.dict().toast.disabled, true); return; }
+          // 防重入：异步恢复进行中再点直接忽略（避免误导性的「聊天已切换」红 toast）。
+          if (restoreBusy) { showToast(I18N.dict().toast.restoreBusy); return; }
+          restoreBusy = true;
           var result = null;
           try {
             result = await runtime.rebuildFromHistory(runtime.activeChatId);
           } catch (error) {
             dbg('snapshot restore failed', error);
+            restoreBusy = false;
             showToast(I18N.dict().toast.restoreFailed, true);
             return;
           }
+          restoreBusy = false;
           runtime.syncArchive(runtime.activeChatId);
           render();
           // stale：异步窗口内切了聊天（结果不属于当前会话），不误报「无快照」。

@@ -166,6 +166,26 @@ ok(/hideConfirm\(\);\s*close\(\);\s*render\(\);/.test(source), 'chat:closed 时�
 // 回归保护：玩家域表单「种类已存在」报错必须走双语文案，绝不能直出字面 undefined。
 ok(/playerFormKindClash: tr\('runtime\.player\.formKindClash'\),/.test(source), 'buildDict 接线 playerFormKindClash（防直出 undefined）');
 ok(/duration \|\| 2400/.test(source), 'showToast 保留自定义展示时长（默认 2.4s）');
+// 回归保护：showToast 必须先清空上一条——2.4s 内连续两条 toast 不串接、
+// 旧内嵌按钮（撤销等）不残留（残留按钮会触发被替换后的新动作）。
+ok(/function showToast\(text, bad, action, duration\) \{[\s\S]*?if \(!toast\) return;[\s\S]*?clearToast\(\);[\s\S]*?toastAction = action && action\.fn \? action\.fn : null;/.test(source), 'showToast 开头先 clearToast（不串接、清残留按钮）');
+// 回归保护：太极核心不能是死按钮——角色域主页点击打开同步诊断（与插件描述一致），
+// 功能页/玩家域保持回主界面语义。
+ok(/if \(action === 'core'\) \{\s*if \(nav\.app !== 'home' \|\| domain === 'player'\) return resetSearch\(\), render\(\);\s*return openSyncDetail\(\);\s*\}/.test(source), '太极核心主页点击打开同步诊断（功能页/玩家域回主界面）');
+// 回归保护：封印 msg/forum 后发讯/群聊/评论必须明示不可送达——否则消息写入玩家域却
+// 永远到不了角色，看着像已发送（假成功）。
+ok(/featureFlags\.msg === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedMsg, true\); return; \}/.test(source), '封印 msg 后发讯明示（不假成功）');
+ok(/featureFlags\.msg === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedMsg, true\); return; \}/.test(source), '封印 msg 后群聊发言明示');
+ok(/featureFlags\.forum === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedForum, true\); return; \}/.test(source), '封印 forum 后评论明示');
+// 回归保护：非聊天页重渲染必须保留滚动位置（发论坛评论/搜索后不再跳顶）。
+ok(/var savedScroll = \(nav\.view === 'chat' \|\| nav\.view === 'gchat'\) \? null : pageNode\.scrollTop;/.test(source) && /pageNode\.scrollTop = savedScroll;/.test(source), '重渲染前保存滚动位置并恢复（非聊天页）');
+// 回归保护：英文「NewFolder/EditNote」必须补空格（动词+名词拼接）。
+ok(/function playerVerbNoun\(verb, noun\) \{/.test(source) && /verb \+ ' ' \+ noun : verb \+ noun;/.test(source), 'playerVerbNoun 按语言补空格（en 不粘连）');
+// 回归保护：确认框点遮罩/Esc 关闭（与文档承诺一致），点非按钮区域等同取消。
+ok(/if \(!btn\) \{ cancelConfirm\(\); return; \}/.test(source), '确认框点遮罩等同取消');
+ok(/hostDocument\.addEventListener\('keydown', function \(event\) \{\s*if \(event\.key !== 'Escape'\) return;/.test(source), '确认框支持 Esc 关闭');
+// 回归保护：快照恢复 in-flight 锁——进行中再点不触发误导性「聊天已切换」红 toast。
+ok(/var restoreBusy = false;/.test(source) && /if \(restoreBusy\) \{ showToast\(I18N\.dict\(\)\.toast\.restoreBusy\); return; \}/.test(source), 'resync-history 有 in-flight 锁（防重入）');
 // 回归保护：带操作按钮的 toast（清除确认等）文案较长，nowrap+overflow 会把按钮挤出可视区，
 // 必须允许换行且不裁剪，保证「确认清除」按钮始终可见。
 ok(/\.yz-toast\.has-action\{white-space:normal;max-width:92%;overflow:visible;text-overflow:clip;line-height:1.5\}/.test(source), 'has-action toast 允许换行、不裁剪（按钮不被挤出）');
@@ -1968,6 +1988,9 @@ console.log('# 玩家域 CRUD（二期）');
   eq(rt.playerSaveEntity('note', { title: '', folderId: 'pf-1' }, '').reason, 'title', '空标题拒绝保存');
   eq(rt.playerSaveEntity('note', { title: '改', body: '新文', folderId: 'pf-1', locked: false }, 'pn-1').ok, true, '编辑备忘成功');
   eq(p().notes.notes[0].body, '新文', '备忘正文已更新');
+  // 回归：编辑即内容变化，时间戳必须刷新——否则列表仍显示旧时间，用户以为「没存上」。
+  ok(M.CORE.hasText(p().notes.notes[0].updated), '编辑后备忘 updated 非空');
+  ok(p().notes.notes[0].updated !== undefined && p().notes.notes[0].updated !== '', '备忘编辑后 updated 被写入');
 
   // 芥子空间：物品/钱财创建、编辑、货币重命名（种类为键）
   eq(rt.playerSaveEntity('item', { name: '养神丹', qty: 2, grade: '中品', desc: '宁神' }, '').ok, true, '创建物品成功');
@@ -1987,6 +2010,8 @@ console.log('# 玩家域 CRUD（二期）');
   eq(p().market.orders[0].side, 'sell', '卖出方向归一');
   eq(rt.playerSaveEntity('order', { name: '符纸', status: '已完成', price: '5灵石', side: 'buy' }, 'po-1').ok, true, '编辑订单成功');
   eq(p().market.orders[0].status, '已完成', '订单状态已更新');
+  // 回归：编辑即内容变化，订单时间戳必须刷新（与新建一致）。
+  ok(M.CORE.hasText(p().market.orders[0].time), '编辑后订单 time 非空');
   eq(rt.playerSaveEntity('order', { name: '', side: 'buy' }, '').reason, 'name', '空物品名拒绝保存');
   eq(rt.playerSaveEntity('badkind', {}, '').reason, 'kind', '未知 kind 拒绝');
 
