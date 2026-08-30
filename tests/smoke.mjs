@@ -95,6 +95,9 @@ ok(existsSync(path.join(ROOT, manifest.cover)), 'cover 文件存在');
 const releaseKey = manifest.releaseNotes && manifest.releaseNotes.$t;
 ok(!!releaseKey && zhCatalog[releaseKey] && enCatalog[releaseKey], 'releaseNotes 键在双语 catalog 中存在');
 ok(Object.keys(zhCatalog).every((k) => !/^releaseNotes\./.test(k) || k === releaseKey), 'catalog 只保留当前版本 releaseNotes');
+// 发布契约：版本漂移会静默破坏升级迁移（pluginVersion 变化触发 pendingFull 强制全量重写）。
+eq(manifest.version, M.PLUGIN_VERSION, 'manifest 版本与 PLUGIN_VERSION 一致');
+eq(releaseKey, 'releaseNotes.' + String(manifest.version).replace(/\./g, '_'), 'releaseNotes 键后缀与版本号对应');
 
 // P1：侧边栏动作声明
 {
@@ -236,7 +239,7 @@ const FULL_JADE = [
 
   const evEmpty = { text: '<yz_jade><yz_meta>\nturn｜x｜r｜s｜full\n</yz_meta></yz_jade>' };
   M.stripEventFields(evEmpty);
-  ok(evEmpty.text === zhCatalog['runtime.stripFallback'] || evEmpty.text.length > 0, '剥离后为空时回填非空占位');
+  ok(evEmpty.text && evEmpty.text.length > 0 && !evEmpty.text.includes('<yz_jade>'), '剥离后为空时回填非空占位（不含协议块）');
 
   // 信封择优：text 含协议取 text；仅 content 含协议取 content；皆无时取非空字段。
   eq(M.pickEnvelopePayload({ text: '<yz_jade>x</yz_jade>正文', content: '<yz_jade>y</yz_jade>' }), '<yz_jade>x</yz_jade>正文', 'text 含信封优先');
@@ -1229,7 +1232,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   for (let i = 1; i <= 20; i += 1) hugeMsgs.push({ id: 'h' + i, side: 'other', time: '今日', text: '字'.repeat(3000) });
   huge.chats = { contacts: [{ id: 'c1', name: '林月如', messages: hugeMsgs }], groups: [] };
   const curHuge = M.PROMPT.buildCurrent(huge, {});
-  ok(curHuge.join('\n').length < 9500, '基线超预算时逐行淘汰，注入量有硬上限');
+  ok(curHuge.join('\n').length <= 9000, '基线超预算时逐行淘汰，注入量有硬上限');
   ok(curHuge.some((r) => r.startsWith('contact｜c1｜')), '实体标识行永不淘汰');
   ok(curHuge.includes('archived｜msg｜c1｜14 条旧消息已归档'), '归档行不受预算淘汰');
 
@@ -1249,7 +1252,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   maxed.map.current = { place: '青云山', domain: '中州', desc: '字'.repeat(800) };
   maxed.map.tracks = Array.from({ length: 20 }, (_, i) => ({ id: 't' + i, time: '今日', place: '地' + i, action: '字'.repeat(100) }));
   const curMaxed = M.PROMPT.buildCurrent(maxed, {}, () => 0);
-  ok(curMaxed.join('\n').length < 9500, '极端满配态注入量仍受上限约束');
+  ok(curMaxed.join('\n').length <= 9000, '极端满配态注入量仍受上限约束');
   ok(curMaxed.some((r) => r.startsWith('contact｜c0｜')), '满配态实体标识行仍在');
   ok(curMaxed.some((r) => r.startsWith('order｜o0｜')), '满配态订单行仍在（不可淘汰）');
 
@@ -1266,7 +1269,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   maxed2.map.current = { place: '青云山', domain: '中州', desc: '字'.repeat(800) };
   maxed2.map.tracks = Array.from({ length: 20 }, (_, i) => ({ id: 't' + i, time: '今日', place: '地' + i, action: '字'.repeat(150) }));
   const curMaxed2 = M.PROMPT.buildCurrent(maxed2, {}, () => 0);
-  ok(curMaxed2.join('\n').length < 9500, '归档行让位后注入量收敛到上限内');
+  ok(curMaxed2.join('\n').length <= 9000, '归档行让位后注入量收敛到上限内');
   ok(curMaxed2.some((r) => r.startsWith('contact｜c0｜')), '归档行让位后实体标识行仍在');
   ok(curMaxed2.some((r) => r.startsWith('track｜t0｜')), '归档行让位后舆图行仍在（不可淘汰）');
 
@@ -1274,7 +1277,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   const bigTab = M.CORE.blankState('w4');
   bigTab.tablet.groups = [{ id: 'basic', fields: Array.from({ length: 11 }, (_, i) => ({ key: '字段' + i, value: '字'.repeat(3000) })) }];
   const curTab = M.PROMPT.buildCurrent(bigTab, {});
-  ok(curTab.join('\n').length < 9500, '长玉牌字段值同样受上限约束');
+  ok(curTab.join('\n').length <= 9000, '长玉牌字段值同样受上限约束');
 
   // 7. 提示词规则：归档条目只删不整行替换
   const pArch = M.PROMPT.buildPrompt('zh', {}, { forceFull: false, issues: [], current: curW });
@@ -1501,21 +1504,58 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
 }
 
 {
+  // 评审加固回归：伪造 pm-N 拒绝、未读 side 过滤、内容对账还原、伪造删除
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-r1');
+  await rt.applyText(jade('r1', TABLET_OK + '<yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜0｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜0｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\n</yz_msg>'), 'chat-r1', 'test');
+  rt.sendPlayerMessage('chat-r1', '道友可在？');
+  await rt.syncPlayerChannel('chat-r1');
+  rt.markPlayerRead('chat-r1');
+  const pc = () => rt.current().chats.contacts.find((c) => c.id === M.CORE.PLAYER_CONTACT_ID);
+  eq(pc().messages.length, 1, '玩家传讯入库');
+  eq(pc().unread, 0, '玩家消息注入即已读');
+
+  // 模型伪造新 pm-N（side=self 自回复）被 diff 门禁拒绝
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜r2｜李逍遥｜回复｜diff\n</yz_meta><yz_msg>\n+msg｜yz-player｜pm-2｜self｜今日｜在的\n</yz_msg></yz_jade>', 'chat-r1', 'test');
+  eq(pc().messages.length, 1, '模型无法伪造新 pm-N 玩家消息');
+
+  // 模型以普通新 id 回复正常，且不计入未读（side 过滤）
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜r3｜李逍遥｜回复｜diff\n</yz_meta><yz_msg>\n+msg｜yz-player｜r1｜self｜今日｜在的\n</yz_msg></yz_jade>', 'chat-r1', 'test');
+  eq(pc().messages.length, 2, '模型普通 id 回复正常入库');
+  eq(pc().unread, 0, '模型自回复不计入未读（未读只数 side=other）');
+  eq(rt.current().sync.playerReadCursor, 1, '模型自回复不推进已读游标');
+
+  // full 轮篡改既有玩家消息 + 伪造超序号 pm-N → 内容对账还原与删除
+  await rt.applyText(jade('r4', TABLET_OK + '<yz_msg>\ncontact｜yz-player｜道友｜外界｜今日｜0｜在吗\nmsg｜yz-player｜pm-1｜self｜今日｜被篡改的话\nmsg｜yz-player｜pm-99｜other｜今日｜捏造的话\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\ngroup｜g1｜青云内门｜30｜今日｜0｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\n</yz_msg>'), 'chat-r1', 'test');
+  await rt.syncPlayerChannel('chat-r1');
+  const pcAfter = pc();
+  eq(pcAfter.messages.length, 2, '伪造超序号 pm-N 被对账删除');
+  ok(pcAfter.messages.some((m) => m.id === 'pm-1' && m.text === '道友可在？' && m.side === 'other'), '全量轮篡改的玩家消息被对账还原');
+  ok(pcAfter.messages.some((m) => m.id === 'r1'), '模型回复保留');
+  ok(pcAfter.messages.every((m) => m.id !== 'pm-99'), '伪造消息不在角色域');
+
+  // diff 正文含竖线：尾部字段完整合并（与 full 路径同规则）
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜r5｜李逍遥｜diff\n</yz_meta><yz_msg>\n+msg｜c1｜m9｜other｜今日｜正文前半｜正文后半\n</yz_msg></yz_jade>', 'chat-r1', 'test');
+  ok(rt.current().chats.contacts[0].messages.some((m) => m.id === 'm9' && m.text === '正文前半｜正文后半'), 'diff 正文含竖线完整合并不截断');
+}
+
+{
   // Runtime：玩家群聊发言 → 角色域群组（幂等/重建/只读防护）；玩家发言不凑达标
   const host = fakeHost();
   const rt = M.createRuntime(host.api, null, () => ({}));
   await rt.switchChat('chat-g');
-  await rt.applyText('<yz_jade><yz_meta>\nturn｜t1｜李逍遥｜同步\n</yz_meta><yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\n</yz_msg></yz_jade>', 'chat-g', 'test');
+  await rt.applyText('<yz_jade><yz_meta>\nturn｜t1｜李逍遥｜同步\n</yz_meta><yz_msg>\ncontact｜c1｜林月如｜道侣｜今日｜0｜安好\ncontact｜c2｜酒剑仙｜师尊｜今日｜2｜饮酒\nmsg｜c1｜m1｜other｜昨日｜勿念\nmsg｜c1｜m2｜self｜今日｜定当赴约\nmsg｜c2｜m3｜other｜今日｜来喝酒\nmsg｜c2｜m4｜other｜今日｜速来\ngroup｜g1｜青云内门｜30｜今日｜5｜集合\ngmsg｜g1｜gm1｜掌门｜other｜今日｜卯时议事\ngmsg｜g1｜gm2｜长老｜other｜今日｜不得迟到\ngmsg｜g1｜gm0｜李逍遥｜self｜今日｜掌门定下集合\n</yz_msg></yz_jade>', 'chat-g', 'test');
 
   const sent = rt.sendPlayerGroupMessage('chat-g', 'g1', '各位道友安好');
   ok(sent && /^pmg-\d+$/.test(sent.id), '群聊发言返回 pmg id');
   await rt.syncPlayerGroups('chat-g');
   const g1 = rt.current().chats.groups.find((g) => g.id === 'g1');
-  eq(g1.messages.length, 3, '玩家发言进角色域群组');
+  eq(g1.messages.length, 4, '玩家发言进角色域群组（含角色 self 消息）');
   const pmg = g1.messages.find((m) => m.id === sent.id);
   ok(pmg && pmg.side === 'other' && pmg.sender === '道友', '玩家发言在角色域为对方消息（side=other + 玩家名）');
   await rt.syncPlayerGroups('chat-g');
-  eq(rt.current().chats.groups.find((g) => g.id === 'g1').messages.length, 3, '群聊发言重复同步幂等（无副本）');
+  eq(rt.current().chats.groups.find((g) => g.id === 'g1').messages.length, 4, '群聊发言重复同步幂等（无副本）');
 
   // 模型删改/伪造玩家发言全部被门禁拒绝
   await rt.applyText('<yz_jade><yz_meta>\nturn｜t2｜李逍遥｜diff\n</yz_meta><yz_msg>\n-gmsg｜g1｜pmg-1\n+gmsg｜g1｜pmg-1｜掌门｜self｜今日｜改写发言\n+gmsg｜g1｜pmg-9｜道友｜self｜今日｜伪造发言\n</yz_msg></yz_jade>', 'chat-g', 'test');
@@ -1549,8 +1589,11 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   const rowOther = '<div class="yz-bubble-row other">';
   ok(pvG.includes(rowSelf + '<div class="yz-bubble-wrap">') && pvG.indexOf(rowSelf) < pvG.indexOf('各位道友安好'), '玩家域视角：玩家消息在右侧气泡');
   ok(cvG.includes(rowOther) && cvG.indexOf('各位道友安好') > cvG.indexOf(rowOther), '角色域视角：玩家消息在左侧气泡');
-  ok(cvG.indexOf('卯时议事') > cvG.indexOf(rowSelf), '角色域视角：角色自己消息在右侧气泡');
+  ok(cvG.includes(rowSelf), '角色域存在自己的气泡（self 消息）');
+  ok(cvG.indexOf('卯时议事') < cvG.indexOf(rowSelf), '角色域视角：角色自己消息在右侧气泡（other 在左）');
+  ok(cvG.indexOf('掌门定下集合') > cvG.indexOf(rowSelf), '角色域视角：self 消息落在右侧气泡');
   ok(pvG.indexOf('卯时议事') > pvG.indexOf(rowOther) && pvG.indexOf('卯时议事') < pvG.indexOf(rowSelf), '玩家域视角：角色消息在左侧气泡');
+  ok(pvG.indexOf('掌门定下集合') > pvG.indexOf(rowOther) && pvG.indexOf('掌门定下集合') < pvG.indexOf(rowSelf), '玩家域视角：角色 self 消息同样在左侧气泡');
 }
 
 {
@@ -1649,7 +1692,7 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   };
   const curBig = M.PROMPT.buildCurrent(big, {});
   ok(curBig.some((r) => r.startsWith('msg｜yz-player｜pm-1')), '未读行不被预算淘汰');
-  ok(curBig.join('\n').length < 9500, '未读行保留时总注入仍受上限约束');
+  ok(curBig.join('\n').length <= 9000, '未读行保留时总注入仍受上限约束');
 
   // 提示词：玩家通道规则（zh/en/full/封印）
   const pChan = M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [] });
@@ -2014,7 +2057,7 @@ console.log('# 舆图地点名录');
   const mvKw = M.VIEWS.renderMap(mpView, '藏书');
   ok(mvKw.includes('藏经阁') && !mvKw.includes('灵气充沛'), '地点名录按名称/描述过滤（当前位置保留）');
   const pv = M.VIEWS.renderPage(mpView, { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}, 'player', M.CORE.blankPlayerState('pv'));
-  ok(pv.includes('藏经阁'), '玩家域舆图同样展示地点名录');
+  ok(!pv.includes('藏经阁'), '玩家域舆图渲染玩家域数据源，不泄漏角色域地点名录');
 }
 
 // ---------- 四·三、坊市求购区（market.requests） ----------
@@ -2096,6 +2139,10 @@ console.log('# 玩家发帖（forum owner 维度）');
   eq(pu.forum.posts[2].unread, 0, '旧格式第 10 字段为 owner 时 unread=0（启发式兼容）');
   eq(pu.forum.posts[2].owner, 'player', '旧格式 owner 不被吞');
   eq(pu.forum.posts[3].unread, 0, '旧格式 9 字段帖 unread=0');
+  // 玩家帖 unread 恒 0：full 轮模型在玩家帖上填写的 unread 被归一化钳制
+  const pu2 = M.CORE.normalizeForum(M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜p5c｜李逍遥｜发帖\n</yz_meta><yz_forum>\npost｜p1｜悦琳｜玩家｜闲聊｜今日｜寻师｜求指点｜0｜2｜player\npost｜p2｜李逍遥｜长老｜闲聊｜今日｜论剑｜切磋｜1｜3\ncomment｜p1｜李逍遥｜今日｜我来\ncomment｜p2｜林月如｜今日｜观战\n</yz_forum></yz_jade>').forum);
+  eq(pu2.posts[0].unread, 0, '玩家帖 unread 归一化钳制为 0');
+  eq(pu2.posts[1].unread, 3, '角色帖 unread 保留');
   const nu = M.CORE.normalizeForum({ posts: [{ id: 'x', title: 't', unread: -2 }, { id: 'y', title: 't2', unread: 5 }] });
   eq(nu.posts[0].unread, 0, '负 unread 钳制为 0');
   eq(nu.posts[1].unread, 5, 'unread 归一化保留');
@@ -2119,6 +2166,22 @@ console.log('# 玩家发帖（forum owner 维度）');
     ok(fList.indexOf('data-id="p1"') < fList.indexOf('data-id="p2"'), '未读帖子置顶');
     await rtU.applyText('<yz_jade><yz_meta>\nturn｜u4｜李逍遥｜已读｜diff\n</yz_meta><yz_forum>\n+post｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑改｜切磋改｜1｜0\n</yz_forum></yz_jade>', 'chat-u', 'test');
     eq(rtU.current().forum.posts[0].unread, 0, 'diff 显式 unread=0 清零（已读处理回复）');
+  }
+  {
+    // 评审加固：全量轮照抄基线时 pmc-* 评论被重编为 cm-N —— 双键去重防重复 + owner 认领
+    const hostV = fakeHost();
+    const rtV = M.createRuntime(hostV.api, null, () => ({}));
+    await rtV.switchChat('chat-r2');
+    await rtV.applyText(jade('r1', TABLET_OK + '<yz_forum>\npost｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑｜切磋｜1\npost｜p2｜酒剑仙｜师尊｜闲聊｜今日｜对饮｜今夜｜2\ncomment｜p1｜林月如｜今日｜来观战\ncomment｜p2｜李逍遥｜今日｜好\n</yz_forum>'), 'chat-r2', 'test');
+    rtV.sendPlayerComment('chat-r2', 'p1', '算我一个');
+    await rtV.syncPlayerPosts('chat-r2');
+    ok(rtV.current().forum.posts[0].comments.some((c) => c.id === 'pmc-1'), '玩家评论入库');
+    // full 轮：模型照抄基线（评论行无 id），pmc-1 被解析器重编为 cm-N 副本
+    await rtV.applyText(jade('r2', TABLET_OK + '<yz_forum>\npost｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑｜切磋｜1\npost｜p2｜酒剑仙｜师尊｜闲聊｜今日｜对饮｜今夜｜2\ncomment｜p1｜林月如｜今日｜来观战\ncomment｜p1｜道友｜' + rtV.playerCurrent().myComments[0].time + '｜算我一个\ncomment｜p2｜李逍遥｜今日｜好\n</yz_forum>'), 'chat-r2', 'test');
+    await rtV.syncPlayerPosts('chat-r2');
+    const cs = rtV.current().forum.posts[0].comments;
+    eq(cs.filter((c) => c.text === '算我一个').length, 1, '全量轮重编后不产生重复玩家评论');
+    ok(cs.some((c) => c.owner === 'player' && c.text === '算我一个'), '重编副本被认领为玩家评论（owner 补回）');
   }
 
   // diff：模型 +post/-post 不得触碰玩家帖子，评论允许（角色帖子补足达标底线）
@@ -2157,7 +2220,7 @@ console.log('# 玩家发帖（forum owner 维度）');
   const pcBig = M.PROMPT.buildCurrent({ forum: M.CORE.normalizeForum({ posts: bigPosts }) }, {});
   ok(pcBig.some((r) => r.startsWith('post｜p1')), '压预算后玩家帖子仍在基线');
   ok(pcBig.filter((r) => r.startsWith('post｜c')).length <= 4, '采样后角色帖子全行注入不超过采样数');
-  ok(pcBig.join('\n').length < 9500, '采样 + 预算淘汰后注入总量仍受上限约束');
+  ok(pcBig.join('\n').length <= 9000, '采样 + 预算淘汰后注入总量仍受上限约束');
 
   // 保护规则提示词与引导行
   const prZh = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
@@ -2223,13 +2286,14 @@ console.log('# 玩家发帖（forum owner 维度）');
       if (m) picks[m[1]] += 1;
     });
   }
-  ok(picks.c1 > picks.c4 && picks.c2 > picks.c4, '活跃联系人选中率显著高于冷门条目');
+  ok(picks.c1 > picks.c3 && picks.c2 > picks.c3 && picks.c1 > picks.c4, '活跃联系人选中率显著高于冷门条目');
   ok(picks.c3 > 0 && picks.c4 > 0, '冷门/新增条目保留非零概率');
 
   // 强制集：玩家交互过的条目必定注入（不参与概率）
   st.chats.contacts.push({ id: M.CORE.PLAYER_CONTACT_ID, name: '道友', unread: 2, preview: '', messages: [{ id: 'pm-1', side: 'other', time: 'x', text: '在吗' }] });
   st.chats.contacts[0].unread = 3;
   st.chats.groups[0].messages.push({ id: 'pmg-1', sender: '道友', side: 'other', time: 'x', text: '我在' });
+  st.chats.groups[1].unread = 4;
   st.forum.posts.push({ id: 'pm1', owner: 'player', author: '悦琳', title: '我的帖', body: 'x' });
   st.forum.posts[0].comments.push({ id: 'pmc-1', owner: 'player', author: '道友', time: 'x', text: '我的评论' });
   st.forum.posts[5].unread = 7;
@@ -2238,6 +2302,7 @@ console.log('# 玩家发帖（forum owner 维度）');
   ok(j3.includes('contact｜yz-player｜'), '玩家传讯联系人必定注入');
   ok(j3.includes('contact｜c1｜'), '未读联系人必定注入');
   ok(j3.includes('group｜g1｜'), '含玩家发言的群聊必定注入');
+  ok(j3.includes('group｜g2｜'), '有未读消息的群聊必定注入');
   ok(j3.includes('post｜pm1｜'), '玩家帖子必定注入');
   ok(j3.includes('post｜p1｜'), '含玩家评论的帖子必定注入');
   ok(j3.includes('post｜p6｜'), '有未读新回复的帖子必定注入');
