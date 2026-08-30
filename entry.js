@@ -260,7 +260,8 @@
         if (!p || !p.id) return;
         var playerPost = String(p.owner || '') === 'player';
         var playerComment = safeArray(p.comments, 20).some(function (c) { return c && /^pmc-/.test(String(c.id) || ''); });
-        if (playerPost || playerComment) forcedP[String(p.id)] = true;
+        // 有新回复（未读）的帖子与玩家交互帖同属强制包含集（真实事件必须可见）。
+        if (playerPost || playerComment || (Number(p.unread) || 0) > 0) forcedP[String(p.id)] = true;
       });
       out.posts = sampleSet(posts, MAX_INJECT_POSTS, forcedP, rng);
     }
@@ -399,6 +400,8 @@
         id: cleanText(post.id, 160),
         // owner 维度：player = 玩家（{{user}}）真实发帖；空 = 角色/模型数据。
         owner: cleanText(post.owner, 20),
+        // unread = 新回复数（模型维护：有新评论时递增，处理回复后清零；nzero 钳制）。
+        unread: nzero(post.unread),
         author: cleanText(post.author, 120),
         role: cleanText(post.role, 120),
         section: cleanText(post.section, 60),
@@ -794,8 +797,23 @@
         if (op.add) {
           var title = cleanText(op.values[5], 200);
           if (!hasText(title)) return;
-          var post = { id: id, owner: cleanText(op.values[8], 20), author: cleanText(op.values[1], 120), role: cleanText(op.values[2], 120), section: cleanText(op.values[3], 60), time: cleanText(op.values[4], 80), title: title, body: cleanText(op.values[6], 3000), resonance: nzero(op.values[7]), comments: [] };
-          if (pi >= 0) post.comments = out.posts[pi].comments;
+          // 兼容旧 diff 格式（第 9 个操作字段是 owner）与新格式（第 9 个操作字段 unread、
+          // 第 10 个 owner）。（注意 op.values 已去掉行类型前缀：id 在 [0]，unread 候选在 [8]。）
+          var u9 = String(op.values[8] || '').trim();
+          var numU = /^\d+$/.test(u9);
+          var post = {
+            id: id,
+            owner: numU ? cleanText(op.values[9], 20) : cleanText(op.values[8], 20),
+            unread: numU ? (Number(u9) || 0) : 0,
+            author: cleanText(op.values[1], 120), role: cleanText(op.values[2], 120),
+            section: cleanText(op.values[3], 60), time: cleanText(op.values[4], 80),
+            title: title, body: cleanText(op.values[6], 3000), resonance: nzero(op.values[7]), comments: []
+          };
+          if (pi >= 0) {
+            post.comments = out.posts[pi].comments;
+            // 模型更新帖子内容未显式带 unread 时保留原值（避免改标题把未读清零）。
+            if (!numU) post.unread = out.posts[pi].unread;
+          }
           if (pi >= 0) out.posts[pi] = post;
           else if (out.posts.length < 20) out.posts.push(post);
         } else if (pi >= 0) out.posts.splice(pi, 1);
@@ -1448,12 +1466,25 @@
     var out = { posts: [] };
     var posts = Object.create(null);
     typed(body, ['post', '帖子']).forEach(function (line) {
-      var values = row(line, 10);
+      var values = row(line, 11);
       var id = cleanText(values[1], 160);
       if (!id) return;
+      // unread（第 10 字段）与 owner（第 11 字段）启发式兼容旧格式：
+      // 旧格式第 10 字段是 owner（'player'）；新格式第 10 字段是数字（未读新回复数）。
+      var v9 = String(values[9] || '').trim();
+      var unread;
+      var owner;
+      if (v9 === 'player' || !/^\d+$/.test(v9)) {
+        unread = 0;
+        owner = cleanText(v9, 20);
+      } else {
+        unread = Number(v9) || 0;
+        owner = cleanText(values[10], 20);
+      }
       var item = {
         id: id,
-        owner: cleanText(values[9], 20),
+        owner: owner,
+        unread: unread,
         author: cleanText(values[2], 120),
         role: cleanText(values[3], 120),
         section: cleanText(values[4], 60),
@@ -2769,7 +2800,7 @@
         var existing = null;
         originals.forEach(function (p) { if (p && String(p.id) === String(post.id) && String(p.owner) === 'player') existing = p; });
         if (!existing) {
-          kept.push({ id: cleanText(post.id, 160), owner: 'player', author: name, role: cleanText(post.role, 120), section: cleanText(post.section, 60), time: cleanText(post.time, 80), title: cleanText(post.title, 200), body: cleanText(post.body, 3000), resonance: nzero(post.resonance), comments: [] });
+          kept.push({ id: cleanText(post.id, 160), owner: 'player', author: name, role: cleanText(post.role, 120), section: cleanText(post.section, 60), time: cleanText(post.time, 80), title: cleanText(post.title, 200), body: cleanText(post.body, 3000), resonance: nzero(post.resonance), unread: 0, comments: [] });
           changed = true;
         } else {
           if (existing.owner !== 'player' || existing.title !== post.title || existing.body !== post.body || existing.section !== post.section || existing.author !== name) {
@@ -3174,8 +3205,8 @@
         name: 'World Forum'
       },
       zh: {
-        constraint: '- 天下论坛：至少 2 个帖子，每帖至少 1 条评论；comment 行的帖子 id 必须来自 post 行；post 行末尾可带 owner 字段：player（玩家发帖，只读）或缺省（角色发帖）。',
-        rows: ['<yz_forum>', 'post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数｜owner（玩家帖子填 player，其余省略）', 'comment｜帖子id｜评论者｜时间｜内容', '</yz_forum>'],
+        constraint: '- 天下论坛：至少 2 个帖子，每帖至少 1 条评论；comment 行的帖子 id 必须来自 post 行；post 行第 10 字段为 unread（新回复数：有新评论时 +1，已读处理回复后清零），行尾可带 owner 字段：player（玩家发帖，只读）或缺省（角色发帖）。',
+        rows: ['<yz_forum>', 'post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数｜unread（新回复数，无则 0）｜owner（玩家帖子填 player，其余省略）', 'comment｜帖子id｜评论者｜时间｜内容', '</yz_forum>'],
         name: '天下论坛'
       }
     },
@@ -3363,7 +3394,8 @@
           // 玩家帖子是真实事件（与传讯未读行同级）：永远全行注入、不归档
           // （drop:false，last 标记仅极端预算场景最后让位，见 buildCurrent 第四轮），
           // 行尾带 owner 字段供模型识别；角色对玩家帖子的评论同全行注入。
-          var rowText = 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜player';
+          // 行尾带 owner 字段供模型识别；unread = 新回复数（玩家帖恒 0，门禁保护不可改）。
+          var rowText = 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜' + (Number(post.unread) || 0) + '｜player';
           f.rows.push({ text: rowText, drop: false, last: true });
           safeArray(post.comments, 20).forEach(function (comment) {
             if (!comment || !hasText(comment.text)) return;
@@ -3373,7 +3405,7 @@
         }
         // 采样选中的帖子全行注入（帖子级裁剪由采样完成，不再有帖子级 archived 行）；
         // 消息级窗口（评论）保留。
-        f.rows.push({ text: 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0), drop: true });
+        f.rows.push({ text: 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜' + (Number(post.unread) || 0), drop: true });
         var comments = safeArray(post.comments, 20);
         var hidden = comments.length - RECENT_COMMENT_ROWS;
         if (hidden > 0) f.rows.push({ text: archived('comment', v(post.id, 160), hidden + ' 条旧评论已归档'), drop: false });
@@ -4229,16 +4261,19 @@
         commentBox +
         '</main>';
     }
-    var posts = CORE.safeArray(forum.posts, 20).filter(function (post) {
+    var posts = unreadFirst(CORE.safeArray(forum.posts, 20).filter(function (post) {
       return filterMatch(kw, [post.title, post.author, post.section, post.body]);
-    });
+    }));
     var list = posts.length ? posts.map(function (post) {
       var isMine = String(post.owner || '') === 'player';
-      var row = '<b>' + CORE.escapeHtml(post.title) + (isMine ? ' <i class="yz-player-tag">' + CORE.escapeHtml(t.playerPostTag) + '</i>' : '') + '</b><em>' + CORE.escapeHtml((post.author || '') + (CORE.hasText(post.section) ? ' · ' + post.section : '')) + '</em><time>' + CORE.escapeHtml(post.time || '') + '</time>';
+      var hasUnread = Number(post.unread) > 0;
+      // 有新回复（未读）的帖子：数字徽标 + 呼吸光效（与联系人/群聊列表一致）并置顶。
+      var unreadBadge = hasUnread ? '<u class="yz-unread">' + CORE.escapeHtml(String(post.unread)) + '</u>' : '';
+      var row = '<b>' + CORE.escapeHtml(post.title) + (isMine ? ' <i class="yz-player-tag">' + CORE.escapeHtml(t.playerPostTag) + '</i>' : '') + '</b><em>' + CORE.escapeHtml((post.author || '') + (CORE.hasText(post.section) ? ' · ' + post.section : '')) + '</em><time>' + CORE.escapeHtml(post.time || '') + unreadBadge + '</time>';
       if (player && isMine) {
-        return editableListRow(button('navigate', row, { view: 'post', id: post.id }, 'yz-row'), 'post', post.id);
+        return editableListRow(button('navigate', row, { view: 'post', id: post.id }, 'yz-row' + (hasUnread ? ' yz-unread-row' : '')), 'post', post.id);
       }
-      return button('navigate', row, { view: 'post', id: post.id }, 'yz-row');
+      return button('navigate', row, { view: 'post', id: post.id }, 'yz-row' + (hasUnread ? ' yz-unread-row' : ''));
     }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.posts) + '</div>';
     var cta = player ? playerAddBtn('post', '') : '';
     return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBox(search) + '<div class="yz-page-list">' + list + '</div>' + cta + '</main>';

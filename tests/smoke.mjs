@@ -2088,6 +2088,39 @@ console.log('# 玩家发帖（forum owner 维度）');
   const nf = M.CORE.normalizeForum({ posts: [{ id: 'x', title: 't', owner: 'player' }, { id: 'y', title: 't2' }] });
   eq(nf.posts[1].owner, '', '归一化 owner 收敛');
 
+  // 帖子未读机制：unread（第 10 字段）解析 + 旧格式启发式兼容 + 归一化钳制
+  const pu = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜p5b｜李逍遥｜发帖\n</yz_meta><yz_forum>\npost｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑｜切磋｜1｜3\npost｜p2｜悦琳｜玩家｜闲聊｜今日｜寻师｜求指点｜0｜2｜player\npost｜p3｜李逍遥｜长老｜闲聊｜今日｜旧帖｜正文｜1｜player\npost｜p4｜李逍遥｜长老｜闲聊｜今日｜更旧帖｜正文｜1\n</yz_forum></yz_jade>');
+  eq(pu.forum.posts[0].unread, 3, '新格式 unread 解析（角色帖）');
+  eq(pu.forum.posts[1].unread, 2, '新格式 unread + owner 解析（玩家帖）');
+  eq(pu.forum.posts[1].owner, 'player', 'unread 之后 owner 解析');
+  eq(pu.forum.posts[2].unread, 0, '旧格式第 10 字段为 owner 时 unread=0（启发式兼容）');
+  eq(pu.forum.posts[2].owner, 'player', '旧格式 owner 不被吞');
+  eq(pu.forum.posts[3].unread, 0, '旧格式 9 字段帖 unread=0');
+  const nu = M.CORE.normalizeForum({ posts: [{ id: 'x', title: 't', unread: -2 }, { id: 'y', title: 't2', unread: 5 }] });
+  eq(nu.posts[0].unread, 0, '负 unread 钳制为 0');
+  eq(nu.posts[1].unread, 5, 'unread 归一化保留');
+  // buildCurrent：角色帖输出 unread 字段；玩家帖输出 unread + owner
+  const cu = M.PROMPT.buildCurrent({ forum: M.CORE.normalizeForum({ posts: [{ id: 'p1', author: '甲', title: '帖一', body: 'x', unread: 4 }, { id: 'p2', owner: 'player', author: '乙', title: '帖二', body: 'x', unread: 0 }] }) }, {});
+  ok(cu.some((r) => r.startsWith('post｜p1') && r.endsWith('｜4')), '角色帖基线行含 unread');
+  ok(cu.some((r) => r.startsWith('post｜p2') && r.endsWith('｜0｜player')), '玩家帖基线行含 unread 与 owner');
+  // diff +post 未显式带 unread 时保留原值；显式带时更新（经 runtime diff 轮验证）
+  {
+    const hostU = fakeHost();
+    const rtU = M.createRuntime(hostU.api, null, () => ({}));
+    await rtU.switchChat('chat-u');
+    await rtU.applyText(jade('u2', TABLET_OK + '<yz_forum>\npost｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑｜切磋｜1｜4\npost｜p2｜酒剑仙｜师尊｜闲聊｜今日｜对饮｜今夜｜2\ncomment｜p1｜林月如｜今日｜来观战\ncomment｜p2｜李逍遥｜今日｜好\n</yz_forum>'), 'chat-u', 'test');
+    eq(rtU.current().forum.posts[0].unread, 4, '帖子 unread 随协议解析入库');
+    await rtU.applyText('<yz_jade><yz_meta>\nturn｜u3｜李逍遥｜回复｜diff\n</yz_meta><yz_forum>\n+post｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑改｜切磋改｜1\n</yz_forum></yz_jade>', 'chat-u', 'test');
+    eq(rtU.current().forum.posts[0].unread, 4, 'diff 更新帖子内容保留 unread');
+    // 列表渲染：有新回复的帖子置顶 + 光效
+    const rF = M.VIEWS.renderPage(rtU.current(), { app: 'forum', view: 'root', params: {}, stack: [] }, {}, {}, 'character', rtU.playerCurrent());
+    const fList = rF.slice(rF.indexOf('yz-page-list'), rF.indexOf('</main>'));
+    ok(fList.includes('class="yz-row yz-unread-row"'), '未读帖子行带光效 class');
+    ok(fList.indexOf('data-id="p1"') < fList.indexOf('data-id="p2"'), '未读帖子置顶');
+    await rtU.applyText('<yz_jade><yz_meta>\nturn｜u4｜李逍遥｜已读｜diff\n</yz_meta><yz_forum>\n+post｜p1｜李逍遥｜长老｜闲聊｜今日｜论剑改｜切磋改｜1｜0\n</yz_forum></yz_jade>', 'chat-u', 'test');
+    eq(rtU.current().forum.posts[0].unread, 0, 'diff 显式 unread=0 清零（已读处理回复）');
+  }
+
   // diff：模型 +post/-post 不得触碰玩家帖子，评论允许（角色帖子补足达标底线）
   let fs = M.CORE.blankState('fs');
   fs.forum = M.CORE.normalizeForum({ posts: [
@@ -2130,7 +2163,7 @@ console.log('# 玩家发帖（forum owner 维度）');
   const prZh = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
   ok(prZh.includes('owner 为 player 的帖子是玩家的真实发帖') && prZh.includes('可以用 +comment 行'), 'zh 玩家帖子保护规则');
   ok(M.PROMPT.buildPrompt('en', {}, { forceFull: true, current: [] }).includes('real posts by the player'), 'en 玩家帖子保护规则');
-  ok(prZh.includes('post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数｜owner'), '引导行含 owner 字段');
+  ok(prZh.includes('post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数｜unread（新回复数，无则 0）｜owner（玩家帖子填 player，其余省略）'), '引导行含 unread 与 owner 字段');
 }
 
 {
@@ -2199,6 +2232,7 @@ console.log('# 玩家发帖（forum owner 维度）');
   st.chats.groups[0].messages.push({ id: 'pmg-1', sender: '道友', side: 'other', time: 'x', text: '我在' });
   st.forum.posts.push({ id: 'pm1', owner: 'player', author: '悦琳', title: '我的帖', body: 'x' });
   st.forum.posts[0].comments.push({ id: 'pmc-1', owner: 'player', author: '道友', time: 'x', text: '我的评论' });
+  st.forum.posts[5].unread = 7;
   const cur3 = M.PROMPT.buildCurrent(st, {}, () => 0.42);
   const j3 = cur3.join('\n');
   ok(j3.includes('contact｜yz-player｜'), '玩家传讯联系人必定注入');
@@ -2206,6 +2240,7 @@ console.log('# 玩家发帖（forum owner 维度）');
   ok(j3.includes('group｜g1｜'), '含玩家发言的群聊必定注入');
   ok(j3.includes('post｜pm1｜'), '玩家帖子必定注入');
   ok(j3.includes('post｜p1｜'), '含玩家评论的帖子必定注入');
+  ok(j3.includes('post｜p6｜'), '有未读新回复的帖子必定注入');
   eq(cur3.filter((r) => r.startsWith('contact｜')).length, 3, '强制集 + 随机补齐仍受注入上限约束');
   eq(cur3.filter((r) => r.startsWith('post｜')).length, 5, '帖子强制集 + 随机补齐到上限');
 
