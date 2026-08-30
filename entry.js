@@ -1925,6 +1925,7 @@
       playerFormRequired: tr('runtime.player.formRequired'),
       playerFormNeedFolder: tr('runtime.player.formNeedFolder'),
       playerFormMissing: tr('runtime.player.formMissing'),
+      playerFormKindClash: tr('runtime.player.formKindClash'),
       playerQtyStepDown: tr('runtime.player.qtyStepDown'),
       playerQtyStepUp: tr('runtime.player.qtyStepUp'),
       playerMarkAllRead: tr('runtime.player.markAllRead'),
@@ -2006,7 +2007,7 @@
   // 插件版本：状态里记录生成时的版本，版本变化置持久化强制全量标记（见 doSwitchChat），
   // 让更新后的第一轮生成按新提示词重写全部数据——旧格式数据不再粘滞。
   // 发布时必须与 manifest.json 的 version 保持一致（冒烟契约测试校验）。
-  var PLUGIN_VERSION = '2.2.0';
+  var PLUGIN_VERSION = '2.2.1';
 
   function createRuntime() {
     var tavoApi = arguments[0] || {};
@@ -3130,12 +3131,18 @@
     }
 
     // 管理页导入：与快照同一条容量红线；normalizeState 负责消毒与字段归一，任何对象都能归一，
-    // 因此「无效」只可能是解析失败或超限。
+    // 因此「无效」只可能是解析失败、超限或结构签名不符——误贴别处 JSON（聊天记录导出、
+    // 其它插件存档等）绝不能「导入成功」后把当前角色域数据清空。
+    var IMPORT_SIGNATURE_KEYS = ['schemaVersion', 'revision', 'tablet', 'chats', 'notes', 'forum', 'market', 'space', 'map'];
     function importState(raw) {
       var text = String(raw == null ? '' : raw);
       if (text.length > MAX_SNAPSHOT_BYTES) return { ok: false, reason: 'oversized' };
       var parsed = parseStored(text);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, reason: 'parse' };
+      // 结构签名：必须含至少一个玉兆特征字段。玉兆导出总是完整 state 对象（含
+      // schemaVersion + 各功能分区键），不含这些键的 JSON 显然不是玉兆存档。
+      var hasSignature = IMPORT_SIGNATURE_KEYS.some(function (key) { return parsed[key] !== undefined; });
+      if (!hasSignature) return { ok: false, reason: 'parse' };
       var state = CORE.normalizeState(parsed, activeChatId);
       if (state.pluginVersion !== PLUGIN_VERSION) {
         state.pluginVersion = PLUGIN_VERSION;
@@ -5541,8 +5548,12 @@
           if (!btn) return;
           if (btn.classList.contains('yz-confirm-ok') && confirmAction) {
             var fn = confirmAction;
+            var lockedChat = confirmChatId;
             confirmAction = null;
             hideConfirm();
+            // 确认框弹起期间用户可能已切换聊天：校验仍指向同一聊天才执行，
+            // 否则收起并丢弃——绝不能拿「确认清除」误清新聊天的数据。
+            if (lockedChat !== null && lockedChat !== runtime.activeChatId) return;
             // 放微任务：先收起确认框再执行清除（与 toast 操作按钮同一防竞态约定）。
             setTimeout(fn, 0);
           } else {
@@ -5557,11 +5568,15 @@
     // 危险操作二次确认：居中 modal（遮罩 + 标题 + 文案 + 取消/确认），
     // 比小 toast 醒目得多，宿主侧边栏展开时也不会被遮挡。无操作时保持显示，
     // 用户点「取消」或遮罩外关闭；只有点「确认」才执行 fn。
+    // confirmChatId：弹框时锁定的聊天，确认时校验仍指向同一聊天才执行——
+    // 防弹框期间切换聊天后「确认清除」误清新聊天的数据。
     var confirmAction = null;
+    var confirmChatId = null;
     function showConfirm(title, message, okLabel, fn) {
       var host = hostDocument.getElementById('yz1-confirm');
       if (!host) return;
       confirmAction = fn || null;
+      confirmChatId = runtime.activeChatId;
       var titleNode = host.querySelector('.yz-confirm-title');
       var msgNode = host.querySelector('.yz-confirm-msg');
       var okBtn = host.querySelector('.yz-confirm-ok');
@@ -5573,6 +5588,8 @@
       host.classList.add('show');
     }
     function hideConfirm() {
+      confirmAction = null;
+      confirmChatId = null;
       var host = hostDocument.getElementById('yz1-confirm');
       if (host) host.classList.remove('show');
     }
@@ -5817,6 +5834,9 @@
       var blank = CORE.blankFeatureField(featureId);
       if (!blank) return;
       runtime.current()[CORE.FEATURE_FIELDS[featureId]] = blank;
+      // 强制下一轮全量重建：单功能清空后 sync 状态/旧摘要/issue 回声仍指向旧数据，
+      // 不清 pendingFull 的话 meta-only diff 轮提前返回，假「complete」绿点残留。
+      runtime.current().pendingFull = true;
       runtime.saveChat(runtime.activeChatId);
       if (featureId === 'forum') runtime.syncPlayerPosts(runtime.activeChatId);
       if (featureId === 'msg') runtime.syncPlayerChannel(runtime.activeChatId);
@@ -5841,6 +5861,12 @@
       });
       // 玩家域评论源同样归零，避免残留回显。
       player.myComments = [];
+      // 重置同步状态并强制下一轮全量重建：不清的话 status 残留「complete」假绿、
+      // 旧角色名/摘要继续显示、且下一轮 meta-only diff 提前返回不改状态——
+      // 空数据却显示「已同步」，模型可能连续多轮空转。processedTurns 不清
+      // （防历史水化把已清除数据复活），revision 保留同理。
+      state.pendingFull = true;
+      state.sync = { status: 'empty', turnId: '', roleName: '', summary: '', applied: [], appliedSeen: [], issues: [], updatedAt: 0 };
       runtime.saveChat(chatId);
       runtime.savePlayerChat(chatId, player);
       runtime.syncPlayerPosts(chatId);
@@ -6029,6 +6055,9 @@
       overlay.classList.add('open');
       overlay.setAttribute('aria-hidden', 'false');
       clearToast();
+      // 确认框若还挂着（弹框期间切了聊天）其锁定聊天已失效：先收起再恢复导航，
+      // 避免重新打开后残留一个会误操作的新聊天的确认框。
+      hideConfirm();
       resetManagePanels();
       // 回到上次位置：若本会话内曾关闭玉兆，恢复离开时的页面与域（翻一半回来不重头找）；
       // 首开/换聊天后回到主页（savedNav 在 close 时记录、chat:opened 时清空）。
@@ -6055,6 +6084,8 @@
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       if (!overlay) return;
       clearToast();
+      // 关闭法器时一并收起确认对话框（弹框期间切聊天/关闭后继续确认会误操作）。
+      hideConfirm();
       resetManagePanels();
       // 记录离开位置（同一聊天内再打开时恢复），管理页瞬态不保存。
       savedNav = { app: nav.app, view: nav.view, params: nav.params, stack: [] };
@@ -6631,6 +6662,8 @@
         // 离开聊天（含切到宿主设置等非聊天页）时收起 overlay 并隐藏 FAB：
         // 避免继续显示上一个聊天的数据，也避免悬浮入口压在非聊天页面上。
         chatActive = false;
+        // 收起可能弹起的确认对话框（其锁定的聊天已失效，继续挂着会误清新聊天）。
+        hideConfirm();
         close();
         render();
       });

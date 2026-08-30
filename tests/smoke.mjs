@@ -147,6 +147,10 @@ ok(/fab\.hidden = !enabled\(\) \|\| !chatActive \|\| overlay\.classList\.contain
 ok(/plugin\.onSidebarAction\('clear-data', armSidebarClear\)/.test(source), '侧边栏注册 clear-data 动作');
 ok(/showConfirm\(dict\.toast\.clearTitle, dict\.toast\.clearConfirm, dict\.toast\.clearConfirmAction, clearAllData\)/.test(source), '首击只弹居中确认对话框（showConfirm），确认才真正清除');
 ok(/Object\.keys\(CORE\.FEATURE_FIELDS\)\.forEach/.test(source) && /player\.myComments = \[\];/.test(source), 'clearAllData 归零角色域与玩家域全部功能字段 + 评论源');
+// 回归保护：清除后必须重置同步状态并强制下一轮全量重建——否则 status 残留
+// 「complete」假绿、旧角色名/摘要继续显示、meta-only diff 轮提前返回，空数据却显示已同步。
+ok(/state\.pendingFull = true;\s*state\.sync = \{ status: 'empty'/.test(source), 'clearAllData 置 pendingFull 并重置 sync（清假绿 + 强制重建）');
+ok(/function clearFeatureData\(featureId\) \{\s*var blank/.test(source) && /pendingFull = true;/.test(source), '单功能清空同样置 pendingFull 强制重建');
 ok(/plugin\.onSidebarAction\('resync-history'/.test(source) && /plugin\.onSidebarAction\('clear-data'/.test(source), '侧边栏 resync-history 与 clear-data 双动作并存');
 // 回归保护：确认框必须是 body 级居中 modal（独立于 overlay 与 toast），最高 z-index，
 // 带半透明遮罩——宿主侧边栏展开等布局变化不能把确认入口遮挡到看不见。
@@ -154,6 +158,13 @@ ok(/#yz1-confirm\{position:fixed;left:0;top:0;width:100%;height:100%;z-index:' \
 ok(/\.yz-confirm-backdrop\{[^}]*background:rgba\(0,0,0,\.55\)/.test(source), '确认框带半透明遮罩（视觉聚焦，明确表达模态等待决策）');
 ok(/showConfirm\(title, message, okLabel, fn\)/.test(source) && /host\.classList\.add\('show'\)/.test(source), 'showConfirm 渲染标题/文案/确认按钮并显示 modal');
 ok(/if \(btn\.classList\.contains\('yz-confirm-ok'\)/.test(source) && /setTimeout\(fn, 0\)/.test(source), '确认按钮才执行 fn（微任务防竞态），点取消/遮罩只关闭');
+// 回归保护：确认框必须锁定弹起时的聊天——确认时校验仍指向同一聊天才执行，
+// 否则收起并丢弃，杜绝弹框期间切换聊天后「确认清除」误清新聊天数据。
+ok(/var confirmChatId = null;/.test(source) && /confirmChatId = runtime\.activeChatId;/.test(source), 'showConfirm 捕获并锁定弹起时的聊天');
+ok(/var lockedChat = confirmChatId;/.test(source) && /lockedChat !== runtime\.activeChatId\) return;/.test(source), '确认时校验聊天未切换才执行，否则丢弃');
+ok(/hideConfirm\(\);\s*close\(\);\s*render\(\);/.test(source), 'chat:closed 时收起确认框（锁定的聊天已失效）');
+// 回归保护：玩家域表单「种类已存在」报错必须走双语文案，绝不能直出字面 undefined。
+ok(/playerFormKindClash: tr\('runtime\.player\.formKindClash'\),/.test(source), 'buildDict 接线 playerFormKindClash（防直出 undefined）');
 ok(/duration \|\| 2400/.test(source), 'showToast 保留自定义展示时长（默认 2.4s）');
 // 回归保护：带操作按钮的 toast（清除确认等）文案较长，nowrap+overflow 会把按钮挤出可视区，
 // 必须允许换行且不裁剪，保证「确认清除」按钮始终可见。
@@ -990,6 +1001,10 @@ console.log('# P1 · appliedSeen 与 importState');
   eq(rt.current().revision, 7, '导入替换内存态');
   eq(rt.importState('{bad json').reason, 'parse', '非法 JSON 拒收');
   eq(rt.importState('x'.repeat(200001)).reason, 'oversized', '超出容量拒收');
+  // 回归：误贴任意 JSON（无玉兆特征字段）绝不能「导入成功」后清空当前角色域数据。
+  eq(rt.importState(JSON.stringify({ foo: 1 })).reason, 'parse', '无玉兆特征字段的任意 JSON 拒收（防误贴清空数据）');
+  eq(rt.importState(JSON.stringify({ version: 1 })).reason, 'parse', '非玉兆结构的 JSON 拒收');
+  eq(rt.current().revision, 7, '拒收后当前内存态未被覆盖');
 }
 
 // ---------- P2 · 协议：mode/skip/digest ----------
