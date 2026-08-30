@@ -22,6 +22,8 @@
 
 ### 修复
 
+- **侧边栏「重建玉兆数据」文案歧义**：用户可能理解为清除玉兆数据——改为「从快照恢复玉兆数据」（en: Restore artifact data from snapshot），同步修正诊断页行动指引引用
+- **玩家域舆图泄漏 `undefined` 占位**：无当前所在地但有行踪/地点时（玩家域无 current 写入路径），renderMap hero 未初始化被拼进页面——初始化为空串；角色域/玩家域各加回归测试
 - **六期评审 P0 修复**：跨域切换 nav 不重置（私有子页回退根视图，manage/sync 玩家域强制回主页）；致命操作确认载明后果（永久清除 + 3 秒 armed 倒计时）；禁用态入口语义（`resync-history` 门控 + stale 分支）；FAB 遮挡（打开玉兆时隐藏）；FAB chatActive 启动兜底（主动探测 `tavoApi.chat.current()`，插件重载后不永久隐藏）；主页隐形圆环拦截点击（`pointer-events:none`）；角色回复未读闭环（镜像置 unread，列表/主页亮角标）；发送反馈闭环（镜像失败标「未送达」+ 重发）；管理页导出→导入 round-trip 断裂（按 pretty 文本长度校验）；导入覆盖提示；论坛未读清零（打开详情即 `clearPostUnread`，玩家帖 `seen` 游标）；发帖保存后列表不同步（await 镜像后 backNav）；芥子删除武装覆盖未保存编辑（局部更新）；IME 中文输入被每键重渲染打断（`isComposing` 跳过）；时间戳 UTC 与干支历混排（改本地时区）；打开聊天弹回最旧消息（渲染后滚动到底）；重建入口反馈
 - **六期评审 P1 修复**：角色域只读边界提示条；行主体死区（整行可点进编辑）；诊断页术语 i18n + failure 行动指引 + 累计轮次 + 开发者信息折叠；主页徽标语义（alert 文案中性化、`b-new` 差异化呼吸、未读点开即清零）；玉牌字段键本地化（`runtime.field.*` 显示字典）；玉牌 fail-state 可视化（partial 状态条 + 缺组占位 + 组折叠）；舆图空态与方向（空态合并 + 行踪逆序）；检索可见文案命不中（订单按归一化方向标签检索）；论坛未读通知（`seen` 游标 + 角标置顶）；负面反馈与竞态（空输入 toast、新用户指引、记住离开位置）；论坛/笔记出入栈（删除后回退跳过已删详情）；管理卦位玩家域视觉区分（金色「锁」徽标）
 - **五路评审修复（第一轮）**：并发安全（syncPlayerPosts/syncPlayerChannel await 后复查状态同一性；load 镜像/宿主 tie-break 改「revision 平局取 updatedAt 更新者」；hydrateHistory 写回前引用复查；doSwitchChat 读存储前排空落盘队列）；传讯通道（known 全量扫描 + 双向镜像保尾 20，diffChats 对 yz-player 只读防护）；发帖镜像（对账按 mine id 集排除剥落 owner 行，id 撞车双方改名）；数据卫生（playerSaveEntity 先验后改、货币重命名撞种类拒绝、数值非负钳制、评论 id 取现存最大值 +1）；预算（新增第五轮淘汰——超长标识行截断到 160，9000 硬上限不再可击穿）；边界（parse 空判定补 requests/places，管理页清空后补投镜像，导出超限拦截）；提示词群消息底线 10→2 与评估器对齐；catalog 补 forum.rows 翻译键；标点随语言

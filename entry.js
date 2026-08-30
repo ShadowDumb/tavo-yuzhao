@@ -4827,7 +4827,7 @@
     var sync = state.sync || {};
     var st = syncStatusOf(state);
     var body = '<div class="yz-diag-row"><small>' + CORE.escapeHtml(t.diag.statusLabel) + '</small><p><span class="yz-statusdot ' + CORE.escapeHtml(st.status) + '"></span>' + CORE.escapeHtml(st.text) + '</p></div>';
-    // 失败/部分态给可行动的解释：自动补齐或「重建玉兆数据」从快照恢复，不让用户干瞪眼。
+    // 失败/部分态给可行动的解释：自动补齐或「从快照恢复玉兆数据」恢复，不让用户干瞪眼。
     if (t.diag.action[st.status]) body += '<div class="yz-diag-action">' + CORE.escapeHtml(t.diag.action[st.status]) + '</div>';
     body += diagRow(t.diag.summary, CORE.escapeHtml(sync.summary || t.awaitingSync));
     var applied = CORE.safeArray(sync.applied, 10).map(function (id) { return t.features[id] || id; });
