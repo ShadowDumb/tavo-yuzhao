@@ -2220,6 +2220,15 @@ console.log('# 舆图地点名录');
   ok(mvKw.includes('藏经阁') && !mvKw.includes('灵气充沛'), '地点名录按名称/描述过滤（当前位置保留）');
   const pv = M.VIEWS.renderPage(mpView, { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}, 'player', M.CORE.blankPlayerState('pv'));
   ok(!pv.includes('藏经阁'), '玩家域舆图渲染玩家域数据源，不泄漏角色域地点名录');
+  // 回归：无当前所在地但有行踪/地点时，hero 占位不得泄漏 "undefined" 字样。
+  const mpNoCurrent = M.CORE.blankState('v-map-nocur');
+  mpNoCurrent.map = { current: { place: '', domain: '', desc: '' }, tracks: [{ id: 't1', time: '今日', place: '演武场', action: '晨练' }], places: [] };
+  const mvNoCurrent = M.VIEWS.renderMap(mpNoCurrent, '');
+  ok(!/undefined/.test(mvNoCurrent), '无当前所在地时不渲染 undefined 占位');
+  const mpPNoCurrent = M.CORE.blankPlayerState('v-map-pnocur');
+  mpPNoCurrent.map = { current: { place: '', domain: '', desc: '' }, tracks: [{ id: 't1', time: '今日', place: '演武场', action: '晨练' }], places: [] };
+  const pvNoCurrent = M.VIEWS.renderPage(mpNoCurrent, { app: 'map', view: 'root', params: {}, stack: [] }, {}, {}, 'player', mpPNoCurrent);
+  ok(!/undefined/.test(pvNoCurrent), '玩家域舆图无当前所在地时不渲染 undefined 占位');
 }
 
 // ---------- 四·三、坊市求购区（market.requests） ----------

@@ -4787,7 +4787,7 @@
     var places = CORE.safeArray(map.places, 20).filter(function (place) {
       return filterMatch(kw, [place.name, place.domain, place.desc]);
     });
-    var hero;
+    var hero = '';
     if (CORE.hasText(cur.place)) {
       hero = '<div class="yz-map-current"><h3>' + CORE.escapeHtml(t.mapTitles.current) + '</h3>' +
         '<div class="yz-hero"><span class="yz-map-pin">◈</span><div><b>' + CORE.escapeHtml(cur.place) + '</b>' + (CORE.hasText(cur.domain) ? '<small>' + CORE.escapeHtml(cur.domain) + '</small>' : '') + '</div></div>' +
