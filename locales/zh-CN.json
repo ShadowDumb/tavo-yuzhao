@@ -16,6 +16,8 @@
   "runtime.brand.sub": "法 器",
   "runtime.closePhone": "收起玉兆",
   "runtime.back": "返回",
+  "runtime.cancel": "取消",
+  "runtime.toast.clearTitle": "清除玉兆数据",
   "runtime.awaitingSync": "推进剧情后同步法器内容",
   "runtime.home.empty": "先与角色推进几轮剧情，法器会自动把设定、进度与见闻刻画进这八格；每轮生成后内容随之更新。",
   "runtime.emptyTablet": "等待剧情同步…",

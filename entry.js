@@ -1774,6 +1774,7 @@
       brand: { title: tr('runtime.brand.title'), sub: tr('runtime.brand.sub') },
       closePhone: tr('runtime.closePhone'),
       back: tr('runtime.back'),
+      cancel: tr('runtime.cancel'),
       awaitingSync: tr('runtime.awaitingSync'),
       homeEmpty: tr('runtime.home.empty'),
       emptyTablet: tr('runtime.emptyTablet'),
@@ -1796,6 +1797,7 @@
         disabled: tr('runtime.toast.disabled'),
         restoreFailed: tr('runtime.toast.restoreFailed'),
         stale: tr('runtime.toast.stale'),
+        clearTitle: tr('runtime.toast.clearTitle'),
         clearConfirm: tr('runtime.toast.clearConfirm'),
         clearConfirmAction: tr('runtime.toast.clearConfirmAction'),
         cleared: tr('runtime.toast.cleared'),
@@ -5310,7 +5312,20 @@
     '.yz-io{width:100%;height:120px;margin-top:8px;background:rgba(6,20,16,.85);border:1px solid rgba(150,255,215,.2);border-radius:12px;color:#dff7ec;padding:8px;font-size:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5;resize:vertical}',
     '.yz-io:focus{outline:1px solid rgba(150,255,215,.45)}',
     '.yz-io-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:8px}',
-    '.yz-io-warn{margin-top:6px;padding:6px 8px;border-radius:8px;background:rgba(120,60,20,.35);border:1px dashed rgba(230,180,120,.45);color:#f2d7b0;font-size:11px;letter-spacing:.5px}'
+    '.yz-io-warn{margin-top:6px;padding:6px 8px;border-radius:8px;background:rgba(120,60,20,.35);border:1px dashed rgba(230,180,120,.45);color:#f2d7b0;font-size:11px;letter-spacing:.5px}',
+    // —— 全局确认对话框（危险操作二次确认）——
+    // 独立于 overlay 与 toast 的 body 级居中 modal：小 toast 会被宿主侧边栏等布局遮挡，
+    // 确认框固定居中 + 半透明遮罩 + 最高 z-index，任何布局下都可见。
+    '#yz1-confirm{position:fixed;left:0;top:0;width:100%;height:100%;z-index:' + (Z_INDEX_TOP + 2) + ';display:none;align-items:center;justify-content:center;padding:20px;box-sizing:border-box}',
+    '#yz1-confirm.show{display:flex}',
+    '#yz1-confirm .yz-confirm-backdrop{position:absolute;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.55)}',
+    '#yz1-confirm .yz-confirm-box{position:relative;max-width:340px;width:100%;background:rgba(8,24,20,.97);border:1px solid rgba(255,140,120,.55);border-radius:16px;padding:16px 16px 14px;box-shadow:0 10px 40px rgba(0,0,0,.6)}',
+    '#yz1-confirm .yz-confirm-title{margin:0 0 8px;font-size:14px;font-weight:600;color:#ffb0a3;letter-spacing:1px;text-align:center}',
+    '#yz1-confirm .yz-confirm-msg{margin:0 0 14px;font-size:12px;line-height:1.7;color:#eaf7f1;text-align:center;word-break:break-word}',
+    '#yz1-confirm .yz-confirm-actions{display:flex;gap:10px}',
+    '#yz1-confirm .yz-confirm-actions button{flex:1;height:34px;border-radius:10px;font-size:12px;font-family:inherit;cursor:pointer}',
+    '#yz1-confirm .yz-confirm-cancel{background:rgba(20,60,50,.5);border:1px solid rgba(150,255,215,.3);color:#c9e6d6}',
+    '#yz1-confirm .yz-confirm-ok{background:rgba(255,122,107,.18);border:1px solid rgba(255,140,120,.65);color:#ffb0a3;font-weight:600}'
   ].join('\n');
 
   function containsEnvelope(value) {
@@ -5507,7 +5522,59 @@
           setTimeout(fn, 0);
         });
       }
+      // 全局确认对话框宿主：body 级居中 modal，独立于 overlay 与 toast——宿主侧边栏
+      // 展开等布局变化不会遮挡它（小 toast 会被挤到看不见的位置）。
+      var confirmHost = hostDocument.getElementById('yz1-confirm');
+      if (!confirmHost) {
+        confirmHost = hostDocument.createElement('div');
+        confirmHost.id = 'yz1-confirm';
+        confirmHost.setAttribute('role', 'alertdialog');
+        confirmHost.setAttribute('aria-modal', 'true');
+        confirmHost.innerHTML =
+          '<div class="yz-confirm-backdrop"></div>' +
+          '<div class="yz-confirm-box"><p class="yz-confirm-title"></p><p class="yz-confirm-msg"></p>' +
+          '<div class="yz-confirm-actions"><button type="button" class="yz-confirm-cancel"></button>' +
+          '<button type="button" class="yz-confirm-ok"></button></div></div>';
+        hostDocument.body.appendChild(confirmHost);
+        confirmHost.addEventListener('click', function (event) {
+          var btn = event.target && event.target.closest ? event.target.closest('.yz-confirm-actions button') : null;
+          if (!btn) return;
+          if (btn.classList.contains('yz-confirm-ok') && confirmAction) {
+            var fn = confirmAction;
+            confirmAction = null;
+            hideConfirm();
+            // 放微任务：先收起确认框再执行清除（与 toast 操作按钮同一防竞态约定）。
+            setTimeout(fn, 0);
+          } else {
+            confirmAction = null;
+            hideConfirm();
+          }
+        });
+      }
       return overlay;
+    }
+
+    // 危险操作二次确认：居中 modal（遮罩 + 标题 + 文案 + 取消/确认），
+    // 比小 toast 醒目得多，宿主侧边栏展开时也不会被遮挡。无操作时保持显示，
+    // 用户点「取消」或遮罩外关闭；只有点「确认」才执行 fn。
+    var confirmAction = null;
+    function showConfirm(title, message, okLabel, fn) {
+      var host = hostDocument.getElementById('yz1-confirm');
+      if (!host) return;
+      confirmAction = fn || null;
+      var titleNode = host.querySelector('.yz-confirm-title');
+      var msgNode = host.querySelector('.yz-confirm-msg');
+      var okBtn = host.querySelector('.yz-confirm-ok');
+      var cancelBtn = host.querySelector('.yz-confirm-cancel');
+      if (titleNode) titleNode.textContent = title;
+      if (msgNode) msgNode.textContent = message;
+      if (okBtn) okBtn.textContent = okLabel;
+      if (cancelBtn) cancelBtn.textContent = I18N.dict().cancel;
+      host.classList.add('show');
+    }
+    function hideConfirm() {
+      var host = hostDocument.getElementById('yz1-confirm');
+      if (host) host.classList.remove('show');
     }
 
     function clearToast() {
@@ -5784,12 +5851,12 @@
       showToast(I18N.dict().toast.cleared);
     }
 
-    // 侧边栏清除入口：首击只弹二次确认 toast（内嵌「确认清除」按钮），
-    // 确认按钮（或 6 秒超时消失）才真正执行清除，防误触不可恢复操作。
+    // 侧边栏清除入口：首击只弹居中确认对话框（防误触不可恢复操作）——
+    // 小 toast 会被宿主侧边栏等布局遮挡，确认框固定居中 + 遮罩，任何布局下都可见。
     function armSidebarClear() {
       if (!enabled()) { showToast(I18N.dict().toast.disabled, true); return; }
       var dict = I18N.dict();
-      showToast(dict.toast.clearConfirm, true, { label: dict.toast.clearConfirmAction, fn: clearAllData }, 6000);
+      showConfirm(dict.toast.clearTitle, dict.toast.clearConfirm, dict.toast.clearConfirmAction, clearAllData);
     }
 
     function armOrClearFeature(featureId) {

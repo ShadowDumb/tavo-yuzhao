@@ -16,6 +16,8 @@
   "runtime.brand.sub": "ARTIFACT",
   "runtime.closePhone": "Dismiss jade artifact",
   "runtime.back": "Back",
+  "runtime.cancel": "Cancel",
+  "runtime.toast.clearTitle": "Clear artifact data",
   "runtime.awaitingSync": "The artifact syncs as the story advances",
   "runtime.home.empty": "Advance a few turns first — the artifact will carve the setting, progress and adventures into these eight cells, updating with every generation.",
   "runtime.emptyTablet": "Awaiting story sync…",

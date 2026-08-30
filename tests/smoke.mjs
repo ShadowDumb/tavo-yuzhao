@@ -145,11 +145,16 @@ ok(/fab\.hidden = !enabled\(\) \|\| !chatActive \|\| overlay\.classList\.contain
 // 回归保护：侧边栏「清除玉兆数据」必须走二次确认——首击只弹确认 toast（内嵌「确认清除」
 // 按钮），确认按钮才真正执行，防止误触不可恢复操作。
 ok(/plugin\.onSidebarAction\('clear-data', armSidebarClear\)/.test(source), '侧边栏注册 clear-data 动作');
-const clearBody = source.slice(source.indexOf('function armSidebarClear'), source.indexOf('function clearAllData') > 0 ? source.indexOf('function clearFeatureData') : source.indexOf('function clearFeatureData'));
-ok(/showToast\(dict\.toast\.clearConfirm, true, \{ label: dict\.toast\.clearConfirmAction, fn: clearAllData \}, 6000\)/.test(source), '首击仅弹确认 toast 且内嵌「确认清除」按钮（6 秒窗口）');
+ok(/showConfirm\(dict\.toast\.clearTitle, dict\.toast\.clearConfirm, dict\.toast\.clearConfirmAction, clearAllData\)/.test(source), '首击只弹居中确认对话框（showConfirm），确认才真正清除');
 ok(/Object\.keys\(CORE\.FEATURE_FIELDS\)\.forEach/.test(source) && /player\.myComments = \[\];/.test(source), 'clearAllData 归零角色域与玩家域全部功能字段 + 评论源');
 ok(/plugin\.onSidebarAction\('resync-history'/.test(source) && /plugin\.onSidebarAction\('clear-data'/.test(source), '侧边栏 resync-history 与 clear-data 双动作并存');
-ok(/duration \|\| 2400/.test(source), 'showToast 支持确认类更长展示窗口（默认仍 2.4s）');
+// 回归保护：确认框必须是 body 级居中 modal（独立于 overlay 与 toast），最高 z-index，
+// 带半透明遮罩——宿主侧边栏展开等布局变化不能把确认入口遮挡到看不见。
+ok(/#yz1-confirm\{position:fixed;left:0;top:0;width:100%;height:100%;z-index:' \+ \(Z_INDEX_TOP \+ 2\)/.test(source), '确认框为 body 级全屏居中 modal 且 z-index 高于 toast（+2）');
+ok(/\.yz-confirm-backdrop\{[^}]*background:rgba\(0,0,0,\.55\)/.test(source), '确认框带半透明遮罩（视觉聚焦，明确表达模态等待决策）');
+ok(/showConfirm\(title, message, okLabel, fn\)/.test(source) && /host\.classList\.add\('show'\)/.test(source), 'showConfirm 渲染标题/文案/确认按钮并显示 modal');
+ok(/if \(btn\.classList\.contains\('yz-confirm-ok'\)/.test(source) && /setTimeout\(fn, 0\)/.test(source), '确认按钮才执行 fn（微任务防竞态），点取消/遮罩只关闭');
+ok(/duration \|\| 2400/.test(source), 'showToast 保留自定义展示时长（默认 2.4s）');
 // 回归保护：带操作按钮的 toast（清除确认等）文案较长，nowrap+overflow 会把按钮挤出可视区，
 // 必须允许换行且不裁剪，保证「确认清除」按钮始终可见。
 ok(/\.yz-toast\.has-action\{white-space:normal;max-width:92%;overflow:visible;text-overflow:clip;line-height:1.5\}/.test(source), 'has-action toast 允许换行、不裁剪（按钮不被挤出）');
