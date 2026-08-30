@@ -1796,6 +1796,9 @@
         disabled: tr('runtime.toast.disabled'),
         restoreFailed: tr('runtime.toast.restoreFailed'),
         stale: tr('runtime.toast.stale'),
+        clearConfirm: tr('runtime.toast.clearConfirm'),
+        clearConfirmAction: tr('runtime.toast.clearConfirmAction'),
+        cleared: tr('runtime.toast.cleared'),
         exported: tr('runtime.manage.exportDone'),
         exportFailed: tr('runtime.manage.exportFailed')
       },
@@ -5510,8 +5513,9 @@
       if (toast) { toast.classList.remove('show', 'bad'); toast.innerHTML = ''; }
     }
 
-    // 可选内嵌操作按钮（撤销等）：text 用文本节点（防注入），按钮走委托。
-    function showToast(text, bad, action) {
+    // 可选内嵌操作按钮（撤销/确认等）：text 用文本节点（防注入），按钮走委托。
+    // duration：默认 2.4s；确认类（如清除玉兆数据）需要更长的阅读/决策窗口。
+    function showToast(text, bad, action, duration) {
       var toast = hostDocument.getElementById('yz1-toast');
       if (!toast) return;
       clearTimeout(toastTimer);
@@ -5526,7 +5530,7 @@
       }
       toast.classList.toggle('bad', !!bad);
       toast.classList.add('show');
-      toastTimer = setTimeout(clearToast, 2400);
+      toastTimer = setTimeout(clearToast, duration || 2400);
     }
 
     // shell DOM 只在首次创建，语言切换不会重建：顶栏品牌与各 aria-label 属于静态节点，
@@ -5750,6 +5754,38 @@
       armedWipe = null;
       showToast(tr('runtime.manage.cleared', { name: I18N.dict().features[featureId] || featureId }));
       render();
+    }
+
+    // 侧边栏「清除玉兆数据」：当前聊天的角色域与玩家域全部数据归零。
+    // 调用前必须完成二次确认（首击只弹确认 toast，确认按钮才真正清除）。
+    function clearAllData() {
+      var chatId = runtime.activeChatId;
+      var state = runtime.current();
+      var player = runtime.playerCurrent();
+      Object.keys(CORE.FEATURE_FIELDS).forEach(function (featureId) {
+        var blank = CORE.blankFeatureField(featureId);
+        if (!blank) return;
+        state[CORE.FEATURE_FIELDS[featureId]] = blank;
+        if (CORE.FEATURE_FIELDS[featureId] in player) player[CORE.FEATURE_FIELDS[featureId]] = blank;
+      });
+      // 玩家域评论源同样归零，避免残留回显。
+      player.myComments = [];
+      runtime.saveChat(chatId);
+      runtime.savePlayerChat(chatId, player);
+      runtime.syncPlayerPosts(chatId);
+      runtime.syncPlayerChannel(chatId);
+      runtime.syncArchive(chatId);
+      armedWipe = null;
+      render();
+      showToast(I18N.dict().toast.cleared);
+    }
+
+    // 侧边栏清除入口：首击只弹二次确认 toast（内嵌「确认清除」按钮），
+    // 确认按钮（或 6 秒超时消失）才真正执行清除，防误触不可恢复操作。
+    function armSidebarClear() {
+      if (!enabled()) { showToast(I18N.dict().toast.disabled, true); return; }
+      var dict = I18N.dict();
+      showToast(dict.toast.clearConfirm, true, { label: dict.toast.clearConfirmAction, fn: clearAllData }, 6000);
     }
 
     function armOrClearFeature(featureId) {
@@ -6496,6 +6532,7 @@
           if (result && result.stale) { showToast(I18N.dict().toast.stale, true); return; }
           showToast(result && result.restored ? I18N.dict().toast.rebuilt : I18N.dict().toast.noSnapshot);
         });
+        plugin.onSidebarAction('clear-data', armSidebarClear);
       }
       if (typeof plugin.on !== 'function') return;
 

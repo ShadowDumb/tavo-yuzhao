@@ -107,7 +107,7 @@ eq(releaseKey, 'releaseNotes.' + String(manifest.version).replace(/\./g, '_'), '
 // P1：侧边栏动作声明
 {
   const sideIds = (manifest.contributes.sidebar || []).map((x) => x.id);
-  eq(sideIds, ['open-jade', 'resync-history'], 'sidebar 声明 open-jade 与 resync-history');
+  eq(sideIds, ['open-jade', 'resync-history', 'clear-data'], 'sidebar 声明 open-jade/resync-history/clear-data');
   (manifest.contributes.sidebar || []).forEach((entry) => {
     const key = entry.label && entry.label.$t;
     ok(!!key && zhCatalog[key] && enCatalog[key], `sidebar ${entry.id} label $t 键双语存在`);
@@ -142,6 +142,14 @@ ok(['actions.openJade'].every((k) => zhCatalog[k].length <= 48 && enCatalog[k].l
 ok(/var FAB_MARGIN_BOTTOM = 96;/.test(source) && !/innerHeight - height - 64\)/.test(source), 'FAB 默认/复位位置共用常量（96px）');
 ok(/var Z_INDEX_TOP = 2147483646;/.test(source) && !/z-index:\s*2147483647/.test(source), 'z-index 单档 2147483646 常量，保留最大档余量');
 ok(/fab\.hidden = !enabled\(\) \|\| !chatActive \|\| overlay\.classList\.contains\('open'\);/.test(source), 'FAB 显隐受 enabled + chatActive + 玉兆打开 三重门控（打开时隐藏防遮挡误触）');
+// 回归保护：侧边栏「清除玉兆数据」必须走二次确认——首击只弹确认 toast（内嵌「确认清除」
+// 按钮），确认按钮才真正执行，防止误触不可恢复操作。
+ok(/plugin\.onSidebarAction\('clear-data', armSidebarClear\)/.test(source), '侧边栏注册 clear-data 动作');
+const clearBody = source.slice(source.indexOf('function armSidebarClear'), source.indexOf('function clearAllData') > 0 ? source.indexOf('function clearFeatureData') : source.indexOf('function clearFeatureData'));
+ok(/showToast\(dict\.toast\.clearConfirm, true, \{ label: dict\.toast\.clearConfirmAction, fn: clearAllData \}, 6000\)/.test(source), '首击仅弹确认 toast 且内嵌「确认清除」按钮（6 秒窗口）');
+ok(/Object\.keys\(CORE\.FEATURE_FIELDS\)\.forEach/.test(source) && /player\.myComments = \[\];/.test(source), 'clearAllData 归零角色域与玩家域全部功能字段 + 评论源');
+ok(/plugin\.onSidebarAction\('resync-history'/.test(source) && /plugin\.onSidebarAction\('clear-data'/.test(source), '侧边栏 resync-history 与 clear-data 双动作并存');
+ok(/duration \|\| 2400/.test(source), 'showToast 支持确认类更长展示窗口（默认仍 2.4s）');
 // 回归保护：× 关闭玉兆后 FAB 必须立即恢复可见（close() 内按同一门控刷新 fab.hidden，
 // 否则悬浮球一直消失，重开玉兆只能走侧边栏，步骤繁琐）。
 const closeBody = source.slice(source.indexOf('function close()'), source.indexOf('function bindOverlay'));

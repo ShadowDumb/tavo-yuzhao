@@ -23,7 +23,8 @@
     ],
     "sidebar": [
       { "id": "open-jade", "label": { "$t": "actions.openJade" } },
-      { "id": "resync-history", "label": { "$t": "actions.resyncHistory" } }
+      { "id": "resync-history", "label": { "$t": "actions.resyncHistory" } },
+      { "id": "clear-data", "label": { "$t": "actions.clearData" } }
     ],
     "settings": {
       "schema": [
