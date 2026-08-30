@@ -103,9 +103,9 @@
 ## 开发约束（每个候选必过）
 
 所有新增数据形态必须逐项过「数据形态扩展审计」：
-buildCurrent 窗口化、MAX_BASELINE_CHARS 预算、diff 合并、达标评估、内容指纹去重、
+buildCurrent 窗口化、条目级注入采样（sampleEntries 强制集/活跃度加权/冷门保底/隐藏不提示）、MAX_BASELINE_CHARS 预算、diff 合并、达标评估、内容指纹去重、
 版本迁移、四层备份链、世界书归档关键词——任何一项遗漏都会破坏现有 701 项测试基线语义。
 玩家域新增数据形态另需过：三层存储（不进世界书）、不经模型评估、跨域幂等、CRUD 校验与删除级联；公开数据发布另需过：owner 维度、镜像对账（含评论保留与 id 撞车改名）、评估豁免、提示词保护、跨域镜像并发复查（await 后状态同一性）。
 
-- 冒烟门禁：`node --check entry.js && node tests/smoke.mjs`（基线 701 项全绿）
+- 冒烟门禁：`node --check entry.js && node tests/smoke.mjs`（基线 751 项全绿）
 - 发布门禁：MCP `tavo_plugin_validate` → `tavo_plugin_audit` → `tavo_plugin_package`，产物随版本号更新出包

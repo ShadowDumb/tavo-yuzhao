@@ -1248,7 +1248,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   maxed.space.currencies = Array.from({ length: 10 }, (_, i) => ({ kind: '币种' + i, amount: '9'.repeat(10) }));
   maxed.map.current = { place: '青云山', domain: '中州', desc: '字'.repeat(800) };
   maxed.map.tracks = Array.from({ length: 20 }, (_, i) => ({ id: 't' + i, time: '今日', place: '地' + i, action: '字'.repeat(100) }));
-  const curMaxed = M.PROMPT.buildCurrent(maxed, {});
+  const curMaxed = M.PROMPT.buildCurrent(maxed, {}, () => 0);
   ok(curMaxed.join('\n').length < 9500, '极端满配态注入量仍受上限约束');
   ok(curMaxed.some((r) => r.startsWith('contact｜c0｜')), '满配态实体标识行仍在');
   ok(curMaxed.some((r) => r.startsWith('order｜o0｜')), '满配态订单行仍在（不可淘汰）');
@@ -1265,7 +1265,7 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   maxed2.space.currencies = Array.from({ length: 10 }, (_, i) => ({ kind: '币种' + i, amount: '9'.repeat(10) }));
   maxed2.map.current = { place: '青云山', domain: '中州', desc: '字'.repeat(800) };
   maxed2.map.tracks = Array.from({ length: 20 }, (_, i) => ({ id: 't' + i, time: '今日', place: '地' + i, action: '字'.repeat(150) }));
-  const curMaxed2 = M.PROMPT.buildCurrent(maxed2, {});
+  const curMaxed2 = M.PROMPT.buildCurrent(maxed2, {}, () => 0);
   ok(curMaxed2.join('\n').length < 9500, '归档行让位后注入量收敛到上限内');
   ok(curMaxed2.some((r) => r.startsWith('contact｜c0｜')), '归档行让位后实体标识行仍在');
   ok(curMaxed2.some((r) => r.startsWith('track｜t0｜')), '归档行让位后舆图行仍在（不可淘汰）');
@@ -2114,8 +2114,8 @@ console.log('# 玩家发帖（forum owner 维度）');
   const playerRow = pc.find((r) => r.startsWith('post｜p1'));
   ok(!!playerRow && playerRow.endsWith('｜player'), '玩家帖子行带 owner 字段');
   ok(pc.some((r) => r.startsWith('comment｜p1｜')), '玩家帖子的评论全行注入');
-  eq(pc.filter((r) => r.startsWith('post｜')).length, 4, '玩家帖子不因窗口化被归档（最旧角色帖子正常归档）');
-  ok(pc.some((r) => r.startsWith('archived｜post｜c1')), '角色旧帖仍走归档摘要');
+  eq(pc.filter((r) => r.startsWith('post｜')).length, 5, '帖子未超上限全量注入（玩家帖 + 角色帖）');
+  ok(!pc.some((r) => r.startsWith('archived｜post｜')), '帖子级归档已由采样替代，窗口内无归档行');
 
   // 预算淘汰：压预算时角色明细行先丢，玩家帖子行保留（last 标记仅极端场景让位）
   const bigPosts = [];
@@ -2123,13 +2123,94 @@ console.log('# 玩家发帖（forum owner 维度）');
   bigPosts.push({ id: 'p1', owner: 'player', author: '悦琳', title: '寻师', body: '求指点' });
   const pcBig = M.PROMPT.buildCurrent({ forum: M.CORE.normalizeForum({ posts: bigPosts }) }, {});
   ok(pcBig.some((r) => r.startsWith('post｜p1')), '压预算后玩家帖子仍在基线');
-  ok(pcBig.filter((r) => r.startsWith('post｜c')).length < 3, '压预算后角色明细行被淘汰');
+  ok(pcBig.filter((r) => r.startsWith('post｜c')).length <= 4, '采样后角色帖子全行注入不超过采样数');
+  ok(pcBig.join('\n').length < 9500, '采样 + 预算淘汰后注入总量仍受上限约束');
 
   // 保护规则提示词与引导行
   const prZh = M.PROMPT.buildPrompt('zh', {}, { forceFull: true, current: [] });
   ok(prZh.includes('owner 为 player 的帖子是玩家的真实发帖') && prZh.includes('可以用 +comment 行'), 'zh 玩家帖子保护规则');
   ok(M.PROMPT.buildPrompt('en', {}, { forceFull: true, current: [] }).includes('real posts by the player'), 'en 玩家帖子保护规则');
   ok(prZh.includes('post｜id｜作者｜身份｜版块｜时间｜标题｜正文｜共鸣数｜owner'), '引导行含 owner 字段');
+}
+
+{
+  // 条目级注入采样：阈值内全量；超阈值后强制集 + 活跃度加权随机；隐藏条目完全不出现
+  const msgs = (n, who) => Array.from({ length: n }, (_, j) => ({ id: who + '-' + j, side: 'other', time: 'x', text: '话' + j }));
+  const mkState = () => {
+    const st = M.CORE.blankState('smp');
+    st.chats = {
+      contacts: [
+        { id: 'c1', name: '热闹甲', messages: msgs(18, 'a') },
+        { id: 'c2', name: '热闹乙', messages: msgs(16, 'b') },
+        { id: 'c3', name: '冷清丙', messages: msgs(1, 'c') },
+        { id: 'c4', name: '新增丁', messages: [] },
+        { id: 'c5', name: '普通戊', messages: msgs(5, 'e') }
+      ],
+      groups: [
+        { id: 'g1', name: '活跃群', messages: msgs(12, 'x').map((m) => Object.assign({ sender: '人' }, m)) },
+        { id: 'g2', name: '冷群', messages: [{ id: 'y1', sender: '人', side: 'other', text: 'hi' }] },
+        { id: 'g3', name: '新群', messages: [] }
+      ]
+    };
+    st.forum = {
+      posts: [
+        { id: 'p1', author: '甲', title: '热帖', body: 'x', comments: msgs(10, 'c').map((m) => ({ author: '路人', time: 'x', text: m.text })) },
+        { id: 'p2', author: '乙', title: '帖二', body: 'x', comments: [{ author: '路人', time: 'x', text: 'hi' }] },
+        { id: 'p3', author: '丙', title: '帖三', body: 'x', comments: [] },
+        { id: 'p4', author: '丁', title: '帖四', body: 'x', comments: [] },
+        { id: 'p5', author: '戊', title: '帖五', body: 'x', comments: [] },
+        { id: 'p6', author: '己', title: '帖六', body: 'x', comments: [] }
+      ]
+    };
+    return st;
+  };
+  const st = mkState();
+  const cur1 = M.PROMPT.buildCurrent(st, {}, () => 0.42);
+  const cur2 = M.PROMPT.buildCurrent(st, {}, () => 0.42);
+  eq(cur1.join('\n'), cur2.join('\n'), '同一 state + 固定 rng 输出稳定');
+  eq(cur1.filter((r) => r.startsWith('contact｜')).length, 3, '联系人超上限注入 3 条');
+  eq(cur1.filter((r) => r.startsWith('group｜')).length, 2, '群聊超上限注入 2 条');
+  eq(cur1.filter((r) => r.startsWith('post｜')).length, 5, '帖子超上限注入 5 条');
+
+  // 阈值边界：恰好等于上限时全量注入，且不受 rng 影响
+  const stN = mkState();
+  stN.chats.contacts = stN.chats.contacts.slice(0, 3);
+  stN.chats.groups = stN.chats.groups.slice(0, 2);
+  stN.forum.posts = stN.forum.posts.slice(0, 5);
+  eq(M.PROMPT.buildCurrent(stN, {}, () => 0.42).join('\n'), M.PROMPT.buildCurrent(stN, {}, () => 0.99).join('\n'), '未超上限时不受 rng 影响');
+  eq(M.PROMPT.buildCurrent(stN, {}, () => 0.42).filter((r) => r.startsWith('contact｜')).length, 3, '恰好等于上限时全量注入');
+
+  // 活跃度加权：多次采样下活跃条目选中率显著更高；冷门/新增条目保留非零概率
+  const picks = { c1: 0, c2: 0, c3: 0, c4: 0, c5: 0 };
+  let seqI = 0;
+  const seq = () => { const v = (seqI % 11) / 10; seqI += 1; return v; };
+  for (let n = 0; n < 300; n += 1) {
+    M.PROMPT.buildCurrent(st, {}, seq).forEach((r) => {
+      const m = /^contact｜(c\d)｜/.exec(r);
+      if (m) picks[m[1]] += 1;
+    });
+  }
+  ok(picks.c1 > picks.c4 && picks.c2 > picks.c4, '活跃联系人选中率显著高于冷门条目');
+  ok(picks.c3 > 0 && picks.c4 > 0, '冷门/新增条目保留非零概率');
+
+  // 强制集：玩家交互过的条目必定注入（不参与概率）
+  st.chats.contacts.push({ id: M.CORE.PLAYER_CONTACT_ID, name: '道友', unread: 2, preview: '', messages: [{ id: 'pm-1', side: 'other', time: 'x', text: '在吗' }] });
+  st.chats.contacts[0].unread = 3;
+  st.chats.groups[0].messages.push({ id: 'pmg-1', sender: '道友', side: 'other', time: 'x', text: '我在' });
+  st.forum.posts.push({ id: 'pm1', owner: 'player', author: '悦琳', title: '我的帖', body: 'x' });
+  st.forum.posts[0].comments.push({ id: 'pmc-1', owner: 'player', author: '道友', time: 'x', text: '我的评论' });
+  const cur3 = M.PROMPT.buildCurrent(st, {}, () => 0.42);
+  const j3 = cur3.join('\n');
+  ok(j3.includes('contact｜yz-player｜'), '玩家传讯联系人必定注入');
+  ok(j3.includes('contact｜c1｜'), '未读联系人必定注入');
+  ok(j3.includes('group｜g1｜'), '含玩家发言的群聊必定注入');
+  ok(j3.includes('post｜pm1｜'), '玩家帖子必定注入');
+  ok(j3.includes('post｜p1｜'), '含玩家评论的帖子必定注入');
+  eq(cur3.filter((r) => r.startsWith('contact｜')).length, 3, '强制集 + 随机补齐仍受注入上限约束');
+  eq(cur3.filter((r) => r.startsWith('post｜')).length, 5, '帖子强制集 + 随机补齐到上限');
+
+  // 隐藏条目完全不出现（无 archived 行、无任何提示）
+  ok(!j3.includes('archived｜contact') && !j3.includes('archived｜group') && !j3.includes('archived｜post'), '隐藏条目无任何提示行');
 }
 
 {
@@ -2258,9 +2339,9 @@ const GUARD_FULL = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜�
 {
   // 第五轮淘汰：标识行（联系人/订单）合计可撑爆预算，截断到短上限后仍不超限
   const wide = M.CORE.blankState('x2');
-  const contact = (i) => ({ id: 'c' + i, name: '联系人' + i, messages: [{ id: 'm' + i, side: 'other', text: '字'.repeat(900) }] });
-  wide.chats = { contacts: Array.from({ length: 10 }, (_, i) => contact(i + 1)), groups: [] };
-  const rows = M.PROMPT.buildCurrent(wide, {});
+  const contact = (i) => ({ id: 'c' + i, name: '联系人' + i, messages: [{ id: 'm' + i, side: 'other', text: '字'.repeat(2900) }] });
+  wide.chats = { contacts: Array.from({ length: 4 }, (_, i) => contact(i + 1)), groups: [] };
+  const rows = M.PROMPT.buildCurrent(wide, {}, () => 0);
   const total = rows.join('').length;
   ok(total <= 9000, '标识行截断后基线不超硬上限（实际 ' + total + '）');
   ok(rows.some((r) => r.includes('contact｜c1｜联系人1')), '截断保留行首 id/name 供 diff 定位');

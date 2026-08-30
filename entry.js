@@ -160,6 +160,113 @@
   // 优先级最高——仅极端超限时让位，见 buildCurrent 第四轮）。
   var MAX_PLAYER_UNREAD_ROWS = 5;
 
+  // 条目级注入采样：联系人/群聊/帖子超过上限后，每轮只向基线注入采样子集——玩家
+  // 交互过的条目必定注入（真实事件，消息行必须挂在可见条目下），其余按活跃度加权
+  // 随机（score = 1 + 消息数/评论数，p ∝ score^γ，钳制 p ≥ β/n 保底冷门与新增条目）。
+  // 隐藏条目完全不出现：模型无记忆、只读上下文，不见即不知，不会去修改；diff 门禁
+  // 兜底（隐藏条目不可引用）。渲染/存储/评估/世界书归档不受影响，只裁剪注入视图。
+  var MAX_INJECT_CONTACTS = 3;
+  var MAX_INJECT_GROUPS = 2;
+  var MAX_INJECT_POSTS = 5;
+  var SAMPLE_WEIGHT_GAMMA = 2;
+  var SAMPLE_FLOOR_BETA = 0.5;
+
+  // 加权随机补足：从池中取 count 个不重复条目（p ∝ score^γ，钳制下限 β/n 保证
+  // 不活跃/新增条目非零概率）。rng 可注入（测试确定性），默认 Math.random。
+  function samplePick(pool, count, rng) {
+    var chosen = [];
+    var used = {};
+    while (chosen.length < count) {
+      var rest = [];
+      pool.forEach(function (e) { if (!used[e.id]) rest.push(e); });
+      if (!rest.length) break;
+      var sum = 0;
+      rest.forEach(function (e) { sum += Math.pow(e.score, SAMPLE_WEIGHT_GAMMA); });
+      var floor = SAMPLE_FLOOR_BETA / rest.length;
+      var probs = rest.map(function (e) {
+        return Math.max(Math.pow(e.score, SAMPLE_WEIGHT_GAMMA) / sum, floor);
+      });
+      var total = 0;
+      probs.forEach(function (p) { total += p; });
+      var r = rng() * total;
+      var acc = 0;
+      var pick = null;
+      for (var i = 0; i < rest.length; i++) {
+        acc += probs[i];
+        if (r <= acc) { pick = rest[i]; break; }
+      }
+      if (!pick) pick = rest[rest.length - 1];
+      used[pick.id] = true;
+      chosen.push(pick.id);
+    }
+    return chosen;
+  }
+
+  // 采样一条目集合：强制集（forced，id→true 全选）+ 加权随机补齐到 cap。
+  function sampleSet(items, cap, forced, rng) {
+    var chosen = [];
+    var seen = {};
+    safeArray(items, 20).forEach(function (item) {
+      if (item && item.id && forced[String(item.id)]) {
+        chosen.push(String(item.id));
+        seen[String(item.id)] = true;
+      }
+    });
+    var pool = safeArray(items, 20).filter(function (item) {
+      return item && item.id && !seen[String(item.id)];
+    }).map(function (item) {
+      var count = Array.isArray(item.messages) ? item.messages.length : (Array.isArray(item.comments) ? item.comments.length : 0);
+      return { id: String(item.id), score: 1 + Math.min(count, 20) };
+    });
+    var need = Math.max(0, cap - chosen.length);
+    if (need > 0 && pool.length) samplePick(pool, need, rng).forEach(function (id) { chosen.push(id); });
+    return chosen;
+  }
+
+  // 采样视图：返回 { contacts: [id], groups: [id], posts: [id] }。
+  // 未超上限时全量（与历史行为一致）；超上限后强制集 + 加权随机。
+  function sampleEntries(chats, forum, rng) {
+    rng = rng || Math.random;
+    var chatObj = safeObject(chats);
+    var contacts = safeArray(chatObj.contacts, 20);
+    var groups = safeArray(chatObj.groups, 6);
+    var posts = safeArray(safeObject(forum).posts, 20);
+    var out = { contacts: [], groups: [], posts: [] };
+    if (contacts.length <= MAX_INJECT_CONTACTS) {
+      contacts.forEach(function (c) { if (c && c.id) out.contacts.push(String(c.id)); });
+    } else {
+      var forcedC = {};
+      contacts.forEach(function (c) {
+        if (c && c.id && (String(c.id) === PLAYER_CONTACT_ID || (Number(c.unread) || 0) > 0)) forcedC[String(c.id)] = true;
+      });
+      out.contacts = sampleSet(contacts, MAX_INJECT_CONTACTS, forcedC, rng);
+    }
+    if (groups.length <= MAX_INJECT_GROUPS) {
+      groups.forEach(function (g) { if (g && g.id) out.groups.push(String(g.id)); });
+    } else {
+      var forcedG = {};
+      groups.forEach(function (g) {
+        if (!g || !g.id) return;
+        var hasPlayer = safeArray(g.messages, 24).some(function (m) { return m && /^pmg-/.test(String(m.id) || ''); });
+        if (hasPlayer) forcedG[String(g.id)] = true;
+      });
+      out.groups = sampleSet(groups, MAX_INJECT_GROUPS, forcedG, rng);
+    }
+    if (posts.length <= MAX_INJECT_POSTS) {
+      posts.forEach(function (p) { if (p && p.id) out.posts.push(String(p.id)); });
+    } else {
+      var forcedP = {};
+      posts.forEach(function (p) {
+        if (!p || !p.id) return;
+        var playerPost = String(p.owner || '') === 'player';
+        var playerComment = safeArray(p.comments, 20).some(function (c) { return c && /^pmc-/.test(String(c.id) || ''); });
+        if (playerPost || playerComment) forcedP[String(p.id)] = true;
+      });
+      out.posts = sampleSet(posts, MAX_INJECT_POSTS, forcedP, rng);
+    }
+    return out;
+  }
+
   // 玩家域实体 id 生成：按集合内现有编号取下一个（pn-<n> / pf-<n> / pi-<n> / po-<n>），
   // 确定性、重载不冲突——与传讯 pm-<seq> 同模式，玩家直写不经模型。
   function playerNextId(items, prefix) {
@@ -1070,6 +1177,10 @@
     PLAYER_CONTACT_ID: PLAYER_CONTACT_ID,
     PLAYER_THREAD_ID: PLAYER_THREAD_ID,
     MAX_PLAYER_UNREAD_ROWS: MAX_PLAYER_UNREAD_ROWS,
+    MAX_INJECT_CONTACTS: MAX_INJECT_CONTACTS,
+    MAX_INJECT_GROUPS: MAX_INJECT_GROUPS,
+    MAX_INJECT_POSTS: MAX_INJECT_POSTS,
+    sampleEntries: sampleEntries,
     blankTablet: blankTablet,
     blankState: blankState,
     blankPlayerState: blankPlayerState,
@@ -3126,7 +3237,6 @@
   // 窗口值同时是世界书归档的切分点（archived = 消息去掉最近窗口），两处必须一致。
   var RECENT_MSG_ROWS = 6;
   var RECENT_NOTE_ROWS = 3;
-  var RECENT_POST_ROWS = 3;
   var RECENT_COMMENT_ROWS = 6;
   var RECENT_LISTING_ROWS = 6;
   var RECENT_AUCTION_ROWS = 6;
@@ -3148,7 +3258,7 @@
   // 多轮对话中模型据此沿用既有 id 与未变化行——重新生成的内容才能与已同步数据关联。
   // 值内的竖线/换行会被清洗，保证行语法合法。封印功能不进基线。
   // 超出最近窗口的旧数据只以 archived 行出现（正文不注入），完整历史在世界书归档中按关键词召回。
-  function buildCurrent(state, flags) {
+  function buildCurrent(state, flags, rng) {
     function on(id) { return !flags || flags[id] !== false; }
     function v(value, cap) {
       return cleanText(value, cap || 3000).replace(/[｜|\t\n\r]/g, ' ');
@@ -3159,6 +3269,9 @@
       return 'archived｜' + type + '｜' + id + '｜' + summary;
     }
     var s = safeObject(state);
+    // 条目级采样视图：联系人/群聊/帖子超过上限后每轮只注入采样子集（活跃度加权 +
+    // 玩家交互强制包含），隐藏条目完全不出现；渲染/存储/评估/世界书归档不受影响。
+    var sample = (on('msg') || on('forum')) ? sampleEntries(s.chats, s.forum, rng) : { contacts: [], groups: [], posts: [] };
     var sections = [];
     function sec(tag) {
       var item = { tag: tag, rows: [] };
@@ -3180,7 +3293,10 @@
     if (on('msg')) {
       var m = sec('msg');
       var chats = safeObject(s.chats);
-      safeArray(chats.contacts, 10).forEach(function (contact) {
+      var chatList = safeArray(chats.contacts, 20).filter(function (c) {
+        return c && c.id && sample.contacts.indexOf(String(c.id)) >= 0;
+      });
+      chatList.forEach(function (contact) {
         if (!contact || !hasText(contact.name) || !contact.id) return;
         var isPlayerContact = String(contact.id) === CORE.PLAYER_CONTACT_ID;
         m.rows.push({ text: 'contact｜' + v(contact.id, 160) + '｜' + v(contact.name, 120) + '｜' + v(contact.relation, 120) + '｜' + v(contact.time, 80) + '｜' + (Number(contact.unread) || 0) + '｜' + v(contact.preview, 300), drop: false });
@@ -3220,7 +3336,10 @@
           m.rows.push({ text: 'msg｜' + v(contact.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: true });
         });
       });
-      safeArray(chats.groups, 6).forEach(function (group) {
+      var groupList = safeArray(chats.groups, 6).filter(function (g) {
+        return g && g.id && sample.groups.indexOf(String(g.id)) >= 0;
+      });
+      groupList.forEach(function (group) {
         if (!group || !hasText(group.name) || !group.id) return;
         m.rows.push({ text: 'group｜' + v(group.id, 160) + '｜' + v(group.name, 120) + '｜' + (Number(group.members) || 0) + '｜' + v(group.time, 80) + '｜' + (Number(group.unread) || 0) + '｜' + v(group.preview, 300), drop: false });
         var rows = safeArray(group.messages, 24);
@@ -3234,8 +3353,10 @@
     }
     if (on('forum')) {
       var f = sec('forum');
-      var posts = safeArray(safeObject(s.forum).posts, 20);
-      posts.forEach(function (post, index) {
+      var postList = safeArray(safeObject(s.forum).posts, 20).filter(function (p) {
+        return p && p.id && sample.posts.indexOf(String(p.id)) >= 0;
+      });
+      postList.forEach(function (post) {
         if (!post || !hasText(post.title) || !post.id) return;
         var isPlayerPost = String(post.owner || '') === 'player';
         if (isPlayerPost) {
@@ -3250,10 +3371,8 @@
           });
           return;
         }
-        if (index < posts.length - RECENT_POST_ROWS) {
-          f.rows.push({ text: archived('post', v(post.id, 160), v(post.title, 200)), drop: false });
-          return;
-        }
+        // 采样选中的帖子全行注入（帖子级裁剪由采样完成，不再有帖子级 archived 行）；
+        // 消息级窗口（评论）保留。
         f.rows.push({ text: 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0), drop: true });
         var comments = safeArray(post.comments, 20);
         var hidden = comments.length - RECENT_COMMENT_ROWS;
@@ -3457,17 +3576,18 @@
     });
     lines.push(en ? 'No generic templates, no placeholder people, no empty items; everything must be tied to this turn.' : '不得使用通用模板、陌生占位人或空项；所有内容与本轮剧情强相关。');
     // 玩家传讯通道规则：yz-player 联系人是真实事件，只读维护，回复用 +msg 追加。
-    // 群聊中的玩家发言（sender 为玩家名、id 形如 pmg-* 的消息）同属真实事件。
+    // 基线是采样视图：联系人/群聊超过上限后每轮只注入活跃子集。
     if (on('msg')) {
       lines.push(en
-        ? '- Player channel: the yz-player contact in the baseline is a real player messaging you from outside the world. Its rows and unread count are maintained by the artifact: never rewrite, delete, copy or recreate that contact, and never invent messages from it. To reply, append one +msg｜yz-player｜new-message-id｜self｜absolute date｜your reply. Group chat messages whose sender is the player (ids like pmg-1) are real statements by the player: never rewrite, delete, forge or recreate them; reply with a normal +gmsg row under your own identity.'
-        : '- 传讯通道：基线中 yz-player 联系人是持有玉兆的外界玩家与你的传讯。该联系人的消息与未读数是真实事件，由法器维护：不得改写、删除、复制或新建该联系人，也不得凭空编造其消息。要回复时用 +msg｜yz-player｜新消息id｜self｜绝对时间｜回复内容 追加一行即可。群聊中发送者为玩家（id 形如 pmg-1）的消息是玩家的真实发言：不得改写、删除、伪造或重建，用普通 +gmsg 行以你自己的身份回复即可。');
+        ? '- Player channel: the yz-player contact in the baseline is a real player messaging you from outside the world. Its rows and unread count are maintained by the artifact: never rewrite, delete, copy or recreate that contact, and never invent messages from it. To reply, append one +msg｜yz-player｜new-message-id｜self｜absolute date｜your reply. Group chat messages whose sender is the player (ids like pmg-1) are real statements by the player: never rewrite, delete, forge or recreate them; reply with a normal +gmsg row under your own identity. The baseline is a sampled view: when contacts or groups exceed the limit, only an active subset is injected each round. Entries that are absent from the baseline still exist: never recreate, delete or duplicate them, and never claim in the narrative that they vanished.'
+        : '- 传讯通道：基线中 yz-player 联系人是持有玉兆的外界玩家与你的传讯。该联系人的消息与未读数是真实事件，由法器维护：不得改写、删除、复制或新建该联系人，也不得凭空编造其消息。要回复时用 +msg｜yz-player｜新消息id｜self｜绝对时间｜回复内容 追加一行即可。群聊中发送者为玩家（id 形如 pmg-1）的消息是玩家的真实发言：不得改写、删除、伪造或重建，用普通 +gmsg 行以你自己的身份回复即可。基线上未出现的联系人/群聊仍存在（基线是采样视图，每轮只注入活跃子集）：不得重建、删除或复制，也不得在叙事中宣称其消失。');
     }
     // 玩家发帖规则：owner=player 的论坛帖子是玩家的真实发帖，只读维护，可用 +comment 评论。
+    // 基线是采样视图：帖子超过上限后每轮只注入活跃子集。
     if (on('forum')) {
       lines.push(en
-        ? '- Player posts: forum rows whose owner is player (the trailing field of post rows in the baseline) are real posts by the player. Never rewrite, delete, copy or recreate them, and never invent posts from the player. You may comment on any post, including theirs, with +comment rows. Comments posted by the player (ids like pmc-1) are real statements: never rewrite or delete them; reply with your own +comment rows.'
-        : '- 玩家发帖：基线中 post 行尾 owner 为 player 的帖子是玩家的真实发帖。不得改写、删除、复制或重建这些帖子，也不得凭空编造玩家的帖子；可以用 +comment 行在任意帖子（包括玩家的）下评论。玩家发布的评论（id 形如 pmc-1）是玩家的真实发言：不得改写或删除，用你自己的 +comment 行回复即可。');
+        ? '- Player posts: forum rows whose owner is player (the trailing field of post rows in the baseline) are real posts by the player. Never rewrite, delete, copy or recreate them, and never invent posts from the player. You may comment on any post, including theirs, with +comment rows. Comments posted by the player (ids like pmc-1) are real statements: never rewrite or delete them; reply with your own +comment rows. The baseline is a sampled view: when posts exceed the limit, only an active subset is injected each round. Posts that are absent from the baseline still exist: never recreate, delete or duplicate them, and never claim in the narrative that they vanished.'
+        : '- 玩家发帖：基线中 post 行尾 owner 为 player 的帖子是玩家的真实发帖。不得改写、删除、复制或重建这些帖子，也不得凭空编造玩家的帖子；可以用 +comment 行在任意帖子（包括玩家的）下评论。玩家发布的评论（id 形如 pmc-1）是玩家的真实发言：不得改写或删除，用你自己的 +comment 行回复即可。基线上未出现的帖子仍存在（基线是采样视图，每轮只注入活跃子集）：不得重建、删除或复制，也不得在叙事中宣称其消失。');
     }
     // issue 回声：当前未达标项（≤3 条，按 lang 选语种），要求模型用 + 行补齐。
     var issueItems = (Array.isArray(ctx.issues) ? ctx.issues : []).slice(0, 3).map(function (issue) {
