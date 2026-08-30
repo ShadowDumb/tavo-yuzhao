@@ -23,6 +23,7 @@
 
 ### 修复
 
+- **侧边栏清除确认 toast 按钮被裁掉**：`.yz-toast` 原为 nowrap+overflow:hidden，长文案（如清除确认）会把行尾「确认清除」按钮挤出可视区——带操作按钮的 toast 加 `has-action` 类改为可换行、不裁剪，按钮始终可见
 - **侧边栏「重建玉兆数据」文案歧义**：用户可能理解为清除玉兆数据——改为「从快照恢复玉兆数据」（en: Restore artifact data from snapshot），同步修正诊断页行动指引引用
 - **玩家域舆图泄漏 `undefined` 占位**：无当前所在地但有行踪/地点时（玩家域无 current 写入路径），renderMap hero 未初始化被拼进页面——初始化为空串；角色域/玩家域各加回归测试
 - **六期评审 P0 修复**：跨域切换 nav 不重置（私有子页回退根视图，manage/sync 玩家域强制回主页）；致命操作确认载明后果（永久清除 + 3 秒 armed 倒计时）；禁用态入口语义（`resync-history` 门控 + stale 分支）；FAB 遮挡（打开玉兆时隐藏）；FAB chatActive 启动兜底（主动探测 `tavoApi.chat.current()`，插件重载后不永久隐藏）；主页隐形圆环拦截点击（`pointer-events:none`）；角色回复未读闭环（镜像置 unread，列表/主页亮角标）；发送反馈闭环（镜像失败标「未送达」+ 重发）；管理页导出→导入 round-trip 断裂（按 pretty 文本长度校验）；导入覆盖提示；论坛未读清零（打开详情即 `clearPostUnread`，玩家帖 `seen` 游标）；发帖保存后列表不同步（await 镜像后 backNav）；芥子删除武装覆盖未保存编辑（局部更新）；IME 中文输入被每键重渲染打断（`isComposing` 跳过）；时间戳 UTC 与干支历混排（改本地时区）；打开聊天弹回最旧消息（渲染后滚动到底）；重建入口反馈

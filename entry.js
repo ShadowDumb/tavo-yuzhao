@@ -5253,6 +5253,9 @@
     // display:none，toast 若在 overlay 内则完全不可见（长按 FAB 复位/侧边栏重建等场景）。
     '#yz1-toast{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:' + (Z_INDEX_TOP + 1) + ';pointer-events:none;max-width:88vw}',
     '.yz-toast{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);background:rgba(6,20,16,.94);border:1px solid rgba(150,255,215,.3);color:#eaf7f1;padding:8px 14px;border-radius:20px;font-size:12px;opacity:0;pointer-events:none;transition:opacity .25s;white-space:nowrap;max-width:88%;overflow:hidden;text-overflow:ellipsis}',
+    // 带操作按钮的 toast（撤销/确认等）：文案可能较长（如清除确认），nowrap+overflow 会把
+    // 按钮挤出可视区——改为允许换行、不裁剪，保证按钮始终可见。
+    '.yz-toast.has-action{white-space:normal;max-width:92%;overflow:visible;text-overflow:clip;line-height:1.5}',
     '.yz-toast .yz-toast-action{pointer-events:auto;margin-left:10px;background:rgba(120,255,200,.12);border:1px solid rgba(150,255,215,.4);color:#a8e6c8;border-radius:12px;padding:2px 10px;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap}',
     '.yz-toast.show{opacity:1}',
     '.yz-toast.bad{border-color:rgba(255,140,120,.5)}',
@@ -5510,7 +5513,7 @@
     function clearToast() {
       clearTimeout(toastTimer);
       var toast = hostDocument.getElementById('yz1-toast');
-      if (toast) { toast.classList.remove('show', 'bad'); toast.innerHTML = ''; }
+      if (toast) { toast.classList.remove('show', 'bad', 'has-action'); toast.innerHTML = ''; }
     }
 
     // 可选内嵌操作按钮（撤销/确认等）：text 用文本节点（防注入），按钮走委托。
@@ -5529,6 +5532,7 @@
         toast.appendChild(btn);
       }
       toast.classList.toggle('bad', !!bad);
+      toast.classList.toggle('has-action', !!(action && action.label));
       toast.classList.add('show');
       toastTimer = setTimeout(clearToast, duration || 2400);
     }

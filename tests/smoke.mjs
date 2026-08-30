@@ -150,6 +150,11 @@ ok(/showToast\(dict\.toast\.clearConfirm, true, \{ label: dict\.toast\.clearConf
 ok(/Object\.keys\(CORE\.FEATURE_FIELDS\)\.forEach/.test(source) && /player\.myComments = \[\];/.test(source), 'clearAllData 归零角色域与玩家域全部功能字段 + 评论源');
 ok(/plugin\.onSidebarAction\('resync-history'/.test(source) && /plugin\.onSidebarAction\('clear-data'/.test(source), '侧边栏 resync-history 与 clear-data 双动作并存');
 ok(/duration \|\| 2400/.test(source), 'showToast 支持确认类更长展示窗口（默认仍 2.4s）');
+// 回归保护：带操作按钮的 toast（清除确认等）文案较长，nowrap+overflow 会把按钮挤出可视区，
+// 必须允许换行且不裁剪，保证「确认清除」按钮始终可见。
+ok(/\.yz-toast\.has-action\{white-space:normal;max-width:92%;overflow:visible;text-overflow:clip;line-height:1.5\}/.test(source), 'has-action toast 允许换行、不裁剪（按钮不被挤出）');
+ok(/toast\.classList\.toggle\('has-action', !!\(action && action\.label\)\);/.test(source), 'showToast 按是否有操作按钮切换 has-action 类');
+ok(/toast\.classList\.remove\('show', 'bad', 'has-action'\);/.test(source), 'clearToast 复位 has-action 类');
 // 回归保护：× 关闭玉兆后 FAB 必须立即恢复可见（close() 内按同一门控刷新 fab.hidden，
 // 否则悬浮球一直消失，重开玉兆只能走侧边栏，步骤繁琐）。
 const closeBody = source.slice(source.indexOf('function close()'), source.indexOf('function bindOverlay'));
