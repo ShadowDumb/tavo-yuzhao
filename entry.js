@@ -5182,6 +5182,8 @@
       domain = 'character';
       resetSearch();
       render();
+      // 打开时按当前视觉视口收敛玉兆高度（覆盖 iOS 底部工具栏等 vv < 100vh 的场景）。
+      if (typeof overlay.__yzFit === 'function') overlay.__yzFit();
       // 打开时把焦点移入对话框。
       var dialog = overlay.querySelector('#' + JADE_ID) || overlay;
       if (typeof dialog.focus === 'function') dialog.focus();
@@ -5271,6 +5273,32 @@
           event.preventDefault();
           first.focus();
         }
+      });
+      // 移动端键盘自适应：视觉视口随键盘抬起收缩（100vh 在 iOS WebView 不跟随），
+      // 玉兆高度收敛到可视区，否则底部玩家域输入框（composer）被键盘遮挡。
+      var vv = hostWindow.visualViewport;
+      if (vv && typeof vv.addEventListener === 'function') {
+        var fitViewport = function () {
+          var jade = overlay.querySelector('#' + JADE_ID);
+          if (!jade) return;
+          var room = vv.height - 20;
+          var normal = room >= 560;
+          jade.style.minHeight = normal ? '' : '0px';
+          jade.style.height = normal ? '' : Math.max(320, room) + 'px';
+        };
+        overlay.__yzFit = fitViewport;
+        vv.addEventListener('resize', fitViewport);
+      }
+      // 输入框聚焦时把玉兆内的输入框滚动进可视区（Android WebView 键盘行为差异兜底）。
+      overlay.addEventListener('focusin', function (event) {
+        var target = event.target;
+        if (!target || !target.getAttribute) return;
+        if (target.getAttribute('data-msg-input') === null && target.getAttribute('data-group-msg-input') === null &&
+            target.getAttribute('data-comment-input') === null && target.getAttribute('data-search-input') === null) return;
+        if (!hostWindow.visualViewport) return;
+        setTimeout(function () {
+          if (target.isConnected) target.scrollIntoView({ block: 'nearest' });
+        }, 300);
       });
     }
 
