@@ -5993,9 +5993,9 @@
         // 不能每次按键都被钉回底部。
         var savedScroll = ((nav.view === 'chat' || nav.view === 'gchat') && !search) ? null : pageNode.scrollTop;
         pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, sendFailed: sendFailed, sending: sending }, domain, playerState);
-        // 首页无导航历史时隐藏返回按钮：nav.stack 为空表示当前是入口页。
+        // 首页无导航历史时隐藏返回按钮：nav.stack 为空且当前是入口页时隐藏。
         var backBtn = pageNode.querySelector('.yz-back');
-        if (backBtn) backBtn.hidden = nav.stack.length === 0;
+        if (backBtn) backBtn.hidden = nav.app === 'home' && nav.stack.length === 0;
         // 聊天详情（私讯/群聊/传讯）滚动到底部：每次重渲染后都贴最新消息，不把用户弹回最旧。
         // 但检索旧消息时不能钉底——否则每次按键都被拉回底部，看不到上面匹配的上下文。
         if ((nav.view === 'chat' || nav.view === 'gchat') && !search) {
