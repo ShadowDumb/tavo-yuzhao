@@ -159,6 +159,10 @@
   // 每轮基线最多注入的未读传讯行数；超出部分只给一条摘要行（计入预算，可淘汰但
   // 优先级最高——仅极端超限时让位，见 buildCurrent 第四轮）。
   var MAX_PLAYER_UNREAD_ROWS = 5;
+  // 玩家群聊发言（pmg-*）是真实事件：基线恒注入（最多这个条数，超出给归档摘要行）
+  // 且 drop:false——模型 full 轮必须照抄，pmg 从不在 parse 后丢失，避免镜像补回时
+  // 把历史发言追加成"最新消息"（顺序错乱）。玩家域源本身 tail(24)，此上限必达。
+  var MAX_PLAYER_GROUP_ROWS = 12;
 
   // 条目级注入采样：联系人/群聊/帖子超过上限后，每轮只向基线注入采样子集——玩家
   // 交互过的条目必定注入（真实事件，消息行必须挂在可见条目下），其余按活跃度加权
@@ -1204,6 +1208,7 @@
     PLAYER_CONTACT_ID: PLAYER_CONTACT_ID,
     PLAYER_THREAD_ID: PLAYER_THREAD_ID,
     MAX_PLAYER_UNREAD_ROWS: MAX_PLAYER_UNREAD_ROWS,
+    MAX_PLAYER_GROUP_ROWS: MAX_PLAYER_GROUP_ROWS,
     MAX_INJECT_CONTACTS: MAX_INJECT_CONTACTS,
     MAX_INJECT_GROUPS: MAX_INJECT_GROUPS,
     MAX_INJECT_POSTS: MAX_INJECT_POSTS,
@@ -2611,17 +2616,48 @@
           changed = true;
         }
         var known = {};
-        safeArray(group.messages, 24).forEach(function (m) { known[String(m && m.id)] = true; });
+        // 注意不能用 safeArray 截断到 24 遍历：数组超 24 时尾部消息会变成"未镜像"
+        // 而触发重插（pmg 漂移成最新消息）。known 必须覆盖全部现有 id。
+        group.messages.forEach(function (m) { known[String(m && m.id)] = true; });
         safeArray(source.messages, 24).forEach(function (m) {
           if (!m || m.side !== 'self' || !/^pmg-/.test(String(m.id) || '')) return;
           if (known[String(m.id)]) return;
-          // 玩家消息在角色域是「对方发的」（side=other，与传讯通道同语义）；
-          // 渲染层按视角翻转气泡左右（玩家域：玩家消息在右）。
-          group.messages.push({ id: CORE.cleanText(m.id, 160), sender: name, side: 'other', time: CORE.cleanText(m.time, 80), text: CORE.cleanText(m.text, 3000) });
+          var mirror = { id: CORE.cleanText(m.id, 160), sender: name, side: 'other', time: CORE.cleanText(m.time, 80), text: CORE.cleanText(m.text, 3000) };
+          // 插入位置：优先按 pmg 序号锚点（保持玩家发言的相对顺序）；角色域没有
+          // 任何 pmg 锚点时才追加尾部（玩家首次发言/新群组，此时确实是最新消息）。
+          // 不按尾追加是因为模型漏抄/重建后丢失的历史发言会因此被顶成"最新消息"。
+          var seqNum = 0;
+          var seqMatch = /^pmg-(\d+)$/.exec(String(m.id));
+          if (seqMatch) seqNum = Number(seqMatch[1]) || 0;
+          var lastLower = -1;
+          var firstUpper = -1;
+          group.messages.forEach(function (x, i) {
+            var xm = /^pmg-(\d+)$/.exec(String(x && x.id) || '');
+            if (!xm) return;
+            var s = Number(xm[1]) || 0;
+            if (s < seqNum) lastLower = i;
+            else if (s > seqNum && firstUpper < 0) firstUpper = i;
+          });
+          if (lastLower >= 0) group.messages.splice(lastLower + 1, 0, mirror);
+          else if (firstUpper >= 0) group.messages.splice(firstUpper, 0, mirror);
+          else group.messages.push(mirror);
           known[String(m.id)] = true;
           changed = true;
         });
-        if (group.messages.length > 24) group.messages = tail(group.messages, 24);
+        if (group.messages.length > 24) {
+          // 保尾 24，但玩家真实发言（pmg-*）豁免裁剪、保留原位：被裁掉的 pmg 会在
+          // 下一轮镜像补回时变成"最新消息"（追加尾部），顺序永久错乱。
+          var drop = group.messages.length - 24;
+          var kept = [];
+          var dropped = 0;
+          group.messages.forEach(function (mm) {
+            if (!/^pmg-/.test(String(mm && mm.id) || '')) {
+              if (dropped < drop) { dropped += 1; return; }
+            }
+            kept.push(mm);
+          });
+          group.messages = kept.length > 24 ? tail(kept, 24) : kept;
+        }
       });
       if (changed) {
         state.chats = CORE.normalizeChats(state.chats);
@@ -3437,11 +3473,26 @@
         if (!group || !hasText(group.name) || !group.id) return;
         m.rows.push({ text: 'group｜' + v(group.id, 160) + '｜' + v(group.name, 120) + '｜' + (Number(group.members) || 0) + '｜' + v(group.time, 80) + '｜' + (Number(group.unread) || 0) + '｜' + v(group.preview, 300), drop: false });
         var rows = safeArray(group.messages, 24);
-        var hidden = rows.length - RECENT_MSG_ROWS;
-        if (hidden > 0) m.rows.push({ text: archived('gmsg', v(group.id, 160), hidden + ' 条旧群消息已归档'), drop: false });
-        tail(rows, RECENT_MSG_ROWS).forEach(function (message) {
+        // 玩家群聊发言（pmg-*）是真实事件：与传讯未读行同级，恒注入（drop:false，
+        // 最多 MAX_PLAYER_GROUP_ROWS 条，超出给归档摘要行）。模型 full 轮必须照抄
+        // pmg 行，parse 后玩家消息原位保留——不会因窗口外归档而丢失、被镜像补回
+        // 时追加成"最新消息"（顺序错乱）。
+        var pmgRows = [];
+        var gmRows = [];
+        rows.forEach(function (message) {
           if (!message || !message.id) return;
+          (/^pmg-/.test(String(message.id)) ? pmgRows : gmRows).push(message);
+        });
+        var hidden = gmRows.length - RECENT_MSG_ROWS;
+        if (hidden > 0) m.rows.push({ text: archived('gmsg', v(group.id, 160), hidden + ' 条旧群消息已归档'), drop: false });
+        tail(gmRows, RECENT_MSG_ROWS).forEach(function (message) {
           m.rows.push({ text: 'gmsg｜' + v(group.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.sender, 120) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: true });
+        });
+        if (pmgRows.length > CORE.MAX_PLAYER_GROUP_ROWS) {
+          m.rows.push({ text: archived('gmsg', v(group.id, 160), (pmgRows.length - CORE.MAX_PLAYER_GROUP_ROWS) + ' 条更早的玩家发言已归档'), drop: false });
+        }
+        tail(pmgRows, CORE.MAX_PLAYER_GROUP_ROWS).forEach(function (message) {
+          m.rows.push({ text: 'gmsg｜' + v(group.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.sender, 120) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: false });
         });
       });
     }

@@ -496,6 +496,14 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   ⑪ 死代码清理（RUNTIME/APP 导出键、dict 死键、无用参数、savePlayer 辅助、stripOldProtocol、双重
   序列化）；⑫ 注释修正（side 语义/跨域写入点措辞/淘汰优先级/CRUD 枚举/召回范围等）；⑬ 测试恒真断言
   修复（气泡 self 夹具/回填断言/9500 魔法数/采样统计补强），794 项全绿。 |
+  缺陷修复：玩家群聊历史发言在后续轮次被顶成"最新消息"。根因四条：① 基线群组消息只注入最近
+  窗口，pmg 出窗口后模型全量轮无法照抄 → parse 丢失 → 镜像无条件追加尾部（每轮循环漂移）；
+  ② syncPlayerGroups 的 known 集合用 safeArray(24) 截断——数组超 24 条时尾部 pmg 全部被当
+  "未镜像"重插；③ tail(24) 裁剪不豁免 pmg，老发言被裁后又被补回尾部；④ 重插总是追加尾部。
+  修复：pmg 恒注入基线（drop:false，上限 MAX_PLAYER_GROUP_ROWS=12，超出给归档摘要行）；
+  known 覆盖全部现有 id；裁剪豁免 pmg（保留原位，从最旧非玩家消息裁起）；重插按 pmg 序号锚点
+  插入（无锚点才追加尾部）。新增回归测试 8 项（窗口外恒注入/全量轮原位保留/裁剪豁免/序号锚点
+  重插/最新消息仍是模型回复），802 项全绿。 |
 
 冒烟测试基线：`node tests/smoke.mjs`（无外部依赖），覆盖 i18n 字典、manifest/catalog 结构（sidebar 动作、yz_current 基线回环与防累积）、Core 消毒与增量矩阵场景、Protocol 解析（mode/skip/digest/current/diff 边界）与剥离、Prompt 注入/
 封印/diff 规则/回声/归档规则、diff 协议（upsert/删除/幂等/未声明 mode 识别/meta-only/底线保护/full 标志）、最新消息保尾保留（full/diff 满员追加）、文件夹计数派生、基线窗口与字符硬上限、世界书归档（建书/条目/关键词/挂接/窗口滑动/降级/封印）、Runtime 状态机（内容指纹去重/水化签名/切聊竞态/重载后 settle/空白占位保护/重建/appliedSeen/importState）、持久化队列与

@@ -1567,6 +1567,45 @@ console.log('# 双玉兆 · 玩家域与传讯通道');
   await rt.applyText('<yz_jade><yz_meta>\nturn｜t3｜李逍遥｜diff\n</yz_meta><yz_msg>\n+gmsg｜g1｜gm3｜掌门｜other｜今日｜欢迎道友\n</yz_msg></yz_jade>', 'chat-g', 'test');
   ok(rt.current().chats.groups.find((g) => g.id === 'g1').messages.some((m) => m.id === 'gm3'), '模型以普通 gmsg 自然回复群聊');
 
+  // 窗口外历史发言不丢、不被顶成"最新消息"：pmg 恒注入基线（drop:false），
+  // 全量轮照抄后原位保留；镜像裁剪豁免 pmg；重插按 pmg 序号锚点定位。
+  const gmIds = Array.from({ length: 10 }, (_, i) => ({ id: 'gm-x' + i, sender: '掌门', side: 'other', time: '今日', text: '旧讯' + i }));
+  const gbusy = rt.current().chats.groups.find((g) => g.id === 'g1');
+  gbusy.messages = gmIds.concat(gbusy.messages); // pmg-1 被 10 条模型消息挤到窗口外
+  const jNow = M.PROMPT.buildCurrent(rt.current(), {}, () => 0.42).join('\n');
+  ok(jNow.includes('gmsg｜g1｜pmg-1｜'), '窗口外玩家发言仍恒注入基线');
+  ok(!jNow.includes('gmsg｜g1｜gm-x0｜'), '窗口外模型消息走归档行（不注入行）');
+  // 全量轮照抄基线（pmg 行照抄）：parse 后 pmg 原位保留，最新消息仍是模型回复
+  const bs = jNow.split('\n').filter((line) => /^(contact|msg|group|gmsg)｜/.test(line)).join('\n');
+   const res5 = await rt.applyText('<yz_jade><yz_meta>\nturn｜t5｜李逍遥｜改写｜full\n</yz_meta>' + TABLET_OK + '<yz_msg>\n' + bs + '\ngmsg｜g1｜gm99｜掌门｜other｜今日｜最新发言\n</yz_msg></yz_jade>', 'chat-g', 'test');
+  const gAfter = rt.current().chats.groups.find((g) => g.id === 'g1');
+  ok(gAfter.messages.some((m) => m.id === 'pmg-1'), '全量轮照抄后玩家发言保留');
+  eq(gAfter.messages[gAfter.messages.length - 1].id, 'gm99', '全量轮后最新消息是模型回复（玩家历史发言未被顶到最新）');
+  ok(gAfter.messages.indexOf(gAfter.messages.find((m) => m.id === 'pmg-1')) < gAfter.messages.indexOf(gAfter.messages.find((m) => m.id === 'gm99')), '玩家历史发言位置在模型回复之前');
+
+  // 镜像裁剪豁免 pmg：超过 24 条时从最旧的非玩家消息裁起，pmg 原位保留
+  const gbig = rt.current().chats.groups.find((g) => g.id === 'g1');
+  const bigGm = Array.from({ length: 26 }, (_, i) => ({ id: 'gmb-' + i, sender: '掌门', side: 'other', time: '今日', text: '补' + i }));
+  gbig.messages = bigGm.concat(gbig.messages);
+  const playerG2 = rt.playerCurrent().chats.groups.find((g) => g.id === 'g1');
+  await rt.syncPlayerGroups('chat-g');
+  const gTrim = rt.current().chats.groups.find((g) => g.id === 'g1');
+  eq(gTrim.messages.length, 24, '群聊消息保尾 24');
+  ok(gTrim.messages.some((m) => m.id === 'pmg-1') && gTrim.messages.some((m) => m.id === 'gm99'), '裁剪豁免玩家发言（pmg 与最新模型消息都在）');
+
+  // 重插锚点：角色域有 pmg-1、缺 pmg-2 时，补回的 pmg-2 插到 pmg-1 之后（不追加尾部）
+  const gSeq = rt.current().chats.groups.find((g) => g.id === 'g1');
+  gSeq.messages = gSeq.messages.filter((m) => m.id !== 'pmg-2');
+  const playerG = rt.playerCurrent().chats.groups.find((g) => g.id === 'g1');
+  if (!playerG.messages.some((m) => m.id === 'pmg-2')) {
+    playerG.messages.push({ id: 'pmg-2', side: 'self', time: '今日', text: '第二句' });
+  }
+  await rt.syncPlayerGroups('chat-g');
+  const gSeqAfter = rt.current().chats.groups.find((g) => g.id === 'g1');
+  const pmg1Idx = gSeqAfter.messages.findIndex((m) => m.id === 'pmg-1');
+  const pmg2Idx = gSeqAfter.messages.findIndex((m) => m.id === 'pmg-2');
+  ok(pmg1Idx >= 0 && pmg2Idx === pmg1Idx + 1, '补回的玩家发言按序号插到既有锚点之后');
+
   // 模型删除群组：玩家已发言的群组经对账自动重建（玩家真实发言不丢）
   await rt.applyText('<yz_jade><yz_meta>\nturn｜t4｜李逍遥｜diff\n</yz_meta><yz_msg>\n-group｜g1\n</yz_msg></yz_jade>', 'chat-g', 'test');
   const g1c = rt.current().chats.groups.find((g) => g.id === 'g1');
