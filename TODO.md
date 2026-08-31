@@ -200,8 +200,8 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
 ### 待完成（发布前）
 
-- [ ] git commit + push origin main（含本轮 TODO 更新）
-- [ ] 打包 `../yu-zhao-v3.0.0.tpg`（manifest/entry.js/locales×2/cover.png）
+- [x] git commit `9f1d62c`（本地）；~~push origin main~~ 网络不可达，待恢复后 `git push origin main`
+- [x] 打包 `../yu-zhao-v3.0.0.tpg`（154KB，manifest 3.0.0 / entry.js / locales×2 / cover.png）
 - [ ] MCP 发布门禁：`tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
 - [ ] 真机回归：旧档升级（v2.2.1 → v3.0.0 自动迁移「我」空间）、空间切换/新建/删除+撤销、
       跨空间收发与 AI 回帖未读、只读/关发送开关生效、世界书快照恢复、触屏两击确认
