@@ -2,11 +2,11 @@
   "specVersion": 2,
   "id": "com.shadowdumb.yu-zhao",
   "name": { "$t": "plugin.name" },
-  "version": "2.2.1",
+  "version": "3.0.0",
   "entry": "entry.js",
   "author": "ShadowDumb",
   "description": { "$t": "plugin.description" },
-  "releaseNotes": { "$t": "releaseNotes.2_2_1" },
+  "releaseNotes": { "$t": "releaseNotes.3_0_0" },
   "cover": "cover.png",
   "minAppVersion": "0.93.0",
   "localization": {

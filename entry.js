@@ -152,17 +152,16 @@
     };
   }
 
-  // 玩家域与角色域之间的固定传讯通道：角色域中的玩家联系人（模型在此线程自然回复）
-  // 与玩家域中的角色联系人（玩家自己的会话线程，镜像角色回复）。
-  var PLAYER_CONTACT_ID = 'yz-player';
-  var PLAYER_THREAD_ID = 'yz-character';
-  // 每轮基线最多注入的未读传讯行数；超出部分只给一条摘要行（计入预算，可淘汰但
-  // 优先级最高——仅极端超限时让位，见 buildCurrent 第四轮）。
-  var MAX_PLAYER_UNREAD_ROWS = 5;
-  // 玩家群聊发言（pmg-*）是真实事件：基线恒注入（最多这个条数，超出给归档摘要行）
-  // 且 drop:false——模型 full 轮必须照抄，pmg 从不在 parse 后丢失，避免镜像补回时
-  // 把历史发言追加成"最新消息"（顺序错乱）。玩家域源本身 tail(24)，此上限必达。
-  var MAX_PLAYER_GROUP_ROWS = 12;
+  // ---------- 用户空间 ----------
+  // 双域设计（角色域/玩家域）已废除：每份聊天由「用户空间」承载数据，所有空间同构
+  // （全套 tablet/chats/notes/forum/market/space/map 分区 + 各自的 revision/sync）。
+  // 默认空间锚定 {{char}}（代指角色）：无空间参数的协议写入落它，空间管理页可删除它、
+  // 数据到达时自动重建。sendToAI 决定该空间是否注入提示词基线；allowAIWrite 决定
+  // AI 协议是否可写它（拒写记 issue）。每个空间的 id 稳定（sp0/sp1/…），name 唯一，
+  // 默认空间 name 恒空（显示时跟随角色名）。
+  var DEFAULT_SPACE_ID = 'sp0';
+  var MAX_SPACES = 6;
+  var CURRENT_SCHEMA_VERSION = 2;
 
   // 条目级注入采样：联系人/群聊/帖子超过上限后，每轮只向基线注入采样子集——玩家
   // 交互过的条目必定注入（真实事件，消息行必须挂在可见条目下），其余按活跃度加权
@@ -229,46 +228,54 @@
 
   // 采样视图：返回 { contacts: [id], groups: [id], posts: [id] }。
   // 未超上限时全量（与历史行为一致）；超上限后强制集 + 加权随机。
-  function sampleEntries(chats, forum, rng) {
+  // 用户亲发内容（c- 前缀联系人、pm/pm-/pmg/pmc 玩家消息与评论、player 帖）必定注入
+  // ——真实事件必须可见，与「有新回复」条目对称。
+  function sampleEntries(chats, forum, rng, caps) {
     rng = rng || Math.random;
+    caps = caps || {};
+    var capContacts = caps.contacts || MAX_INJECT_CONTACTS;
+    var capGroups = caps.groups || MAX_INJECT_GROUPS;
+    var capPosts = caps.posts || MAX_INJECT_POSTS;
     var chatObj = safeObject(chats);
     var contacts = safeArray(chatObj.contacts, 20);
     var groups = safeArray(chatObj.groups, 6);
     var posts = safeArray(safeObject(forum).posts, 20);
     var out = { contacts: [], groups: [], posts: [] };
-    if (contacts.length <= MAX_INJECT_CONTACTS) {
+    if (contacts.length <= capContacts) {
       contacts.forEach(function (c) { if (c && c.id) out.contacts.push(String(c.id)); });
     } else {
       var forcedC = {};
       contacts.forEach(function (c) {
-        if (c && c.id && (String(c.id) === PLAYER_CONTACT_ID || (Number(c.unread) || 0) > 0)) forcedC[String(c.id)] = true;
+        if (!c || !c.id) return;
+        var ownThread = /^c-/.test(String(c.id));
+        if (ownThread || (Number(c.unread) || 0) > 0) forcedC[String(c.id)] = true;
       });
-      out.contacts = sampleSet(contacts, MAX_INJECT_CONTACTS, forcedC, rng);
+      out.contacts = sampleSet(contacts, capContacts, forcedC, rng);
     }
-    if (groups.length <= MAX_INJECT_GROUPS) {
+    if (groups.length <= capGroups) {
       groups.forEach(function (g) { if (g && g.id) out.groups.push(String(g.id)); });
     } else {
       var forcedG = {};
       groups.forEach(function (g) {
         if (!g || !g.id) return;
-        var hasPlayer = safeArray(g.messages, 24).some(function (m) { return m && /^pmg-/.test(String(m.id) || ''); });
-        // 有未读消息（有新回复）或含玩家发言的群组必定注入——与联系人/帖子对称。
-        if (hasPlayer || (Number(g.unread) || 0) > 0) forcedG[String(g.id)] = true;
+        var hasUser = safeArray(g.messages, 24).some(function (m) { return m && /^pmg-/.test(String(m.id) || ''); });
+        // 有未读消息（有新回复）或含用户发言的群组必定注入——与联系人/帖子对称。
+        if (hasUser || (Number(g.unread) || 0) > 0) forcedG[String(g.id)] = true;
       });
-      out.groups = sampleSet(groups, MAX_INJECT_GROUPS, forcedG, rng);
+      out.groups = sampleSet(groups, capGroups, forcedG, rng);
     }
-    if (posts.length <= MAX_INJECT_POSTS) {
+    if (posts.length <= capPosts) {
       posts.forEach(function (p) { if (p && p.id) out.posts.push(String(p.id)); });
     } else {
       var forcedP = {};
       posts.forEach(function (p) {
         if (!p || !p.id) return;
-        var playerPost = String(p.owner || '') === 'player';
-        var playerComment = safeArray(p.comments, 20).some(function (c) { return c && /^pmc-/.test(String(c.id) || ''); });
-        // 有新回复（未读）的帖子与玩家交互帖同属强制包含集（真实事件必须可见）。
-        if (playerPost || playerComment || (Number(p.unread) || 0) > 0) forcedP[String(p.id)] = true;
+        var userPost = String(p.owner || '') === 'player';
+        var userComment = safeArray(p.comments, 20).some(function (c) { return c && /^pmc-/.test(String(c.id) || ''); });
+        // 有新回复（未读）的帖子与用户交互帖同属强制包含集（真实事件必须可见）。
+        if (userPost || userComment || (Number(p.unread) || 0) > 0) forcedP[String(p.id)] = true;
       });
-      out.posts = sampleSet(posts, MAX_INJECT_POSTS, forcedP, rng);
+      out.posts = sampleSet(posts, capPosts, forcedP, rng);
     }
     return out;
   }
@@ -284,9 +291,9 @@
     return prefix + (max + 1);
   }
 
-  // 玩家域实体查找（纯函数，视图预填表单与运行时 CRUD 共用）：
-  // folder/note → notes，item/currency → space（currency 以种类为键），order → market，
-  // post → forum（玩家帖子）。
+  // 空间实体查找（纯函数，表单预填与运行时 CRUD 共用）：
+  // folder/note/contact/group → chats/notes，item/currency → space（currency 以种类为键），
+  // order → market，post → forum（用户帖子）。
   function playerFindEntity(pstate, kind, id) {
     id = String(id == null ? '' : id);
     if (kind === 'folder') return safeArray(pstate && pstate.notes && pstate.notes.folders, 10).filter(function (f) { return String(f.id) === id; })[0] || null;
@@ -295,29 +302,22 @@
     if (kind === 'currency') return safeArray(pstate && pstate.space && pstate.space.currencies, 10).filter(function (c) { return String(c.kind) === id; })[0] || null;
     if (kind === 'order') return safeArray(pstate && pstate.market && pstate.market.orders, 12).filter(function (o) { return String(o.id) === id; })[0] || null;
     if (kind === 'post') return safeArray(pstate && pstate.forum && pstate.forum.posts, 20).filter(function (p) { return String(p.id) === id; })[0] || null;
+    if (kind === 'contact') return safeArray(pstate && pstate.chats && pstate.chats.contacts, 10).filter(function (c) { return String(c.id) === id; })[0] || null;
     return null;
   }
 
-  // 玩家域状态：与角色域同构的私有数据容器，但完全不参与模型评估。
-  // 没有 revision/processedTurns/指纹/hydration——数据由玩家或本机写入，不经模型。
-  // forum 分区仅存玩家帖子（owner=player，镜像进角色域论坛成为公开数据）。
-  function blankPlayerState(chatId) {
-    return {
-      schemaVersion: 1,
-      chatId: cleanText(chatId || 'unknown', 160),
-      updatedAt: 0,
-      tablet: blankTablet(),
-      chats: { contacts: [], groups: [] },
-      notes: { folders: [], notes: [] },
-      forum: { posts: [] },
-      market: { listings: [], auctions: [], orders: [], requests: [] },
-      space: { currencies: [], items: [] },
-      map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] },
-      // 玩家在公开数据上的发言源（群聊消息在 chats.groups、论坛评论在此）：
-      // 经跨域镜像进角色域后由模型自然回复；模型不得改写（id 前缀门禁）。
-      myComments: [],
-      pluginVersion: ''
-    };
+  // 用户空间容器：与旧版 state 同构（分区 + revision/processedTurns/sync），外加空间
+  // 元信息（id/name/flags）。默认空间 name 恒空（显示时解析为角色名），isDefault 唯一。
+  function blankUserSpace(chatId, opts) {
+    opts = opts || {};
+    var base = blankState(chatId);
+    base.id = cleanText(opts.id, 40) || DEFAULT_SPACE_ID;
+    base.name = cleanText(opts.name, 120);
+    base.isDefault = opts.isDefault === true;
+    base.sendToAI = opts.sendToAI !== false;
+    base.allowAIWrite = opts.allowAIWrite !== false;
+    base.createdAt = Number(opts.createdAt) || 0;
+    return base;
   }
 
   function normalizeSide(value) {
@@ -339,6 +339,9 @@
         // 超窗截断留痕：与玩家域线程一致（archived=true 时详情页顶部显示归档说明），
         // 否则角色域旧消息悄悄消失，用户会以为被删了。
         archived: rawMessages.length > 20,
+        // seen：用户已读到「自己最后一条发言之后第几条」——未读徽标 = 尾随回复数 − seen
+        //（客户端维护，打开线程清零；模型不可见不可改）。
+        seen: nzero(contact.seen),
         messages: tail(rawMessages, 20).map(function (message) {
           message = safeObject(message);
           return {
@@ -506,23 +509,32 @@
     return tablet;
   }
 
-  function normalizeState(raw, chatId) {
-    var base = blankState(chatId || (raw && raw.chatId));
-    // 存储路径与快照路径同源消毒：过滤危险键（__proto__ 等）并限额，防持久化数据注入。
+  // 单个用户空间归一：分区字段与旧版 state 同一套归一器；元信息（id/flags）白名单清洗。
+  function normalizeUserSpace(raw, chatId) {
     raw = sanitize(safeObject(raw));
+    var base = blankState(chatId || raw.chatId);
+    base.id = cleanText(raw.id, 40);
+    base.name = cleanText(raw.name, 120);
+    base.isDefault = raw.isDefault === true || base.id === DEFAULT_SPACE_ID;
+    if (base.isDefault) base.id = DEFAULT_SPACE_ID;
+    base.sendToAI = raw.sendToAI !== false;
+    // 默认空间必须允许 AI 写入（协议写入的落点）；自定义空间按声明。
+    base.allowAIWrite = base.isDefault ? true : raw.allowAIWrite !== false;
+    base.createdAt = Number(raw.createdAt) || 0;
     base.revision = Number(raw.revision) || 0;
     base.tablet = normalizeTablet(raw.tablet);
     base.chats = normalizeChats(raw.chats);
+    // 旧双域固定通道联系人（yz-player/yz-character）归入用户线程（c- 前缀）：
+    // 迁移后自动获得用户内容门禁保护（模型不可删/改/伪造该联系人）。
+    base.chats.contacts.forEach(function (c) {
+      if (c.id === 'yz-player' || c.id === 'yz-character') c.id = 'c-' + c.id;
+    });
     base.notes = normalizeNotes(raw.notes);
     base.forum = normalizeForum(raw.forum);
     base.market = normalizeMarket(raw.market);
     base.space = normalizeSpace(raw.space);
     base.map = normalizeMap(raw.map);
     base.processedTurns = safeArray(raw.processedTurns, 80).map(function (x) { return cleanText(x, 160); }).filter(Boolean);
-    base.pluginVersion = cleanText(raw.pluginVersion, 40);
-    base.pendingFull = !!raw.pendingFull;
-    var hydration = safeObject(raw.hydration);
-    if (hydration.sig) base.hydration = { sig: cleanText(hydration.sig, 200) };
     var sync = safeObject(raw.sync);
     base.sync = Object.assign(base.sync, sync);
     base.sync.applied = safeArray(sync.applied, 10).map(function (x) { return cleanText(x, 40); }).filter(Boolean);
@@ -536,38 +548,154 @@
     return base;
   }
 
-  // 玩家域归一：复用各分区归一器，但剥离一切模型域字段（sync/revision/processedTurns/
-  // hydration/pendingFull）——玩家域不经模型评估，持久化只需本机可读的数据。
-  function normalizePlayerState(raw, chatId) {
-    var base = blankPlayerState(chatId || (raw && raw.chatId));
+  // v1 顶层状态 → 默认空间：旧版把分区数据平铺在 state 上，整体搬进 spaces[0]。
+  function migrateV1Space(raw, chatId) {
+    var sp = normalizeUserSpace(Object.assign({}, raw, { id: DEFAULT_SPACE_ID, isDefault: true, sendToAI: true, allowAIWrite: true, name: '' }), chatId);
+    return sp;
+  }
+
+  function normalizeState(raw, chatId) {
+    // 存储路径与快照路径同源消毒：过滤危险键（__proto__ 等）并限额，防持久化数据注入。
     raw = sanitize(safeObject(raw));
-    base.tablet = normalizeTablet(raw.tablet);
-    base.chats = normalizeChats(raw.chats);
-    base.notes = normalizeNotes(raw.notes);
-    // 玩家域论坛只承载玩家自己的帖子（owner=player）：镜像外的帖子不入玩家域存储。
-    var playerForum = normalizeForum(raw.forum);
-    playerForum.posts = playerForum.posts.filter(function (post) { return String(post.owner) === 'player'; });
-    base.forum = playerForum;
-    base.market = normalizeMarket(raw.market);
-    base.space = normalizeSpace(raw.space);
-    base.map = normalizeMap(raw.map);
-    // 玩家论坛评论源：白名单式归一（顶层字段，不经分区归一化器）。
-    base.myComments = safeArray(raw.myComments, 40).map(function (c) {
-      c = safeObject(c);
-      return {
-        postId: cleanText(c.postId, 160),
-        id: cleanText(c.id, 160),
-        time: cleanText(c.time, 80),
-        text: cleanText(c.text, 3000)
-      };
-    }).filter(function (c) { return c.postId && c.id && hasText(c.text); });
-    base.updatedAt = Number(raw.updatedAt) || 0;
-    base.pluginVersion = cleanText(raw.pluginVersion, 40);
-    return base;
+    var out = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      chatId: cleanText(chatId || raw.chatId || 'unknown', 160),
+      pluginVersion: cleanText(raw.pluginVersion, 40),
+      pendingFull: !!raw.pendingFull,
+      activeSpaceId: cleanText(raw.activeSpaceId, 40),
+      migratedPlayer: !!raw.migratedPlayer,
+      hydration: null,
+      spaces: [],
+      updatedAt: Number(raw.updatedAt) || 0
+    };
+    var hydration = safeObject(raw.hydration);
+    if (hydration.sig) out.hydration = { sig: cleanText(hydration.sig, 200) };
+    var list = safeArray(raw.spaces, MAX_SPACES);
+    var legacyV1 = false;
+    if (!list.length && (raw.tablet || raw.chats || raw.notes || raw.forum || raw.market || raw.space || raw.map || raw.sync || (Number(raw.revision) || 0) > 0)) {
+      // v1→v2：顶层分区数据整体迁入默认空间（无迁移窗口，读到时即完成升级）。
+      list = [raw];
+      legacyV1 = true;
+      out.pluginVersion = '';
+    }
+    var seenId = {};
+    var seenName = {};
+    var hasDefault = false;
+    list.forEach(function (entry) {
+      var sp = legacyV1 ? migrateV1Space(raw, out.chatId) : normalizeUserSpace(entry, out.chatId);
+      // id 缺失/重复按序号重发（sp<n>），name 重复的自定义空间补序号后缀保持唯一。
+      if (!sp.id || seenId[sp.id] || (!sp.isDefault && sp.id.indexOf('sp') !== 0)) sp.id = 'sp' + (out.spaces.length + 1);
+      if (sp.isDefault) {
+        if (hasDefault) return; // 多个默认标记只保留第一个。
+        hasDefault = true;
+        sp.name = '';
+      } else {
+        var name = sp.name || tr('space.untitled');
+        var suffix = 0;
+        var candidate = name;
+        while (seenName[candidate.toLowerCase()]) { suffix += 1; candidate = name + '-' + suffix; }
+        sp.name = candidate;
+        if (candidate === DEFAULT_SPACE_ID) sp.name = DEFAULT_SPACE_ID + '-x';
+      }
+      seenId[sp.id] = true;
+      seenName[sp.name.toLowerCase()] = true;
+      out.spaces.push(sp);
+    });
+    if (!hasDefault) {
+      // 默认空间可被用户删除（数据到达时由 AI 写入自动重建）：归一时不自动补。
+    }
+    if (!out.spaces.length) {
+      out.spaces.push(blankUserSpace(out.chatId, { id: DEFAULT_SPACE_ID, isDefault: true }));
+    }
+    if (!findSpaceState(out, out.activeSpaceId)) out.activeSpaceId = out.spaces[0].id;
+    return out;
+  }
+
+  // 空间定位：id 精确 → 名称精确（忽略大小写/首尾空白）→ ''/sp0 → 默认空间。
+  // 找不到返回 null（默认空间可能已被删除）。
+  function findSpaceState(state, key) {
+    var spaces = safeArray(state && state.spaces, MAX_SPACES);
+    var k = String(key == null ? '' : key).trim();
+    if (!k || k === DEFAULT_SPACE_ID) {
+      for (var d = 0; d < spaces.length; d += 1) if (spaces[d].isDefault) return spaces[d];
+      return null;
+    }
+    var i;
+    for (i = 0; i < spaces.length; i += 1) if (spaces[i].id === k) return spaces[i];
+    var lower = k.toLowerCase();
+    for (i = 0; i < spaces.length; i += 1) {
+      if (spaces[i].name.toLowerCase() === lower) return spaces[i];
+    }
+    return null;
+  }
+
+  function defaultSpaceState(state) {
+    return findSpaceState(state, DEFAULT_SPACE_ID);
+  }
+
+  // 缺省默认空间时重建（AI 写入落点；用户在空间管理里也可手动重建）。
+  function ensureDefaultSpace(state) {
+    var sp = defaultSpaceState(state);
+    if (sp) return sp;
+    sp = blankUserSpace(state.chatId, { id: DEFAULT_SPACE_ID, isDefault: true });
+    state.spaces.unshift(sp);
+    return sp;
+  }
+
+  // 空间显示名：默认空间跟随角色名（sync.roleName 由 AI 轮写入），自定义空间用自身 name。
+  function spaceDisplayName(state, space, fallback) {
+    if (!space) return fallback || '';
+    if (!space.isDefault && hasText(space.name)) return space.name;
+    return hasText(space.sync && space.sync.roleName) ? space.sync.roleName : (fallback || '');
+  }
+
+  // 顶层「有没有数据」判定：load 竞态裁决、touched 检查、世界书同步门共用。
+  function stateRevision(state) {
+    var max = 0;
+    safeArray(state && state.spaces, MAX_SPACES).forEach(function (sp) { max = Math.max(max, Number(sp.revision) || 0); });
+    return max;
+  }
+
+  function stateDataUpdatedAt(state) {
+    var max = 0;
+    safeArray(state && state.spaces, MAX_SPACES).forEach(function (sp) {
+      max = Math.max(max, Number(sp.updatedAt) || 0, Number(sp.sync && sp.sync.updatedAt) || 0);
+    });
+    return max;
   }
 
   // 功能 id 与 state 字段的对应关系：msg 功能的数据存放在 state.chats。
   var FEATURE_FIELDS = { tablet: 'tablet', msg: 'chats', notes: 'notes', forum: 'forum', market: 'market', space: 'space', map: 'map' };
+
+  // 用户线程未读（客户端语义）：用户最后一条发言（pm-N/pmg-N）之后追加的回复数 − 已见数。
+  // 未参与过的线程（无用户发言）保留模型维护的 unread，不被触碰。
+  function userTail(thread) {
+    var msgs = safeArray(thread && thread.messages, 100);
+    var last = -1;
+    msgs.forEach(function (m, i) { if (m && /^(pm-\d+|pmg-\d+)$/.test(String(m.id) || '')) last = i; });
+    return last < 0 ? -1 : msgs.length - 1 - last;
+  }
+
+  // 用户帖未读：owner=player 的帖子由客户端计数（非用户评论数 − seen 游标）；
+  // 模型在用户帖下的 +comment 追加会被计入，打开详情 markSeen 清零。
+  function postReplyCount(post) {
+    return safeArray(post && post.comments, 20).filter(function (c) { return c && String(c.owner) !== 'player'; }).length;
+  }
+
+  function recomputeThreadUnread(space) {
+    if (!space) return;
+    [safeArray(space.chats && space.chats.contacts, 10), safeArray(space.chats && space.chats.groups, 6)].forEach(function (list) {
+      list.forEach(function (thread) {
+        var tail = userTail(thread);
+        if (tail < 0) return;
+        thread.unread = Math.max(0, tail - nzero(thread.seen));
+      });
+    });
+    safeArray(space.forum && space.forum.posts, 20).forEach(function (post) {
+      if (!post || String(post.owner) !== 'player') return;
+      post.unread = Math.max(0, postReplyCount(post) - nzero(post.seen));
+    });
+  }
 
   function blankFeatureField(id) {
     if (id === 'tablet') return blankTablet();
@@ -609,10 +737,10 @@
 
   function assessMsg(chats) {
     chats = safeObject(chats);
-    // 玩家传讯联系人（yz-player）是跨域通道写入的真实事件，不是剧情数据：
-    // 不参与联系人数与每条消息数底线，避免玩家发讯反而拉低角色域达标度。
-    // 群聊里的玩家发言（pmg-*）同理不参与群聊消息数底线（玩家发言不凑达标）。
-    var contacts = safeArray(chats.contacts, 10).filter(function (c) { return String(c && c.id) !== PLAYER_CONTACT_ID; });
+    // 用户创建的联系人（c- 前缀；含旧档残留 yz-player）是用户真实数据，不是剧情数据：
+    // 不参与联系人数与每条消息数底线，避免用户发讯反而拉低空间达标度。
+    // 群聊里的用户发言（pmg-*）同理不参与群聊消息数底线（用户发言不凑达标）。
+    var contacts = safeArray(chats.contacts, 10).filter(function (c) { var id = String(c && c.id); return !/^c-/.test(id) && id !== 'yz-player'; });
     var groups = safeArray(chats.groups, 6);
     var valid = {};
     valid.contacts = contacts.length >= 2 && contacts.every(function (c) { return safeArray(c.messages, 20).length >= 2; });
@@ -735,9 +863,9 @@
       var id = cleanText(op.values[0], 160);
       if (!id) return;
       if (op.type === 'contact') {
-        // 玩家传讯联系人（yz-player）由跨域通道镜像维护，模型不得增删改（只读防护，
-        // 与 diffForum 对玩家帖子的门禁同语义；提示词亦明令禁止）。
-        if (String(id) === PLAYER_CONTACT_ID) return;
+        // 用户创建的联系人（c- 前缀）是用户真实数据，模型不得增删改（只读防护，
+        // 与 diffForum 对用户帖的门禁同语义；提示词亦明令禁止）。
+        if (/^c-/.test(id)) return;
         var at = indexOfById(out.contacts, id);
         if (op.add) {
           var name = cleanText(op.values[1], 120);
@@ -767,29 +895,24 @@
         out.contacts.forEach(function (c) { if (c.id === id) owner = c; });
         if (isGroup) { owner = null; out.groups.forEach(function (g) { if (g.id === id) owner = g; }); }
         if (!owner) return;
-        if (String(id) === PLAYER_CONTACT_ID) {
-          // yz-player 线程只读防护：模型只能追加自己的回复（+msg self 新 id）；
-          // 禁止删消息、伪造玩家侧消息（side=other）、改写既有玩家消息（pm-*），
-          // 也禁止用新的 pm-N 编号伪造玩家消息（pm-N 只由跨域通道按序生成）。
-          if (!op.add || isGroup) return;
-          if (normalizeSide(op.values[2]) !== 'self') return;
-        }
         var mid = cleanText(op.values[1], 160);
         if (!mid) return;
         var mi = indexOfById(owner.messages, mid);
         if (/^pmg-/.test(mid)) {
-          // 群聊玩家消息（pmg-*）是跨域通道镜像维护的真实发言：任何增删改一律拒绝
+          // 群聊用户发言（pmg-*）是用户真实发言：任何增删改一律拒绝
           //（覆盖、删除、伪造新 pmg-* 行都不允许），回复用普通新 id 以自己身份发言。
           return;
         }
         if (/^pm-\d+$/.test(mid)) {
-          // 玩家传讯消息（pm-N）同样只由跨域通道按序生成：模型不得伪造新的 pm-N 行
-          //（含 side=self 自回复——会被未读统计/镜像误当成玩家消息），回复用普通新 id。
+          // 用户传讯消息（pm-N）只由本机按序生成：模型不得伪造新的 pm-N 行
+          //（含改写/删除既有行），回复用普通新 id。
           return;
         }
+        if (/^pmc-/.test(mid)) return;
         if (op.add) {
-          // 玩家侧消息（pm-*，side=other）不可被模型改写覆盖；角色只允许新增/改自己的回复。
-          if (String(id) === PLAYER_CONTACT_ID && mi >= 0 && owner.messages[mi].side === 'other') return;
+          // 用户线程（c- 前缀联系人）真实事件防护：模型只可追加新行，
+          // 不得改写/覆盖既有行、不得删除（用户发言 pm-N 已由前缀门禁另行保护）。
+          if (/^c-/.test(id) && mi >= 0) return;
           var text = cleanText(isGroup ? op.values[5] : op.values[4], 3000);
           if (!hasText(text)) return;
           var message = isGroup
@@ -798,7 +921,10 @@
           // 满员时也要收下新消息：先追加，末尾的 normalizeChats 保尾截断淘汰最旧。
           if (mi >= 0) owner.messages[mi] = message;
           else owner.messages.push(message);
-        } else if (mi >= 0) owner.messages.splice(mi, 1);
+        } else if (mi >= 0) {
+          if (/^c-/.test(id)) return; // 用户线程消息不可删
+          owner.messages.splice(mi, 1);
+        }
       }
     });
     return normalizeChats(out);
@@ -1082,31 +1208,50 @@
 
   var MAX_SNAPSHOT_BYTES = 200000;
 
+  // 快照写入路由：turn 行空间名 → 目标用户空间；缺省/默认名 → 默认空间（缺失自动重建）。
+  // 拒写情形记入目标空间（或默认空间）的 sync.issues：
+  //  space.unknown（声明了不存在的空间）、space.denied（空间不允许 AI 修改）、
+  //  space.full（非默认空间只接受 diff 轮，防止全量轮抹掉用户私有数据）。
   function applySnapshot(rawState, rawSnapshot, flags) {
     var state = normalizeState(rawState);
     // 封印的功能既不参与判定也不应用数据：提示词未请求，即使快照残留旧区块也忽略。
     function on(id) { return !flags || flags[id] !== false; }
+    var snapshot = sanitize(rawSnapshot);
+    var turn = safeObject(snapshot && snapshot.turn);
+    var spaceKey = cleanText(turn.space, 120);
+    var space = spaceKey ? findSpaceState(state, spaceKey) : defaultSpaceState(state);
     var rawSize = 0;
     try { rawSize = JSON.stringify(rawSnapshot).length; } catch (_) { rawSize = MAX_SNAPSHOT_BYTES + 1; }
     if (rawSize > MAX_SNAPSHOT_BYTES) {
       var oversized = { ok: false, tablet: { ok: false }, msg: { ok: false }, notes: { ok: false }, forum: { ok: false }, market: { ok: false }, space: { ok: false }, map: { ok: false }, issues: [{ path: 'payload', code: 'payload.oversized' }], oversized: true };
-      state.sync = Object.assign({}, state.sync, { status: state.revision ? state.sync.status : 'invalid', lastError: 'oversized-payload', issues: oversized.issues, updatedAt: Date.now() });
+      var otarget = ensureDefaultSpace(state);
+      otarget.sync = Object.assign({}, otarget.sync, { status: otarget.revision ? otarget.sync.status : 'invalid', lastError: 'oversized-payload', issues: oversized.issues, updatedAt: Date.now() });
       state.updatedAt = Date.now();
       return { state: state, duplicate: false, applied: [], assessment: oversized, oversized: true };
     }
-    var snapshot = sanitize(rawSnapshot);
-    var turn = safeObject(snapshot && snapshot.turn);
+    function deny(issue) {
+      var sp = space || ensureDefaultSpace(state);
+      sp.sync = Object.assign({}, sp.sync, { issues: safeArray(sp.sync.issues, 20).concat([issue]).slice(-20), updatedAt: Date.now() });
+      state.updatedAt = Date.now();
+      return { state: state, duplicate: false, applied: [], assessment: { ok: false, part: false, apply: {}, issues: [issue] } };
+    }
+    if (!space) {
+      if (!spaceKey) space = ensureDefaultSpace(state);
+      else return deny({ path: 'space', code: 'space.unknown' });
+    }
+    if (space.allowAIWrite === false) return deny({ path: 'space', code: 'space.denied' });
     var turnId = cleanText(turn.id || ('turn-' + stableHash(snapshot)), 160);
     // 去重指纹 = 轮次 id + 快照内容哈希：同一消息经 generation:success 与 message 钩子
     // 双通道重复投递时内容一致、仍被去重；重新生成/续写常复用同一轮次 id 但内容已变，
     // 指纹含内容哈希保证按新快照应用。
-    var fingerprint = turnId.slice(0, 140) + '@' + stableHash(JSON.stringify(snapshot));
-    if (state.processedTurns.indexOf(fingerprint) >= 0) return { state: state, duplicate: true, applied: [], assessment: assess(snapshot, flags) };
-
+    var fingerprint = (space.isDefault ? '' : space.id + ':') + turnId.slice(0, 140) + '@' + stableHash(JSON.stringify(snapshot));
+    if (space.processedTurns.indexOf(fingerprint) >= 0) return { state: state, duplicate: true, applied: [], assessment: assess(snapshot, flags) };
     // diff 轮：把 +/- 操作行合并进当前分区（未提及的分区原样保留），评估在合并结果上进行。
     var diffOps = safeObject(snapshot.diff);
     var diffMode = turn.mode === 'diff' || Object.keys(diffOps).length > 0;
     var opCount = Object.keys(diffOps).length;
+    // 非默认空间只接受 diff 轮：全量/part 会整块替换用户私有数据，拒写并记 issue。
+    if (!space.isDefault && !diffMode) return deny({ path: 'space', code: 'space.full' });
     var merged = null;
     var assessment;
     if (diffMode) {
@@ -1118,12 +1263,15 @@
       ASSESS_ORDER.forEach(function (id) {
         if (!on(id)) { diffPass[id] = false; diffApply[id] = false; return; }
         var ops = safeArray(diffOps[id], 60);
-        var data = state[FEATURE_FIELDS[id]];
+        var data = space[FEATURE_FIELDS[id]];
         if (ops.length) {
-          data = DIFF_APPLIERS[id](state[FEATURE_FIELDS[id]], ops);
+          data = DIFF_APPLIERS[id](space[FEATURE_FIELDS[id]], ops);
           merged[id] = data;
         }
         var res = ASSESSORS[id](data);
+        // 用户空间的完整性底线不适用（数据是用户手记，不要求凑满剧情结构）：
+        // 有操作行即应用，仅评估分区照常记账供判定展示。
+        if (!space.isDefault) { diffApply[id] = ops.length > 0; diffPass[id] = true; return; }
         diffResults[id] = res;
         diffPass[id] = res.ok;
         // 只有本轮带操作行且合并结果达标的分区才落盘；未提及分区保留旧数据。
@@ -1140,22 +1288,22 @@
         issues: diffIssues
       };
     } else {
-      assessment = assess(snapshot, flags, state);
+      assessment = assess(snapshot, flags, space);
     }
     var part = assessment.part === true;
     var presentList = safeArray(snapshot.present, 10);
     var skippedMap = part ? safeObject(snapshot.skipped) : {};
     // meta-only：part/diff 轮除 <yz_meta> 外没有任何分区与操作行。
     var metaOnly = (part || diffMode) && !presentList.length && !Object.keys(skippedMap).length && !opCount;
-    if (metaOnly && state.revision > 0) {
+    if (metaOnly && space.revision > 0) {
       // 「本轮无变化」：状态保持原值，仅刷新摘要与轮次；不计 issue、不弹 Toast、不动 revision。
-      state.processedTurns.push(fingerprint);
-      state.processedTurns = state.processedTurns.slice(-80);
-      state.sync = Object.assign({}, state.sync, { totalTurns: (state.sync && state.sync.totalTurns || 0) + 1 });
+      space.processedTurns.push(fingerprint);
+      space.processedTurns = space.processedTurns.slice(-80);
+      space.sync = Object.assign({}, space.sync, { totalTurns: (space.sync && space.sync.totalTurns || 0) + 1 });
       state.updatedAt = Date.now();
-      state.sync = Object.assign({}, state.sync, {
+      space.sync = Object.assign({}, space.sync, {
         turnId: turnId,
-        roleName: cleanText(turn.roleName, 120),
+        roleName: space.isDefault ? cleanText(turn.roleName, 120) : space.sync.roleName,
         summary: cleanText(turn.summary, 500),
         applied: [],
         updatedAt: state.updatedAt
@@ -1166,40 +1314,39 @@
     ASSESS_ORDER.forEach(function (id) {
       if (!on(id)) return;
       if (!assessment.apply[id]) return;
-      // diff 轮的合并结果按功能 id 存放（merged[id]）；full 轮快照按 state 字段存放。
-      state[FEATURE_FIELDS[id]] = NORMALIZERS[id](merged ? merged[id] : snapshot[FEATURE_FIELDS[id]]);
+      // diff 轮的合并结果按功能 id 存放（merged[id]）；full 轮快照按空间字段存放。
+      space[FEATURE_FIELDS[id]] = NORMALIZERS[id](merged ? merged[id] : snapshot[FEATURE_FIELDS[id]]);
       applied.push(id);
     });
-    if (applied.length) state.revision += 1;
-    // 持久化强制全量标记：成功应用一轮完整全量（所有已启封分区达标）后清除；
+    if (applied.length) space.revision += 1;
+    // 持久化强制全量标记：默认空间成功应用一轮完整全量后清除；
     // diff/part 轮不清除——封印切换与版本更新后的重同步必须等真正的全量轮。
-    if (!part && !diffMode && assessment.ok) state.pendingFull = false;
-    state.processedTurns.push(fingerprint);
-    state.processedTurns = state.processedTurns.slice(-80);
+    if (space.isDefault && !part && !diffMode && assessment.ok) state.pendingFull = false;
+    space.processedTurns.push(fingerprint);
+    space.processedTurns = space.processedTurns.slice(-80);
     // 累计轮次单调计数（processedTurns 是 80 条环缓冲，会截断；总数必须独立持久化）。
-    state.sync = Object.assign({}, state.sync, { totalTurns: (state.sync && state.sync.totalTurns || 0) + 1 });
+    space.sync = Object.assign({}, space.sync, { totalTurns: (space.sync && space.sync.totalTurns || 0) + 1 });
     state.updatedAt = Date.now();
-    var previousSeen = safeArray(state.sync && state.sync.appliedSeen, 20);
+    space.updatedAt = Date.now();
+    var previousSeen = safeArray(space.sync && space.sync.appliedSeen, 20);
     // 状态公式：full/part 沿用既有语义；diff 轮失败不动旧数据，已有数据时最差也只是 partial。
     var nextStatus;
     if (part) nextStatus = metaOnly ? 'invalid' : (assessment.ok ? 'complete' : 'partial');
     else if (assessment.ok) nextStatus = 'complete';
     else if (applied.length) nextStatus = 'partial';
-    else if (diffMode && state.revision > 0) nextStatus = 'partial';
+    else if (diffMode && space.revision > 0) nextStatus = 'partial';
     else nextStatus = 'invalid';
-    state.sync = {
+    space.sync = {
       status: nextStatus,
       turnId: turnId,
-      roleName: cleanText(turn.roleName, 120),
+      // 角色名只有默认空间跟随（自定义空间保持自己的 roleName 为空）。
+      roleName: space.isDefault ? cleanText(turn.roleName, 120) : '',
       summary: cleanText(turn.summary, 500),
       applied: applied,
       // 本轮已应用的分区移出 seen：卦位重新点亮「新」徽标，用户查看（openFeature）后再次并入。
       appliedSeen: previousSeen.filter(function (seenId) { return applied.indexOf(seenId) < 0; }),
       issues: assessment.issues.slice(0, 20),
-      // 玩家传讯已读游标是跨轮持久状态：sync 整体重建时必须保留，否则注入即已读的
-      // 游标被下一轮数据覆盖，未读数随之错误反弹。负值钳制为 0（脏数据防御）。
-      playerReadCursor: nzero(Number(state.sync && state.sync.playerReadCursor)) || 0,
-      updatedAt: state.updatedAt
+      updatedAt: Date.now()
     };
     return { state: state, duplicate: false, applied: applied, assessment: assessment };
   }
@@ -1216,18 +1363,24 @@
     groupId: groupId,
     keyId: keyId,
     GROUP_ORDER: GROUP_ORDER,
-    PLAYER_CONTACT_ID: PLAYER_CONTACT_ID,
-    PLAYER_THREAD_ID: PLAYER_THREAD_ID,
-    MAX_PLAYER_UNREAD_ROWS: MAX_PLAYER_UNREAD_ROWS,
-    MAX_PLAYER_GROUP_ROWS: MAX_PLAYER_GROUP_ROWS,
+    DEFAULT_SPACE_ID: DEFAULT_SPACE_ID,
+    MAX_SPACES: MAX_SPACES,
+    CURRENT_SCHEMA_VERSION: CURRENT_SCHEMA_VERSION,
     MAX_INJECT_CONTACTS: MAX_INJECT_CONTACTS,
     MAX_INJECT_GROUPS: MAX_INJECT_GROUPS,
     MAX_INJECT_POSTS: MAX_INJECT_POSTS,
     sampleEntries: sampleEntries,
+    recomputeThreadUnread: recomputeThreadUnread,
     blankTablet: blankTablet,
     blankState: blankState,
-    blankPlayerState: blankPlayerState,
-    normalizePlayerState: normalizePlayerState,
+    blankUserSpace: blankUserSpace,
+    normalizeUserSpace: normalizeUserSpace,
+    findSpaceState: findSpaceState,
+    defaultSpaceState: defaultSpaceState,
+    ensureDefaultSpace: ensureDefaultSpace,
+    spaceDisplayName: spaceDisplayName,
+    stateRevision: stateRevision,
+    stateDataUpdatedAt: stateDataUpdatedAt,
     playerNextId: playerNextId,
     playerFindEntity: playerFindEntity,
     FEATURE_FIELDS: FEATURE_FIELDS,
@@ -1358,13 +1511,15 @@
   }
 
   function parseMeta(body) {
-    var meta = { id: '', roleName: '', summary: '', mode: '' };
+    // turn 行第 6 字段（可选）= 目标用户空间名；缺省/空白 = 默认空间（{{char}}）。
+    var meta = { id: '', roleName: '', summary: '', mode: '', space: '' };
     typed(body, ['turn', '轮次']).forEach(function (line) {
-      var values = row(line, 5);
+      var values = row(line, 6);
       meta.id = cleanText(values[1], 160);
       meta.roleName = cleanText(values[2], 120);
       meta.summary = cleanText(values[3], 500);
       meta.mode = cleanText(values[4], 40);
+      meta.space = cleanText(values[5], 120);
     });
     return meta;
   }
@@ -1790,7 +1945,6 @@
       stripFallback: tr('runtime.stripFallback'),
       fabLabel: tr('runtime.fab.label'),
       sealGlyph: tr('runtime.seal.glyph'),
-      lockGlyph: tr('runtime.seal.lockGlyph'),
       status: { complete: tr('runtime.sync.complete'), partial: tr('runtime.sync.partial'), invalid: tr('runtime.sync.invalid'), empty: tr('runtime.sync.empty') },
       toast: {
         parseError: tr('runtime.toast.parseError'),
@@ -1867,48 +2021,63 @@
       searchPlaceholder: tr('runtime.search.placeholder'),
       searchClear: tr('runtime.search.clear'),
       searchNoMatch: tr('runtime.search.noMatch'),
-      playerDomain: tr('runtime.player.domain'),
-      playerCharacterDomain: tr('runtime.player.characterDomain'),
-      playerFallbackName: tr('runtime.player.fallbackName'),
-      playerRelation: tr('runtime.player.relation'),
-      playerThreadRelation: tr('runtime.player.threadRelation'),
-      playerThreadFallback: tr('runtime.player.threadFallback'),
-      playerThreadEmpty: tr('runtime.player.threadEmpty'),
-      playerNoThread: tr('runtime.player.noThread'),
-      playerStartThread: tr('runtime.player.startThread'),
-      playerMsgPlaceholder: tr('runtime.player.msgPlaceholder'),
-      playerGroupMsgPlaceholder: tr('runtime.player.groupMsgPlaceholder'),
+      // ---------- 用户空间文案 ----------
+      space: {
+        meSpaceName: tr('space.meSpaceName'),
+        untitled: tr('space.untitled')
+      },
+      spaceShort: tr('runtime.space.short'),
+      spaceSwitchAria: tr('runtime.space.switchAria'),
+      spaceDefaultName: tr('runtime.space.defaultName'),
+      spaceLocalHint: tr('runtime.space.localHint'),
+      spaceManageTitle: tr('runtime.space.manageTitle'),
+      spaceManageSub: tr('runtime.space.manageSub'),
+      spaceManageInfo: tr('runtime.space.manageInfo'),
+      spaceTagDefault: tr('runtime.space.tagDefault'),
+      spaceTagSend: tr('runtime.space.tagSend'),
+      spaceTagWrite: tr('runtime.space.tagWrite'),
+      spaceCurrent: tr('runtime.space.current'),
+      spaceEnter: tr('runtime.space.enter'),
+      spaceSendToggle: tr('runtime.space.sendToggle'),
+      spaceWriteToggle: tr('runtime.space.writeToggle'),
+      spaceRenameLabel: tr('runtime.space.renameLabel'),
+      spaceRenameBtn: tr('runtime.space.renameBtn'),
+      spaceDelete: tr('runtime.space.delete'),
+      spaceDeleteDefault: tr('runtime.space.deleteDefault'),
+      spaceDeleteConfirm: tr('runtime.space.deleteConfirm'),
+      spaceDeleted: tr('runtime.space.deleted'),
+      spaceNewPlaceholder: tr('runtime.space.newPlaceholder'),
+      spaceCreateBtn: tr('runtime.space.createBtn'),
+      spaceCreated: tr('runtime.space.created'),
+      spaceRenamed: tr('runtime.space.renamed'),
+      spaceNameRequired: tr('runtime.space.nameRequired'),
+      spaceNameClash: tr('runtime.space.nameClash'),
+      spaceLimitReached: tr('runtime.space.limitReached'),
+      spaceDefaultWrite: tr('runtime.space.defaultWrite'),
+      spaceDefaultNameLocked: tr('runtime.space.defaultNameLocked'),
+      spaceMissingEntity: tr('runtime.space.missingEntity'),
+      spaceEntityFull: tr('runtime.space.entityFull'),
+      addContact: tr('runtime.space.addContact'),
+      contactFieldName: tr('runtime.space.contactName'),
+      contactFieldRelation: tr('runtime.space.contactRelation'),
+      msgPlaceholder: tr('runtime.space.msgPlaceholder'),
+      send: tr('runtime.space.send'),
+      msgThreadEmpty: tr('runtime.space.msgThreadEmpty'),
+      msgSentToast: tr('runtime.space.msgSent'),
+      commentSentToast: tr('runtime.space.commentSent'),
+      emptyInput: tr('runtime.space.emptyInput'),
       playerCommentPlaceholder: tr('runtime.player.commentPlaceholder'),
-      playerSend: tr('runtime.player.send'),
       playerComment: tr('runtime.player.comment'),
-      playerStatusSent: tr('runtime.player.statusSent'),
-      playerStatusRead: tr('runtime.player.statusRead'),
-      playerStatusReplied: tr('runtime.player.statusReplied'),
-      playerSentWord: tr('runtime.player.sentWord'),
-      playerRepliedWord: tr('runtime.player.repliedWord'),
-      playerHomeInfo: tr('runtime.player.homeInfo'),
-      playerManageLocked: tr('runtime.player.manageLocked'),
-      playerEmptyInput: tr('runtime.player.emptyInput'),
-      playerPublicTag: tr('runtime.player.publicTag'),
-      playerDomainShort: tr('runtime.player.domainShort'),
-      playerSentToast: tr('runtime.player.sentToast'),
-      playerSendFailed: tr('runtime.player.sendFailed'),
-      playerStatusUndelivered: tr('runtime.player.statusUndelivered'),
-      playerRetry: tr('runtime.player.retry'),
-      playerGroupSentToast: tr('runtime.player.groupSentToast'),
-      playerCommentSentToast: tr('runtime.player.commentSentToast'),
-      playerEmptyPrivate: tr('runtime.player.emptyPrivate'),
-      playerMapEmpty: tr('runtime.player.mapEmpty'),
-      playerReadOnlyOrders: tr('runtime.player.readOnlyOrders'),
-      playerReadOnlySpace: tr('runtime.player.readOnlySpace'),
+      playerPostTag: tr('runtime.player.postTag'),
       playerLockedHint: tr('runtime.player.lockedHint'),
-      playerReadOnlyForum: tr('runtime.player.readOnlyForum'),
       playerEditWord: tr('runtime.player.editWord'),
       playerNewWord: tr('runtime.player.newWord'),
       playerWord: {
         folder: tr('runtime.player.word.folder'), note: tr('runtime.player.word.note'), item: tr('runtime.player.word.item'),
-        currency: tr('runtime.player.word.currency'), order: tr('runtime.player.word.order'), post: tr('runtime.player.word.post')
+        currency: tr('runtime.player.word.currency'), order: tr('runtime.player.word.order'), post: tr('runtime.player.word.post'),
+        contact: tr('runtime.space.word.contact')
       },
+      playerFieldName: tr('runtime.player.fieldName'),
       playerFieldName: tr('runtime.player.fieldName'),
       playerFieldTitle: tr('runtime.player.fieldTitle'),
       playerFieldBody: tr('runtime.player.fieldBody'),
@@ -1929,6 +2098,7 @@
       playerSectionBounty: tr('runtime.player.sectionBounty'),
       playerSectionMarket: tr('runtime.player.sectionMarket'),
       playerPostTag: tr('runtime.player.postTag'),
+      playerLockedHint: tr('runtime.player.lockedHint'),
       playerSideBuy: tr('runtime.player.sideBuy'),
       playerSideSell: tr('runtime.player.sideSell'),
       orderStatusPending: tr('runtime.player.orderStatusPending'),
@@ -1943,13 +2113,10 @@
       playerDeleted: tr('runtime.player.deleted'),
       playerUndo: tr('runtime.player.undo'),
       playerRestored: tr('runtime.player.restored'),
-      playerFormRequired: tr('runtime.player.formRequired'),
       playerFormNeedFolder: tr('runtime.player.formNeedFolder'),
-      playerFormMissing: tr('runtime.player.formMissing'),
       playerFormKindClash: tr('runtime.player.formKindClash'),
       playerQtyStepDown: tr('runtime.player.qtyStepDown'),
       playerQtyStepUp: tr('runtime.player.qtyStepUp'),
-      playerMarkAllRead: tr('runtime.player.markAllRead'),
       deleteMessage: tr('runtime.player.deleteMessage'),
       deleteMessageConfirm: tr('runtime.player.deleteMessageConfirm'),
       deleteTrack: tr('runtime.player.deleteTrack'),
@@ -2034,7 +2201,7 @@
   // 插件版本：状态里记录生成时的版本，版本变化置持久化强制全量标记（见 doSwitchChat），
   // 让更新后的第一轮生成按新提示词重写全部数据——旧格式数据不再粘滞。
   // 发布时必须与 manifest.json 的 version 保持一致（冒烟契约测试校验）。
-  var PLUGIN_VERSION = '2.2.1';
+  var PLUGIN_VERSION = '3.0.0';
 
   function createRuntime() {
     var tavoApi = arguments[0] || {};
@@ -2045,8 +2212,6 @@
     // 重新进入被淘汰的聊天时从镜像缓存/世界书重新加载。
     var MAX_ACTIVE_CHATS = 5;
     var chats = Object.create(null);
-    // 玩家域与角色域同一生命周期：随 switchChat 加载、随 LRU 一并淘汰。
-    var playerChats = Object.create(null);
     var lru = [];
     var activeChatId = 'unknown';
     var epoch = 0;
@@ -2062,7 +2227,6 @@
       while (lru.length > MAX_ACTIVE_CHATS && lru[0] !== activeChatId) {
         var evicted = lru.shift();
         delete chats[evicted];
-        delete playerChats[evicted];
       }
     }
 
@@ -2072,6 +2236,10 @@
 
     function localSet(key, value) {
       try { if (local && typeof local.setItem === 'function') local.setItem(key, value); } catch (error) { dbg('local set failed: ' + key, error); }
+    }
+
+    function localRemove(key) {
+      try { if (local && typeof local.removeItem === 'function') local.removeItem(key); } catch (error) { dbg('local remove failed: ' + key, error); }
     }
 
     // 跨标签页同步：BroadcastChannel 在同一 origin 的 tab 间广播数据变更通知，
@@ -2088,20 +2256,13 @@
         if (!msg || msg.type !== 'yz-storage-changed') return;
         var key = msg.key;
         if (!key) return;
-        var isRole = key.indexOf(LOCAL_PREFIX) === 0;
-        var isPlayer = key.indexOf(PLAYER_LOCAL_PREFIX) === 0;
-        if (!isRole && !isPlayer) return;
-        var chatId = key.slice((isRole ? LOCAL_PREFIX : PLAYER_LOCAL_PREFIX).length);
-        if (!chatId) return;
+        if (key.indexOf(LOCAL_PREFIX) !== 0) return;
+        var chatId = key.slice(LOCAL_PREFIX.length);
+        if (!chatId || chatId !== activeChatId) return;
         var fresh = parseStored(localGet(key));
         if (!fresh) return;
-        if (isRole && chatId === activeChatId) {
-          chats[chatId] = CORE.normalizeState(fresh, chatId);
-          setTimeout(function () { render(); }, 0);
-        } else if (isPlayer) {
-          playerChats[chatId] = CORE.normalizePlayerState(fresh, chatId);
-          if (chatId === activeChatId) setTimeout(function () { render(); }, 0);
-        }
+        chats[chatId] = CORE.normalizeState(fresh, chatId);
+        setTimeout(function () { render(); }, 0);
       };
     }
 
@@ -2114,27 +2275,21 @@
     // 落盘走后台串行队列：内存态已同步更新，调用方无需等待写完成，
     // 关键路径（generation:success）因此不被存储 IO 占用预算；同 key 写入按入队顺序生效。
     // 持久化语义：本地镜像（缓存，同步写穿）+ 世界书（权威，排队合并同步）。
-    // 玩家域与角色域同链路（savePlayer 只换镜像键）。
-    function savePlayer(chatId, player) {
-      save(chatId, player, { localPrefix: PLAYER_LOCAL_PREFIX });
-    }
-    function save(chatId, state, profile) {
-      profile = profile || {};
+    // 一份状态承载全部用户空间：单存储键、单快照链。
+    function save(chatId, state) {
       var serialized;
       try { serialized = JSON.stringify(state); } catch (error) { dbg('state serialize failed', error); return saveQueue; }
       if (serialized.length > MAX_SNAPSHOT_BYTES) dbg('serialized state exceeds snapshot limit: ' + serialized.length);
       saveQueue = saveQueue.then(function () {
-        localSet((profile.localPrefix || LOCAL_PREFIX) + chatId, serialized);
+        localSet(LOCAL_PREFIX + chatId, serialized);
         // 通知其他标签页数据已变更：接收端从 localStorage 重新加载，防止 last-writer-wins。
-        if (syncChannel) { try { syncChannel.postMessage({ type: 'yz-storage-changed', key: (profile.localPrefix || LOCAL_PREFIX) + chatId }); } catch (_) {} }
+        if (syncChannel) { try { syncChannel.postMessage({ type: 'yz-storage-changed', key: LOCAL_PREFIX + chatId }); } catch (_) {} }
       }).catch(function (error) { dbg('save failed: ' + chatId, error); });
       // 世界书是权威存储：任何数据变化都排队同步（busy 合并、幂等、失败降级镜像）。
-      // 只有"有实际数据"才同步：空白/未加载状态（新聊天、玩家域尚未加载的加载窗口）
+      // 只有"有实际数据"才同步：空白/未加载状态（新聊天的加载窗口）
       // 不得覆盖已有世界书（否则用空状态清掉权威快照）。
-      var p = playerChats[chatId];
-      var playerTouched = !!p && ((Number(p.updatedAt) || 0) > 0 || CORE.safeArray(p.chats && p.chats.contacts, 10).length > 0);
-      var roleTouched = (Number(state && state.revision) || 0) > 0 || Number(state && state.sync && state.sync.updatedAt) > 0;
-      if (chatId === activeChatId && (roleTouched || playerTouched)) syncArchive(chatId);
+      var touched = CORE.stateRevision(state) > 0 || CORE.stateDataUpdatedAt(state) > 0;
+      if (chatId === activeChatId && touched) syncArchive(chatId);
       return saveQueue;
     }
 
@@ -2194,8 +2349,8 @@
       var fromWorld = !!world;
       var rawMirror = localGet(LOCAL_PREFIX + chatId);
       var mirrored = parseStored(rawMirror);
-      var mirrorRev = Number(mirrored && mirrored.revision) || 0;
-      var worldRev = Number(world && world.revision) || 0;
+      var mirrorRev = CORE.stateRevision(mirrored);
+      var worldRev = CORE.stateRevision(world);
       var mirrorTime = Number(mirrored && mirrored.updatedAt) || 0;
       var worldTime = Number(world && world.updatedAt) || 0;
       // 数据损坏检测：localStorage 有值但 JSON 解析失败（corrupted），
@@ -2217,29 +2372,6 @@
       return CORE.normalizeState(parsed, chatId);
     }
 
-    // 玩家域存储恢复链：世界书（yz-psnap 分片）→ 本地镜像 → 空白。
-    // 无 revision 可比，按 updatedAt 取最新。
-    async function loadPlayer(chatId) {
-      var world = await lorebookSnapshotState(chatId, 'player');
-      var fromWorld = !!world;
-      var rawMirror = localGet(PLAYER_LOCAL_PREFIX + chatId);
-      var mirrored = parseStored(rawMirror);
-      var mirrorCorrupted = rawMirror != null && !mirrored;
-      var parsed = null;
-      if (mirrored && (!world || (Number(mirrored.updatedAt) || 0) >= (Number(world.updatedAt) || 0))) {
-        parsed = mirrored;
-      } else if (world) {
-        parsed = world;
-      }
-      if (parsed) {
-        localSet(PLAYER_LOCAL_PREFIX + chatId, JSON.stringify(parsed));
-        if (!fromWorld && chatId === activeChatId) syncArchive(chatId);
-      } else if (mirrorCorrupted) {
-        showToast(I18N.dict().toast.storageCorrupted || '本地数据异常，已重置为空白状态', true);
-      }
-      return CORE.normalizePlayerState(parsed, chatId);
-    }
-
     async function findAssistantMessages() {
       try {
         if (!tavoApi.message || typeof tavoApi.message.find !== 'function') return [];
@@ -2252,16 +2384,21 @@
       var changed = false;
       var oversized = false;
       var assessment = null;
+      var appliedIds = [];
       snapshots.forEach(function (snapshot) {
-        var before = state.revision;
+        var before = CORE.stateRevision(state);
         var result = CORE.applySnapshot(state, snapshot, getFlags());
         state = result.state;
         assessment = result.assessment;
         if (result.oversized) oversized = true;
-        if (state.revision !== before) changed = true;
+        if (CORE.stateRevision(state) !== before || result.applied.length) changed = true;
+        result.applied.forEach(function (id) { if (appliedIds.indexOf(id) < 0) appliedIds.push(id); });
       });
-      state.sync.lastSource = source || '';
-      return { state: state, changed: changed, oversized: oversized, assessment: assessment };
+      // 各空间未读徽标随新写入重算（用户线程 = 尾随回复数 − seen）。
+      state.spaces.forEach(function (sp) { CORE.recomputeThreadUnread(sp); });
+      var dsp = CORE.defaultSpaceState(state);
+      if (dsp) dsp.sync.lastSource = source || '';
+      return { state: state, changed: changed, oversized: oversized, assessment: assessment, appliedIds: appliedIds };
     }
 
     function historySignature(rows) {
@@ -2330,7 +2467,7 @@
       // 避免被刚读出的旧持久化状态整体覆盖；但仅被 current() 读过的空白占位不算数——
       // 否则持久化状态会被空白态顶掉，随后水化标记签名还会把空白态回写覆盖存储（丢数据）。
       var existing = chats[chatId];
-      var touched = !!existing && (existing.revision > 0 || (existing.sync && existing.sync.updatedAt > 0) || safeArray(existing.processedTurns, 80).length > 0);
+      var touched = !!existing && (CORE.stateRevision(existing) > 0 || CORE.stateDataUpdatedAt(existing) > 0);
       if (!touched) chats[chatId] = loaded;
       var state = chats[chatId];
       // 版本变化（插件更新/卸载重装恢复）→ 持久化强制全量标记：下一轮生成按新提示词
@@ -2340,16 +2477,8 @@
         state.pendingFull = true;
         await save(chatId, state);
       }
-      // 玩家域与角色域先后加载：同一聊天下两份独立状态，互不共享任何字段。
-      var playerLoaded = await loadPlayer(chatId);
-      if (token !== epoch || chatId !== activeChatId) return current();
-      var playerExisting = playerChats[chatId];
-      var playerTouched = !!playerExisting && (playerExisting.updatedAt > 0 || (playerExisting.chats && safeArray(playerExisting.chats.contacts, 10).length > 0));
-      if (!playerTouched) playerChats[chatId] = playerLoaded;
-      // 跨域通道对齐：把已发送的传讯补回角色域（历史重建/清空后玩家数据仍存续）。
-      if (state.revision > 0) await syncPlayerChannel(chatId);
-      if (state.revision > 0) await syncPlayerGroups(chatId);
-      if (state.revision > 0) await syncPlayerPosts(chatId);
+      // 旧玩家域数据 →「我」空间（双域时代遗产一次性迁移；读完即删旧键）。
+      if (await migratePlayerToSpace(state)) await save(chatId, state);
       var hydrated = await hydrateHistory(chatId, token, state);
       if (hydrated.stale || token !== epoch || chatId !== activeChatId) return current();
       // 水化 await 期间可能有一轮新生成落地（chats[chatId] 已被替换为新对象）：
@@ -2357,10 +2486,6 @@
       if (chats[chatId] === state) {
         chats[chatId] = hydrated.state;
         if (hydrated.changed || hydrated.marked) await save(chatId, hydrated.state);
-        // 水化可能补入新的角色回复：镜像回玩家域会话线程。
-        if (hydrated.changed) await syncPlayerChannel(chatId);
-        if (hydrated.changed) await syncPlayerGroups(chatId);
-        if (hydrated.changed) await syncPlayerPosts(chatId);
       }
       return current();
     }
@@ -2378,875 +2503,502 @@
       // 移除；世界书快照才是当前唯一权威来源。
       var loaded = await load(chatId);
       if (token !== epoch || chatId !== activeChatId) return { stale: true, restored: false };
-      var playerLoaded = await loadPlayer(chatId);
-      if (token !== epoch || chatId !== activeChatId) return { stale: true, restored: false };
-      var roleRestored = !!loaded && (Number(loaded.revision) > 0 || Number(loaded.sync && loaded.sync.updatedAt) > 0 || CORE.safeArray(loaded.processedTurns, 80).length > 0);
-      var playerRestored = !!playerLoaded && ((Number(playerLoaded.updatedAt) || 0) > 0 || CORE.safeArray(playerLoaded.chats && playerLoaded.chats.contacts, 10).length > 0);
-      if (!roleRestored && !playerRestored) {
+      var restoredData = !!loaded && (CORE.stateRevision(loaded) > 0 || CORE.stateDataUpdatedAt(loaded) > 0);
+      if (!restoredData) {
         // 权威存储中没有玉兆数据（从未同步或已清空）：保留现有数据，不用空白覆盖。
         return { stale: false, restored: false };
       }
-      if (roleRestored) {
-        // 版本变化（插件更新/卸载重装恢复）→ 强制全量标记：下一轮生成按新提示词全量重写。
-        if (loaded.pluginVersion !== PLUGIN_VERSION) {
-          loaded.pluginVersion = PLUGIN_VERSION;
-          loaded.pendingFull = true;
-        }
-        chats[chatId] = loaded;
-        // 玩家真实数据以玩家域为源：恢复后补投回角色域（幂等，不产生副本）。
-        await syncPlayerChannel(chatId);
-        await syncPlayerGroups(chatId);
-        await syncPlayerPosts(chatId);
+      // 版本变化（插件更新/卸载重装恢复）→ 强制全量标记：下一轮生成按新提示词全量重写。
+      if (loaded.pluginVersion !== PLUGIN_VERSION) {
+        loaded.pluginVersion = PLUGIN_VERSION;
+        loaded.pendingFull = true;
       }
-      if (playerRestored) playerChats[chatId] = playerLoaded;
-      // 恢复结果落盘：镜像 + 世界书快照幂等对齐（含通道补投后的增量）。
+      chats[chatId] = loaded;
+      if (await migratePlayerToSpace(loaded)) { /* 迁移结果随下方落盘 */ }
+      // 恢复结果落盘：镜像 + 世界书快照幂等对齐。
       await save(chatId, chats[chatId] || loaded);
       return { stale: false, restored: true };
     }
 
     function current() {
       if (!chats[activeChatId]) {
-        chats[activeChatId] = CORE.blankState(activeChatId);
+        // normalizeState(null) → v2 空白（spaces 里只有一个默认空间）。
+        chats[activeChatId] = CORE.normalizeState(null, activeChatId);
         rememberChat(activeChatId);
         evictChats();
       }
       return chats[activeChatId];
     }
 
-    // 玩家域当前聊天态：与角色域完全平行的懒加载容器，绝无字段共享。
-    function playerCurrent() {
-      if (!playerChats[activeChatId]) {
-        playerChats[activeChatId] = CORE.blankPlayerState(activeChatId);
-        rememberChat(activeChatId);
-        evictChats();
-      }
-      return playerChats[activeChatId];
+    // ---------- 用户空间运行时 ----------
+    // 所有读写都落在「当前空间」上：AI 协议按 turn 行空间名路由（缺省=默认空间），
+    // 用户 CRUD 显式带 spaceId。空间数据变更统一走 saveSpace（刷 updatedAt + 未读重算 + 落盘）。
+    function activeSpace() {
+      var state = current();
+      return CORE.findSpaceState(state, state.activeSpaceId) || state.spaces[0];
     }
 
-    // ---------- 双玉兆 · 私讯通道（跨域写入点之一；另有群聊发言/论坛评论两个公开通道）----------
-    // 玩家 → 角色：玩家域「与角色会话」的每条 self 消息落为角色域 yz-player 联系人的
-    // other 消息——真实事件，不经模型评估（写什么是什么）。模型在后续轮次以普通
-    // msg 行（self）自然回复。幂等：消息 id = pm-<seq>，双方按 id upsert，重复同步不产生副本。
-    // 玩家名取 {{user}}（宿主用户身份名），拿不到时回退 catalog 文案。
-    function playerThread(playerState) {
-      var contacts = safeArray(playerState && playerState.chats && playerState.chats.contacts, 10);
-      for (var i = 0; i < contacts.length; i += 1) {
-        if (String(contacts[i].id) === CORE.PLAYER_THREAD_ID) return contacts[i];
-      }
-      return null;
+    function saveSpace(space) {
+      if (!space) return saveQueue;
+      space.updatedAt = Date.now();
+      CORE.recomputeThreadUnread(space);
+      var state = current();
+      state.updatedAt = Date.now();
+      return save(activeChatId, state);
     }
 
-    function characterContact(state) {
-      var contacts = safeArray(state && state.chats && state.chats.contacts, 10);
-      for (var i = 0; i < contacts.length; i += 1) {
-        if (String(contacts[i].id) === CORE.PLAYER_CONTACT_ID) return contacts[i];
-      }
-      return null;
+    function nextSpaceId(state) {
+      var n = 1;
+      while (state.spaces.some(function (s) { return s.id === 'sp' + n; })) n += 1;
+      return 'sp' + n;
     }
 
-    // 已读游标 = 角色域 yz-player 联系人中玩家侧消息的最高 seq（注入即已读，评审结论）。
-    // 负值钳制为 0：脏数据下 seq > cursor 恒真会把未读数全部误计。
-    function playerReadCursor(state) {
-      return nzero(Number(state && state.sync && state.sync.playerReadCursor)) || 0;
+    function spaceNameTaken(state, name, exceptId) {
+      var lower = String(name || '').trim().toLowerCase();
+      return state.spaces.some(function (s) { return s.id !== exceptId && s.name.toLowerCase() === lower; });
     }
 
-    function maxPlayerSeq(playerState) {
-      var thread = playerThread(playerState);
+    function createSpace(rawName) {
+      var name = cleanText(rawName, 120).trim();
+      if (!hasText(name)) return { ok: false, reason: 'name' };
+      var state = current();
+      if (state.spaces.length >= MAX_SPACES) return { ok: false, reason: 'full' };
+      if (spaceNameTaken(state, name) || name.toLowerCase() === DEFAULT_SPACE_ID) return { ok: false, reason: 'clash' };
+      var sp = CORE.blankUserSpace(state.chatId, { id: nextSpaceId(state), name: name, createdAt: Date.now() });
+      state.spaces.push(sp);
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true, id: sp.id };
+    }
+
+    // 默认空间名恒空（显示跟随角色名），不可重命名。
+    function renameSpace(id, rawName) {
+      var name = cleanText(rawName, 120).trim();
+      if (!hasText(name)) return { ok: false, reason: 'name' };
+      var state = current();
+      var sp = CORE.findSpaceState(state, id);
+      if (!sp) return { ok: false, reason: 'missing' };
+      if (sp.isDefault) return { ok: false, reason: 'default' };
+      if (spaceNameTaken(state, name, sp.id) || name.toLowerCase() === DEFAULT_SPACE_ID) return { ok: false, reason: 'clash' };
+      sp.name = name;
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true };
+    }
+
+    function setSpaceFlag(id, key, value) {
+      if (key !== 'sendToAI' && key !== 'allowAIWrite') return { ok: false, reason: 'key' };
+      var state = current();
+      var sp = CORE.findSpaceState(state, id);
+      if (!sp) return { ok: false, reason: 'missing' };
+      // 默认空间必须允许 AI 写入（协议缺省落点）；sendToAI 可关（纯本地角色档案）。
+      if (sp.isDefault && key === 'allowAIWrite' && value === false) return { ok: false, reason: 'default' };
+      sp[key] = !!value;
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true };
+    }
+
+    // 删除空间（含默认空间——数据到达时会自动重建）；快照返回供撤销。
+    function deleteSpace(id) {
+      var state = current();
+      var index = -1;
+      state.spaces.forEach(function (s, i) { if (s.id === id) index = i; });
+      if (index < 0) return { ok: false, reason: 'missing' };
+      var removed = state.spaces.splice(index, 1)[0];
+      if (state.activeSpaceId === id) state.activeSpaceId = state.spaces.length ? state.spaces[0].id : '';
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true, snapshot: removed };
+    }
+
+    function restoreSpace(snapshot) {
+      var sp = snapshot && snapshot.id && snapshot.name !== undefined && (snapshot.tablet || snapshot.chats) ? CORE.normalizeUserSpace(snapshot, activeChatId) : null;
+      if (!sp) return { ok: false, reason: 'bad' };
+      var state = current();
+      if (state.spaces.length >= MAX_SPACES) return { ok: false, reason: 'full' };
+      if (state.spaces.some(function (s) { return s.id === sp.id; })) return { ok: true };
+      state.spaces.push(sp);
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true };
+    }
+
+    function setActiveSpace(id) {
+      var state = current();
+      var sp = CORE.findSpaceState(state, id);
+      if (!sp) return { ok: false, reason: 'missing' };
+      state.activeSpaceId = sp.id;
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true };
+    }
+
+    // ---------- 空间内消息与实体（本机直写，不经模型） ----------
+    function spaceThread(space, threadId) {
+      if (!space) return null;
+      var found = null;
+      safeArray(space.chats && space.chats.contacts, 10).forEach(function (c) { if (c && String(c.id) === String(threadId)) found = c; });
+      if (found) return found;
+      safeArray(space.chats && space.chats.groups, 6).forEach(function (g) { if (g && String(g.id) === String(threadId)) found = g; });
+      return found;
+    }
+
+    function isGroupThread(space, threadId) {
+      var group = null;
+      safeArray(space.chats && space.chats.groups, 6).forEach(function (g) { if (g && String(g.id) === String(threadId)) group = g; });
+      return !!group;
+    }
+
+    // 用户发言 id：pm-<seq>（私讯）/ pmg-<seq>（群聊），线程内按现有最大值 +1。
+    // 这些 id 是门禁保护行——模型不得伪造、改写、删除（见 diffChats）。
+    function nextUserSeq(messages, pattern) {
       var max = 0;
-      safeArray(thread && thread.messages, 20).forEach(function (message) {
-        var n = /^pm-(\d+)$/.exec(String(message && message.id) || '');
+      safeArray(messages, 100).forEach(function (m) {
+        var n = pattern.exec(String(m && m.id) || '');
         if (n) max = Math.max(max, Number(n[1]) || 0);
       });
-      return max;
+      return max + 1;
     }
 
-    // {{user}}：宿主用户身份名（chat.persona.name）；用户身份名缺失时回退本地化文案。
-    async function resolvePlayerName() {
-      try {
-        if (tavoApi.chat && typeof tavoApi.chat.current === 'function') {
-          var chat = await Promise.resolve(tavoApi.chat.current());
-          var name = chat && chat.persona && chat.persona.name;
-          if (hasText(name)) return cleanText(name, 120);
-        }
-      } catch (error) { dbg('player name resolve failed', error); }
-      return I18N.dict().playerFallbackName;
-    }
-
-    function characterThreadName(state) {
-      return CORE.hasText(state.sync && state.sync.roleName) ? state.sync.roleName : I18N.dict().playerThreadFallback;
-    }
-
-    // 玩家传讯的未读数由客户端维护：seq > 已读游标的 other（玩家侧）消息数。
-    // 模型输出不得改动；模型自己的回复（side=self）不计入未读。
-    function refreshPlayerContact(state, contact) {
-      var cursor = playerReadCursor(state);
-      var unread = 0;
-      var latest = 0;
-      var last = null;
-      // ownIds：玩家域线程中玩家自己发过的消息 id 集合。镜像回角色域后仍算「自己发的」，
-      // 不该计为角色域未读（否则玩家切回角色域看到自己消息的未读角标）。其余 pm-N
-      // （角色视角待读）照旧按 seq>游标 计数。所有调用方统一语义。
-      var ownIds = {};
-      var player = playerCurrent();
-      var ownThread = player && CORE.safeArray(player.chats && player.chats.contacts, 10).filter(function (c) {
-        return String(c && c.id) === CORE.PLAYER_THREAD_ID;
-      })[0];
-      CORE.safeArray(ownThread && ownThread.messages, 100).forEach(function (m) {
-        if (m && m.side === 'self' && /^pm-/.test(String(m.id) || '')) ownIds[String(m.id)] = true;
-      });
-      // 未读与游标扫全量消息：头部切片会在超过 20 条时漏计/回退。
-      safeArray(contact && contact.messages, 100).forEach(function (message) {
-        if (!message) return;
-        var n = /^pm-(\d+)$/.exec(String(message.id) || '');
-        if (n) {
-          var seq = Number(n[1]) || 0;
-          latest = Math.max(latest, seq);
-          if (message.side === 'other' && seq > cursor && !ownIds[String(message.id)]) unread += 1;
-        }
-        last = message;
-      });
-      contact.unread = unread;
-      if (last) {
-        contact.preview = last.text || '';
-        contact.time = last.time || '';
-      }
-    }
-
-    // 双向对齐：① 玩家已发送的传讯补投角色域（幂等，历史重建/清空后数据仍存续）；
-    // ② 角色回复（模型产出的 self 消息）镜像回玩家域会话线程；③ 刷新未读数/预览。
-    // 通道只在消息功能启用时工作——封印 msg 后不再注入/镜像，双方各自保留已有数据。
-    // 并发安全：所有 await 都发生在检查/变更之前——检查联系人是否存在与创建必须
-    // 在同一同步段内完成，否则并发调用（send 的内部调用 + 显式调用）会创建重复联系人。
-    async function syncPlayerChannel(chatId) {
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      var flags = getFlags() || {};
-      if (flags.msg === false) return false;
-      var state = current();
-      var player = playerCurrent();
-      var thread = playerThread(player);
-      if (!thread) return false;
-      // 唯一 await：玩家名解析（{{user}}），必须先于一切状态变更。
-      var name = await resolvePlayerName();
-      // await 期间可能已切换聊天/新轮次替换了状态对象：以当前对象为准，放弃陈旧快照，
-      // 否则旧 state 的 save 会覆盖新数据。
-      if (chatId !== activeChatId || state !== current() || player !== playerCurrent()) return false;
-      var contact = characterContact(state);
-      var changed = false;
-      if (!contact) {
-        contact = { id: CORE.PLAYER_CONTACT_ID, name: name, relation: I18N.dict().playerRelation, time: '', unread: 0, preview: '', messages: [] };
-        state.chats.contacts.push(contact);
-        changed = true;
-      }
-      var contactChanged = false;
-      if (contact.name !== name || (contact.relation || '') !== I18N.dict().playerRelation) {
-        contact.name = name;
-        contact.relation = I18N.dict().playerRelation;
-        contactChanged = true;
-      }
-      // known 集合必须覆盖全部既有消息：只扫头部 20 条会在线程超过 20 条后（尾部截断前的
-      // 窗口内镜像批次）把旧 id 误判为未知而重复 push。推送后保尾截断，与角色域 normalize
-      // 同策略——新消息永远在场，最旧淘汰。
-      var known = {};
-      safeArray(contact.messages, 100).forEach(function (message) { known[String(message && message.id)] = true; });
-      safeArray(thread.messages, 100).forEach(function (message) {
-        if (!message || message.side !== 'self') return;
-        if (known[String(message.id)]) return;
-        contact.messages.push({ id: cleanText(message.id, 160), side: 'other', time: cleanText(message.time, 80), text: cleanText(message.text, 3000) });
-        known[String(message.id)] = true;
-        contactChanged = true;
-      });
-      // 内容对账：全量轮模型可能改写/捏造已投递的玩家消息（pm-*）——以玩家域为源
-      // 逐条还原 side/time/text；玩家域已不存在的 pm-N（序号超过玩家已发最大序号）
-      // 是模型伪造（玩家从未发过），直接删除；被玩家线程保尾裁剪的合法历史保留。
-      var maxPlayerSeq = 0;
-      safeArray(thread.messages, 100).forEach(function (m) {
-        var m2 = m && /^pm-(\d+)$/.exec(String(m.id) || '');
-        if (m2 && m.side === 'self') maxPlayerSeq = Math.max(maxPlayerSeq, Number(m2[1]) || 0);
-      });
-      var forged = [];
-      safeArray(contact.messages, 100).forEach(function (message, index) {
-        var mm = /^pm-(\d+)$/.exec(String(message && message.id) || '');
-        if (!mm) return;
-        var source = null;
-        safeArray(thread.messages, 100).forEach(function (m) {
-          if (m && m.side === 'self' && String(m.id) === String(message.id)) source = m;
-        });
-        if (!source) {
-          // 玩家线程里已无此消息（可能被保尾裁剪）。序号超玩家最大 → 模型伪造，删。
-          if ((Number(mm[1]) || 0) > maxPlayerSeq) forged.push(index);
-          else if (message.side === 'self') forged.push(index);
-          // 序号 ≤ 玩家最大但 side='self' 的 pm-N 是伪造：玩家消息经镜像一定是 side='other'，
-          // side='self' 的「玩家消息」只可能是模型捏造的角色侧行。
-          return;
-        }
-        if (message.side !== 'other' || message.text !== source.text || message.time !== source.time) {
-          message.side = 'other';
-          message.time = cleanText(source.time, 80);
-          message.text = cleanText(source.text, 3000);
-          contactChanged = true;
-        }
-      });
-      forged.reverse().forEach(function (index) {
-        contact.messages.splice(index, 1);
-        contactChanged = true;
-      });
-      if (contactChanged) {
-        if (contact.messages.length > 20) contact.messages = tail(contact.messages, 20);
-        // refreshPlayerContact 内部自动排除玩家自己发过的消息（不计角色域未读）。
-        refreshPlayerContact(state, contact);
-        changed = true;
-      }
-      // 角色 → 玩家：镜像角色回复（回复 = 角色域普通协议数据，玩家域只读展示）。
-      var mirrorKnown = {};
-      safeArray(thread.messages, 100).forEach(function (message) { mirrorKnown[String(message && message.id)] = true; });
-      var mirrored = false;
-      safeArray(contact.messages, 100).forEach(function (message) {
-        if (!message || message.side !== 'self') return;
-        if (mirrorKnown[String(message.id)]) return;
-        thread.messages.push({ id: cleanText(message.id, 160), side: 'other', time: cleanText(message.time, 80), text: cleanText(message.text, 3000), reply: true });
-        mirrorKnown[String(message.id)] = true;
-        mirrored = true;
-        // 角色新回复进线程即计未读：列表行与玩家域主页徽标据此亮角标（打开线程/发讯时清零）。
-        thread.unread = nzero(thread.unread) + 1;
-      });
-      if (mirrored) {
-        thread.name = characterThreadName(state);
-        if (thread.messages.length > 20) {
-          thread.messages = tail(thread.messages, 20);
-          thread.archived = true;
-        }
-        if (thread.messages.length) {
-          var lastMessage = thread.messages[thread.messages.length - 1];
-          thread.preview = lastMessage.text || '';
-          thread.time = lastMessage.time || '';
-        }
-        changed = true;
-      }
-
-      if (changed) {
-        player.updatedAt = Date.now();
-        save(chatId, state);
-        savePlayer(chatId, player);
-      }
-      return changed;
-    }
-
-    // 已读游标推进：generation:prepare 注入基线后调用（注入即已读）。
-    // 推进后重算 yz-player 未读数；游标只进不退。只计玩家侧消息（side=other），
-    // 模型自回复的 pm-N（即便存在）不推进游标，避免吞掉玩家后续真未读。
-    function markPlayerRead(chatId) {
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      if (chatId !== activeChatId) return;
-      var state = current();
-      var contact = characterContact(state);
-      var cursor = playerReadCursor(state);
-      var latest = cursor;
-      safeArray(contact && contact.messages, 100).forEach(function (message) {
-        var n = /^pm-(\d+)$/.exec(String(message && message.id) || '');
-        if (n && message && message.side === 'other') latest = Math.max(latest, Number(n[1]) || 0);
-      });
-      if (latest <= cursor) return;
-      state.sync.playerReadCursor = latest;
-      if (contact) refreshPlayerContact(state, contact);
-      save(chatId, state);
-    }
-
-    // 生成失败/取消时回退已读游标：恢复为某序号之前的值（把晚于该序号的玩家消息重新
-    // 计为未读），避免「没收到回复却被标成已读、下轮无未读角标提示」。
-    function restorePlayerReadCursor(chatId, beforeSeq) {
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      if (chatId !== activeChatId) return;
-      beforeSeq = Math.max(0, Number(beforeSeq) || 0);
-      var state = current();
-      var cursor = playerReadCursor(state);
-      if (cursor <= beforeSeq) return;
-      state.sync.playerReadCursor = beforeSeq;
-      var contact = characterContact(state);
-      if (contact) refreshPlayerContact(state, contact);
-      save(chatId, state);
-    }
-
-    // 玩家发讯：写入玩家域会话线程 + 立即投递角色域（异步落盘，不阻塞 UI）。
-    // 返回 { id, seq } 摘要；消息 id 按 seq 幂等，重复调用不产生重复行（镜像按 id 去重）。
-    function sendPlayerMessage(chatId, text) {
+    function sendSpaceMessage(spaceId, threadId, text) {
       text = cleanText(String(text == null ? '' : text), 3000);
       if (!hasText(text)) return null;
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      if (chatId !== activeChatId) return null;
-      var state = current();
-      var player = playerCurrent();
-      var thread = playerThread(player);
-      if (!thread) {
-        thread = { id: CORE.PLAYER_THREAD_ID, name: characterThreadName(state), relation: '', time: '', unread: 0, preview: '', messages: [] };
-        player.chats.contacts.push(thread);
-      }
-      var seq = maxPlayerSeq(player) + 1;
-      var message = { id: 'pm-' + seq, side: 'self', time: formatDateTime(Date.now()), text: text };
-      thread.messages.push(message);
-      if (thread.messages.length > 20) {
-        thread.messages = tail(thread.messages, 20);
-        // 超限截断要有痕迹：标记「更早传讯已归档」，UI 在会话顶部展示，否则旧消息悄悄消失。
+      var space = CORE.findSpaceState(current(), spaceId);
+      var thread = spaceThread(space, threadId);
+      if (!thread) return null;
+      var group = isGroupThread(space, threadId);
+      var message = group
+        ? { id: 'pmg-' + nextUserSeq(thread.messages, /^pmg-(\d+)$/), sender: cleanText(spaceOwnerName(space), 120), side: 'self', time: formatDateTime(Date.now()), text: text }
+        : { id: 'pm-' + nextUserSeq(thread.messages, /^pm-(\d+)$/), side: 'self', time: formatDateTime(Date.now()), text: text };
+      thread.messages = safeArray(thread.messages, 100).concat([message]);
+      var cap = group ? 24 : 20;
+      if (thread.messages.length > cap) {
+        thread.messages = tail(thread.messages, cap);
         thread.archived = true;
       }
       thread.preview = text;
       thread.time = message.time;
-      // 玩家自己发讯视为已读当前线程（回复未读清零）。
+      thread.seen = 0;
+      saveSpace(space);
+      return { id: message.id };
+    }
+
+    // 空间发言署名：默认空间用户发言署「我」语境名——统一取 {{user}}…
+    // 宿主用户身份名异步解析（chat.persona.name），缓存供同步签名使用；缺省回退空间名。
+    var ownerNameCache = '';
+    function spaceOwnerName(space) {
+      return ownerNameCache || (space && space.isDefault ? '' : cleanText(space && space.name, 120)) || '我';
+    }
+
+    async function resolveOwnerName() {
+      try {
+        if (tavoApi.chat && typeof tavoApi.chat.current === 'function') {
+          var chat = await Promise.resolve(tavoApi.chat.current());
+          var name = chat && chat.persona && chat.persona.name;
+          if (hasText(name)) { ownerNameCache = cleanText(name, 120); return ownerNameCache; }
+        }
+      } catch (error) { dbg('owner name resolve failed', error); }
+      return ownerNameCache;
+    }
+
+    // 论坛评论（用户侧真实发言）：pmc-<n> id，作者=用户身份名；模型不得触碰。
+    function sendSpaceComment(spaceId, postId, text) {
+      text = cleanText(String(text == null ? '' : text), 3000);
+      if (!hasText(text)) return null;
+      var space = CORE.findSpaceState(current(), spaceId);
+      if (!space) return null;
+      var post = null;
+      safeArray(space.forum && space.forum.posts, 20).forEach(function (p) { if (p && String(p.id) === String(postId)) post = p; });
+      if (!post) return null;
+      var comment = { id: 'pmc-' + nextUserSeq(post.comments, /^pmc-(\d+)$/), owner: 'player', author: cleanText(spaceOwnerName(space), 120), time: formatDateTime(Date.now()), text: text };
+      post.comments = safeArray(post.comments, 20).concat([comment]);
+      if (post.comments.length > 20) post.comments = tail(post.comments, 20);
+      saveSpace(space);
+      return { id: comment.id };
+    }
+
+    // 打开线程/帖子 = 已读：线程 seen 游标对齐尾随回复数；帖子 unread 清零。
+    function markSpaceThreadSeen(spaceId, threadId) {
+      var space = CORE.findSpaceState(current(), spaceId);
+      var thread = spaceThread(space, threadId);
+      if (!thread) return false;
+      thread.seen = Math.max(0, userTail(thread));
       thread.unread = 0;
-      // 注意：不在此推进角色域已读游标——那是「角色已读（基线注入）」的语义，随
-      // generation:prepare 推进；自己刚发的消息不计角色域未读由 refreshPlayerContact 排除。
-      player.updatedAt = Date.now();
-      savePlayer(chatId, player);
-      syncPlayerChannel(chatId);
-      return { id: message.id, seq: seq };
+      saveSpace(space);
+      return true;
     }
 
-    // 玩家群聊发言：源数据写入玩家域群组（id=pmg-<n> 确定性幂等），立即镜像进角色域
-    // 群组（sender=玩家名，镜像为 side=other 的对方消息）。群聊是公开数据，玩家域渲染角色域群组——消息
-    // 进场后玩家域群聊详情立即可见；模型在后续轮次以普通 gmsg 自然回复。
-    function sendPlayerGroupMessage(chatId, groupId, text) {
-      text = cleanText(String(text == null ? '' : text), 3000);
-      if (!hasText(text)) return null;
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      groupId = CORE.cleanText(groupId, 160);
-      if (chatId !== activeChatId || !groupId) return null;
-      var player = playerCurrent();
-      var group = null;
-      safeArray(player.chats && player.chats.groups, 6).forEach(function (g) { if (g && String(g.id) === groupId) group = g; });
-      if (!group) {
-        var groupName = '';
-        safeArray(current().chats.groups, 6).forEach(function (g) { if (g && String(g.id) === groupId) groupName = CORE.cleanText(g.name, 120); });
-        group = { id: groupId, name: groupName, time: '', unread: 0, preview: '', messages: [] };
-        player.chats.groups = safeArray(player.chats.groups, 6).concat([group]);
-      }
-      var seq = 0;
-      safeArray(player.chats.groups, 6).forEach(function (g) {
-        safeArray(g && g.messages, 24).forEach(function (m) {
-          var n = /^pmg-(\d+)$/.exec(String(m && m.id) || '');
-          if (n) seq = Math.max(seq, Number(n[1]) || 0);
-        });
+    function markSpacePostSeen(spaceId, postId) {
+      var space = CORE.findSpaceState(current(), spaceId);
+      if (!space) return false;
+      var touched = false;
+      safeArray(space.forum && space.forum.posts, 20).forEach(function (p) {
+        if (!p || String(p.id) !== String(postId)) return;
+        if (String(p.owner) === 'player') { p.seen = postReplyCount(p); }
+        if (nzero(p.unread) > 0) { p.unread = 0; touched = true; }
       });
-      var message = { id: 'pmg-' + (seq + 1), side: 'self', time: formatDateTime(Date.now()), text: text };
-      group.messages = safeArray(group.messages, 24).concat([message]);
-      if (group.messages.length > 24) {
-        group.messages = tail(group.messages, 24);
-        group.archived = true;
-      }
-      group.preview = text;
-      group.time = message.time;
-      player.updatedAt = Date.now();
-      savePlayer(chatId, player);
-      syncPlayerGroups(chatId);
-      return { id: message.id, seq: seq + 1 };
+      if (touched) saveSpace(space);
+      return touched;
     }
 
-    // 玩家群聊消息镜像（玩家 → 角色）：按 id 幂等合并进角色域群组；玩家已发言的
-    // 群组在角色域缺失时重建（保护玩家真实发言）。模型不得删改 pmg-* 行（diffChats
-    // 门禁），回复用普通 gmsg 新 id——回复留在角色域群组，玩家域渲染即见。
-    async function syncPlayerGroups(chatId) {
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      if (chatId !== activeChatId) return false;
-      var flags = getFlags() || {};
-      if (flags.msg === false) return false;
-      var state = current();
-      var player = playerCurrent();
-      var sources = safeArray(player.chats && player.chats.groups, 6).filter(function (g) {
-        return g && g.id && safeArray(g.messages, 24).some(function (m) { return m && /^pmg-/.test(String(m.id) || ''); });
-      });
-      if (!sources.length) return false;
-      var name = await resolvePlayerName();
-      if (chatId !== activeChatId || state !== current() || player !== playerCurrent()) return false;
-      var changed = false;
-      sources.forEach(function (source) {
-        var group = null;
-        safeArray(state.chats.groups, 6).forEach(function (g) { if (g && String(g.id) === String(source.id)) group = g; });
-        if (!group) {
-          group = { id: CORE.cleanText(source.id, 160), name: CORE.cleanText(source.name, 120), members: 0, time: '', unread: 0, preview: '', messages: [] };
-          state.chats.groups.push(group);
-          changed = true;
-        }
-        var known = {};
-        // 注意不能用 safeArray 截断到 24 遍历：数组超 24 时尾部消息会变成"未镜像"
-        // 而触发重插（pmg 漂移成最新消息）。known 必须覆盖全部现有 id。
-        group.messages.forEach(function (m) { known[String(m && m.id)] = true; });
-        safeArray(source.messages, 24).forEach(function (m) {
-          if (!m || m.side !== 'self' || !/^pmg-/.test(String(m.id) || '')) return;
-          if (known[String(m.id)]) return;
-          var mirror = { id: CORE.cleanText(m.id, 160), sender: name, side: 'other', time: CORE.cleanText(m.time, 80), text: CORE.cleanText(m.text, 3000) };
-          // 插入位置：优先按 pmg 序号锚点（保持玩家发言的相对顺序）；角色域没有
-          // 任何 pmg 锚点时才追加尾部（玩家首次发言/新群组，此时确实是最新消息）。
-          // 不按尾追加是因为模型漏抄/重建后丢失的历史发言会因此被顶成"最新消息"。
-          var seqNum = 0;
-          var seqMatch = /^pmg-(\d+)$/.exec(String(m.id));
-          if (seqMatch) seqNum = Number(seqMatch[1]) || 0;
-          var lastLower = -1;
-          var firstUpper = -1;
-          group.messages.forEach(function (x, i) {
-            var xm = /^pmg-(\d+)$/.exec(String(x && x.id) || '');
-            if (!xm) return;
-            var s = Number(xm[1]) || 0;
-            if (s < seqNum) lastLower = i;
-            else if (s > seqNum && firstUpper < 0) firstUpper = i;
-          });
-          if (lastLower >= 0) group.messages.splice(lastLower + 1, 0, mirror);
-          else if (firstUpper >= 0) group.messages.splice(firstUpper, 0, mirror);
-          else group.messages.push(mirror);
-          known[String(m.id)] = true;
-          changed = true;
-        });
-        if (group.messages.length > 24) {
-          // 保尾 24，但玩家真实发言（pmg-*）豁免裁剪、保留原位：被裁掉的 pmg 会在
-          // 下一轮镜像补回时变成"最新消息"（追加尾部），顺序永久错乱。
-          var drop = group.messages.length - 24;
-          var kept = [];
-          var dropped = 0;
-          group.messages.forEach(function (mm) {
-            if (!/^pmg-/.test(String(mm && mm.id) || '')) {
-              if (dropped < drop) { dropped += 1; return; }
-            }
-            kept.push(mm);
-          });
-          group.messages = kept.length > 24 ? tail(kept, 24) : kept;
-        }
-      });
-      if (changed) {
-        state.chats = CORE.normalizeChats(state.chats);
-        state.updatedAt = Date.now();
-        save(chatId, state);
-      }
-      return changed;
-    }
-
-    // 玩家论坛评论：源数据写入玩家域 myComments（id=pmc-<n> 确定性幂等），经
-    // syncPlayerPosts 镜像进角色域帖子（公开数据）。模型在后续轮次以 +comment 自然
-    // 回复；模型不得删改 pmc-* 评论（diffForum 门禁）。
-    function sendPlayerComment(chatId, postId, text) {
-      text = cleanText(String(text == null ? '' : text), 3000);
-      if (!hasText(text)) return null;
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      postId = CORE.cleanText(postId, 160);
-      if (chatId !== activeChatId || !postId) return null;
-      var player = playerCurrent();
-      var seq = 0;
-      safeArray(player.myComments, 40).forEach(function (c) {
-        var n = /^pmc-(\d+)$/.exec(String(c && c.id) || '');
-        if (n) seq = Math.max(seq, Number(n[1]) || 0);
-      });
-      var comment = { postId: postId, id: 'pmc-' + (seq + 1), time: formatDateTime(Date.now()), text: text };
-      // 保尾截断：与角色域评论窗口一致，避免第 41 条恰好落在 syncPlayerPosts 的
-      // 40 条截断之外不被镜像（重载后才消失）。
-      player.myComments = tail(safeArray(player.myComments, 40).concat([comment]), 40);
-      player.updatedAt = Date.now();
-      savePlayer(chatId, player);
-      syncPlayerPosts(chatId);
-      return { id: comment.id, seq: seq + 1 };
-    }
-
-    // ---------- 玩家域 CRUD（folder/note/item/currency/order/post）：玩家直写，不经模型评估 ----------
-    // kind ∈ folder/note/item/currency/order。写入前校验必填，落盘走后台队列。
-    // 返回 { ok: true } 或 { ok: false, reason }（reason 供 UI 翻译为提示文案）。
-    function playerSaveEntity(kind, raw, existingId) {
+    // ---------- 空间实体 CRUD（folder/note/item/currency/order/post/contact，用户直写） ----------
+    // 写入前校验必填；返回 { ok } 或 { ok:false, reason }（UI 翻译为提示文案）。
+    function spaceSaveEntity(spaceId, kind, raw, existingId) {
       kind = cleanText(kind, 20);
       raw = raw || {};
       existingId = String(existingId == null ? '' : existingId);
-      var player = playerCurrent();
+      var space = CORE.findSpaceState(current(), spaceId);
+      if (!space) return { ok: false, reason: 'space' };
       var reason = '';
       function fail() { return { ok: false, reason: reason }; }
 
-      if (kind === 'folder') {
+      if (kind === 'contact') {
+        var cname = cleanText(raw.name, 120);
+        if (!hasText(cname)) reason = 'name';
+        if (reason) return fail();
+        var contact = CORE.playerFindEntity(space, 'contact', existingId);
+        if (!contact && safeArray(space.chats.contacts, 10).length >= 10) return { ok: false, reason: 'full' };
+        if (contact) {
+          contact.name = cname;
+          contact.relation = cleanText(raw.relation, 120);
+        } else {
+          space.chats.contacts = safeArray(space.chats.contacts, 10).concat([{ id: CORE.playerNextId(space.chats.contacts, 'c-'), name: cname, relation: cleanText(raw.relation, 120), time: '', unread: 0, preview: '', archived: false, seen: 0, messages: [] }]);
+        }
+        space.chats = CORE.normalizeChats(space.chats);
+      } else if (kind === 'folder') {
         var name = cleanText(raw.name, 120);
         if (!hasText(name)) reason = 'name';
         if (reason) return fail();
         // 校验通过后才变更对象：失败路径不得留下已改坏/空必填的实体，
         // 否则下一次 normalize 会整行丢弃并级联其下数据。
-        var folder = CORE.playerFindEntity(player, 'folder', existingId);
+        var folder = CORE.playerFindEntity(space, 'folder', existingId);
         if (folder) folder.name = name;
         // safeArray 返回副本：新建必须把拼接结果写回状态，否则 push 在副本上丢失。
-        else player.notes.folders = safeArray(player.notes.folders, 10).concat([{ id: CORE.playerNextId(player.notes.folders, 'pf-'), name: name, count: 0 }]);
-        player.notes = CORE.normalizeNotes(player.notes);
+        else space.notes.folders = safeArray(space.notes.folders, 10).concat([{ id: CORE.playerNextId(space.notes.folders, 'pf-'), name: name, count: 0 }]);
+        space.notes = CORE.normalizeNotes(space.notes);
       } else if (kind === 'note') {
         var title = cleanText(raw.title, 200);
         var body = cleanText(raw.body, 3000);
         var folderId = cleanText(raw.folderId, 160);
         if (!hasText(title)) reason = 'title';
-        var folderOk = safeArray(player.notes.folders, 10).some(function (f) { return String(f.id) === String(folderId); });
+        var folderOk = safeArray(space.notes.folders, 10).some(function (f) { return String(f.id) === String(folderId); });
         if (!folderOk) reason = 'folder';
         if (reason) return fail();
-        var note = CORE.playerFindEntity(player, 'note', existingId);
+        var note = CORE.playerFindEntity(space, 'note', existingId);
         if (note) {
           note.title = title;
           note.body = body;
           note.locked = !!raw.locked;
-          // 编辑即内容变化：刷新时间戳，否则列表/详情仍显示旧时间，用户会以为「没存上」。
           note.updated = formatDateTime(Date.now());
         } else {
-          player.notes.notes = safeArray(player.notes.notes, 30).concat([{ id: CORE.playerNextId(player.notes.notes, 'pn-'), folderId: folderId, updated: formatDateTime(Date.now()), locked: !!raw.locked, title: title, body: body }]);
+          space.notes.notes = safeArray(space.notes.notes, 30).concat([{ id: CORE.playerNextId(space.notes.notes, 'pn-'), folderId: folderId, updated: formatDateTime(Date.now()), locked: !!raw.locked, title: title, body: body }]);
         }
-        player.notes = CORE.normalizeNotes(player.notes);
+        space.notes = CORE.normalizeNotes(space.notes);
       } else if (kind === 'item') {
         var iname = cleanText(raw.name, 120);
         if (!hasText(iname)) reason = 'name';
         if (reason) return fail();
-        var item = CORE.playerFindEntity(player, 'item', existingId);
+        var item = CORE.playerFindEntity(space, 'item', existingId);
         if (item) {
           item.name = iname;
           item.qty = Math.max(0, Number(raw.qty) || 0);
           item.grade = cleanText(raw.grade, 60);
           item.desc = cleanText(raw.desc, 3000);
-        } else player.space.items = safeArray(player.space.items, 30).concat([{ id: CORE.playerNextId(player.space.items, 'pi-'), name: iname, qty: Math.max(0, Number(raw.qty) || 0), grade: cleanText(raw.grade, 60), desc: cleanText(raw.desc, 3000) }]);
-        player.space = CORE.normalizeSpace(player.space);
+        } else space.space.items = safeArray(space.space.items, 30).concat([{ id: CORE.playerNextId(space.space.items, 'pi-'), name: iname, qty: Math.max(0, Number(raw.qty) || 0), grade: cleanText(raw.grade, 60), desc: cleanText(raw.desc, 3000) }]);
+        space.space = CORE.normalizeSpace(space.space);
       } else if (kind === 'currency') {
         var ckind = cleanText(raw.kind, 60);
         if (!hasText(ckind)) reason = 'kind';
-        // 重命名撞已有种类：目标种类已存在时拒绝（kind 是唯一键，否则出现重复行）。
         if (!reason) {
-          var clash = safeArray(player.space.currencies, 10).some(function (c) { return String(c.kind) === ckind && String(c.kind) !== existingId; });
+          var clash = safeArray(space.space.currencies, 10).some(function (c) { return String(c.kind) === ckind && String(c.kind) !== existingId; });
           if (clash) reason = 'kindClash';
         }
         if (reason) return fail();
-        // 种类是唯一键：重命名 = 移除旧种类 + 写入新种类（upsert 语义）。
-        player.space.currencies = safeArray(player.space.currencies, 10).filter(function (c) { return String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
-        player.space = CORE.normalizeSpace(player.space);
+        space.space.currencies = safeArray(space.space.currencies, 10).filter(function (c) { return String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
+        space.space = CORE.normalizeSpace(space.space);
       } else if (kind === 'order') {
         var oname = cleanText(raw.name, 120);
         if (!hasText(oname)) reason = 'name';
         if (reason) return fail();
-        var order = CORE.playerFindEntity(player, 'order', existingId);
+        var order = CORE.playerFindEntity(space, 'order', existingId);
         var side = /^(sell|卖|售)/i.test(String(raw.side)) ? 'sell' : 'buy';
         if (order) {
           order.name = oname;
           order.status = cleanText(raw.status, 40);
           order.price = cleanText(raw.price, 80);
           order.side = side;
-          // 编辑即内容变化：刷新时间戳（与新建一致），否则列表仍显示旧时间。
           order.time = formatDateTime(Date.now());
-        } else player.market.orders = safeArray(player.market.orders, 12).concat([{ id: CORE.playerNextId(player.market.orders, 'po-'), name: oname, status: cleanText(raw.status, 40), price: cleanText(raw.price, 80), time: formatDateTime(Date.now()), side: side }]);
-        player.market = CORE.normalizeMarket(player.market);
+        } else space.market.orders = safeArray(space.market.orders, 12).concat([{ id: CORE.playerNextId(space.market.orders, 'po-'), name: oname, status: cleanText(raw.status, 40), price: cleanText(raw.price, 80), time: formatDateTime(Date.now()), side: side }]);
+        space.market = CORE.normalizeMarket(space.market);
       } else if (kind === 'post') {
-        // 玩家发帖（三期）：owner=player 的论坛帖子，源数据在玩家域，经 syncPlayerPosts
-        // 镜像进角色域（公开数据）。作者名由镜像异步解析 {{user}} 后回填。
+        // 用户发帖（owner=player 标记，diff 门禁保护）：空间内私有论坛数据。
         var ptitle = cleanText(raw.title, 200);
         if (!hasText(ptitle)) reason = 'title';
         if (reason) return fail();
-        var post = CORE.playerFindEntity(player, 'post', existingId);
+        var post = CORE.playerFindEntity(space, 'post', existingId);
         if (post) {
           post.title = ptitle;
           post.section = cleanText(raw.section, 60);
           post.body = cleanText(raw.body, 3000);
           post.time = formatDateTime(Date.now());
         } else {
-          player.forum.posts = safeArray(player.forum.posts, 20).concat([{ id: CORE.playerNextId(player.forum.posts, 'fp-'), owner: 'player', author: '', role: '', section: cleanText(raw.section, 60), time: formatDateTime(Date.now()), title: ptitle, body: cleanText(raw.body, 3000), resonance: 0, comments: [] }]);
+          space.forum.posts = safeArray(space.forum.posts, 20).concat([{ id: CORE.playerNextId(space.forum.posts, 'fp-'), owner: 'player', author: cleanText(spaceOwnerName(space), 120), role: '', section: cleanText(raw.section, 60), time: formatDateTime(Date.now()), title: ptitle, body: cleanText(raw.body, 3000), resonance: 0, unread: 0, seen: 0, comments: [] }]);
         }
-        player.forum = CORE.normalizeForum(player.forum);
+        space.forum = CORE.normalizeForum(space.forum);
       } else {
         return { ok: false, reason: 'kind' };
       }
 
-      player.updatedAt = Date.now();
-      savePlayer(activeChatId, player);
-      // 帖子需镜像进角色域（公开数据）才能出现在合并视图：返回 Promise 由 UI await，
-      // 镜像完成后再返回/重渲染，避免「保存成功但列表看不到新帖」的竞态。
-      if (kind === 'post') {
-        var mirrorPromise = null;
-        try { mirrorPromise = syncPlayerPosts(activeChatId); } catch (_) {}
-        if (mirrorPromise && typeof mirrorPromise.then === 'function') {
-          return Promise.resolve(mirrorPromise).then(function () { return { ok: true }; }, function () { return { ok: true }; });
-        }
-      }
+      saveSpace(space);
       return { ok: true };
     }
 
-    // 玩家域实体删除：玉册夹删除级联其下备忘；货币按种类删除。找不到返回失败。
-    function playerDeleteEntity(kind, id) {
+    // 实体删除（含联系人/群聊/单条消息/行踪/地点）；返回删除前快照供撤销。
+    function spaceDeleteEntity(spaceId, kind, id, extraId) {
       kind = cleanText(kind, 20);
       id = String(id == null ? '' : id);
-      var player = playerCurrent();
-      if (!CORE.playerFindEntity(player, kind, id)) return { ok: false, reason: 'missing' };
-      if (kind === 'folder') {
-        player.notes.folders = safeArray(player.notes.folders, 10).filter(function (f) { return String(f.id) !== id; });
-        player.notes.notes = safeArray(player.notes.notes, 30).filter(function (n) { return String(n.folderId) !== id; });
-        player.notes = CORE.normalizeNotes(player.notes);
+      extraId = String(extraId == null ? '' : extraId);
+      var space = CORE.findSpaceState(current(), spaceId);
+      if (!space) return { ok: false, reason: 'space' };
+      var snapshot = { spaceId: space.id, kind: kind, entity: null, parentId: extraId };
+      if (kind === 'contact' || kind === 'group') {
+        var list = kind === 'contact' ? safeArray(space.chats.contacts, 10) : safeArray(space.chats.groups, 6);
+        snapshot.entity = list.filter(function (x) { return String(x.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        var rest = list.filter(function (x) { return String(x.id) !== id; });
+        if (kind === 'contact') space.chats.contacts = rest; else space.chats.groups = rest;
+      } else if (kind === 'message') {
+        var target = spaceThread(space, extraId);
+        if (!target) return { ok: false, reason: 'missing' };
+        snapshot.entity = safeArray(target.messages, 100).filter(function (m) { return String(m.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        target.messages = safeArray(target.messages, 100).filter(function (m) { return String(m.id) !== id; });
+      } else if (kind === 'track') {
+        snapshot.entity = safeArray(space.map.tracks, 20).filter(function (t) { return String(t.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        space.map.tracks = safeArray(space.map.tracks, 20).filter(function (t) { return String(t.id) !== id; });
+      } else if (kind === 'place') {
+        snapshot.entity = safeArray(space.map.places, 20).filter(function (p) { return String(p.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        space.map.places = safeArray(space.map.places, 20).filter(function (p) { return String(p.id) !== id; });
+      } else if (kind === 'folder') {
+        snapshot.entity = safeArray(space.notes.folders, 10).filter(function (f) { return String(f.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        // 玉册夹级联其下备忘：快照一并带回供撤销。
+        snapshot.notes = safeArray(space.notes.notes, 30).filter(function (n) { return String(n.folderId) === id; });
+        space.notes.folders = safeArray(space.notes.folders, 10).filter(function (f) { return String(f.id) !== id; });
+        space.notes.notes = safeArray(space.notes.notes, 30).filter(function (n) { return String(n.folderId) !== id; });
+        space.notes = CORE.normalizeNotes(space.notes);
       } else if (kind === 'note') {
-        player.notes.notes = safeArray(player.notes.notes, 30).filter(function (n) { return String(n.id) !== id; });
-        player.notes = CORE.normalizeNotes(player.notes);
+        snapshot.entity = safeArray(space.notes.notes, 30).filter(function (n) { return String(n.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        space.notes.notes = safeArray(space.notes.notes, 30).filter(function (n) { return String(n.id) !== id; });
+        space.notes = CORE.normalizeNotes(space.notes);
       } else if (kind === 'item') {
-        player.space.items = safeArray(player.space.items, 30).filter(function (i) { return String(i.id) !== id; });
+        snapshot.entity = safeArray(space.space.items, 30).filter(function (i) { return String(i.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        space.space.items = safeArray(space.space.items, 30).filter(function (i) { return String(i.id) !== id; });
       } else if (kind === 'currency') {
-        player.space.currencies = safeArray(player.space.currencies, 10).filter(function (c) { return String(c.kind) !== id; });
+        snapshot.entity = safeArray(space.space.currencies, 10).filter(function (c) { return String(c.kind) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        space.space.currencies = safeArray(space.space.currencies, 10).filter(function (c) { return String(c.kind) !== id; });
       } else if (kind === 'order') {
-        player.market.orders = safeArray(player.market.orders, 12).filter(function (o) { return String(o.id) !== id; });
+        snapshot.entity = safeArray(space.market.orders, 12).filter(function (o) { return String(o.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        space.market.orders = safeArray(space.market.orders, 12).filter(function (o) { return String(o.id) !== id; });
       } else if (kind === 'post') {
-        player.forum.posts = safeArray(player.forum.posts, 20).filter(function (p) { return String(p.id) !== id; });
+        snapshot.entity = safeArray(space.forum.posts, 20).filter(function (p) { return String(p.id) === id; })[0] || null;
+        if (!snapshot.entity) return { ok: false, reason: 'missing' };
+        space.forum.posts = safeArray(space.forum.posts, 20).filter(function (p) { return String(p.id) !== id; });
+        space.forum = CORE.normalizeForum(space.forum);
       } else {
         return { ok: false, reason: 'kind' };
       }
-      player.updatedAt = Date.now();
-      savePlayer(activeChatId, player);
-      if (kind === 'post') syncPlayerPosts(activeChatId);
-      return { ok: true };
+      saveSpace(space);
+      return { ok: true, snapshot: snapshot };
     }
 
-    // 撤销删除：把删除前快照的实体插回玩家域（幂等：id 已存在则跳过）。
-    // 玉册夹级联删掉其下备忘，快照一并带回（notes 参数）；帖子需重新镜像进角色域。
-    function playerRestoreEntity(kind, snapshot) {
-      kind = cleanText(kind, 20);
-      snapshot = snapshot || {};
-      var entity = snapshot.entity;
-      if (!entity) return { ok: false, reason: 'missing' };
-      var player = playerCurrent();
-      // 唯一键：货币按种类（kind），其余按 id。不能对非货币实体做 kind 比对——
-      // 两者都是 undefined 时会误判「已存在」而跳过恢复。
-      function upsertInto(getter, setter) {
+    // 撤销删除：快照实体插回原空间（幂等：唯一键已存在则跳过）。
+    function spaceRestoreEntity(snap) {
+      if (!snap || !snap.kind || !snap.entity) return { ok: false, reason: 'bad' };
+      var space = CORE.findSpaceState(current(), snap.spaceId);
+      if (!space) return { ok: false, reason: 'space' };
+      var kind = snap.kind;
+      var entity = snap.entity;
+      function upsert(getter, setter) {
         var list = getter();
         var exists = list.some(function (x) {
           return kind === 'currency' ? String(x && x.kind) === String(entity.kind) : String(x && x.id) === String(entity.id);
         });
         if (!exists) setter(list.concat([entity]));
       }
-      if (kind === 'folder') {
-        upsertInto(function () { return safeArray(player.notes.folders, 10); }, function (v) { player.notes.folders = v; });
-        var extraNotes = CORE.safeArray(snapshot.notes, 30);
+      if (kind === 'contact') upsert(function () { return safeArray(space.chats.contacts, 10); }, function (v) { space.chats.contacts = v; });
+      else if (kind === 'group') upsert(function () { return safeArray(space.chats.groups, 6); }, function (v) { space.chats.groups = v; });
+      else if (kind === 'message') {
+        var target = spaceThread(space, snap.parentId);
+        if (target) upsert(function () { return safeArray(target.messages, 100); }, function (v) { target.messages = v; });
+      } else if (kind === 'track') upsert(function () { return safeArray(space.map.tracks, 20); }, function (v) { space.map.tracks = v; });
+      else if (kind === 'place') upsert(function () { return safeArray(space.map.places, 20); }, function (v) { space.map.places = v; });
+      else if (kind === 'folder') {
+        upsert(function () { return safeArray(space.notes.folders, 10); }, function (v) { space.notes.folders = v; });
+        var extraNotes = safeArray(snap.notes, 30);
         if (extraNotes.length) {
-          var notes = safeArray(player.notes.notes, 30).filter(function (n) {
+          space.notes.notes = safeArray(space.notes.notes, 30).filter(function (n) {
             return !extraNotes.some(function (x) { return String(x && x.id) === String(n && n.id); });
-          }).concat(extraNotes);
-          player.notes.notes = notes.slice(0, 30);
+          }).concat(extraNotes).slice(0, 30);
         }
-        player.notes = CORE.normalizeNotes(player.notes);
-      } else if (kind === 'note') {
-        upsertInto(function () { return safeArray(player.notes.notes, 30); }, function (v) { player.notes.notes = v; });
-        player.notes = CORE.normalizeNotes(player.notes);
-      } else if (kind === 'item') {
-        upsertInto(function () { return safeArray(player.space.items, 30); }, function (v) { player.space.items = v; });
-      } else if (kind === 'currency') {
-        upsertInto(function () { return safeArray(player.space.currencies, 10); }, function (v) { player.space.currencies = v; });
-      } else if (kind === 'order') {
-        upsertInto(function () { return safeArray(player.market.orders, 12); }, function (v) { player.market.orders = v; });
-      } else if (kind === 'post') {
-        upsertInto(function () { return safeArray(player.forum.posts, 20); }, function (v) { player.forum.posts = v; });
-        player.forum = CORE.normalizeForum(player.forum);
-      } else {
-        return { ok: false, reason: 'kind' };
-      }
-      player.updatedAt = Date.now();
-      savePlayer(activeChatId, player);
-      if (kind === 'post') syncPlayerPosts(activeChatId);
+        space.notes = CORE.normalizeNotes(space.notes);
+      } else if (kind === 'note') upsert(function () { return safeArray(space.notes.notes, 30); }, function (v) { space.notes.notes = v; });
+      else if (kind === 'item') upsert(function () { return safeArray(space.space.items, 30); }, function (v) { space.space.items = v; });
+      else if (kind === 'currency') upsert(function () { return safeArray(space.space.currencies, 10); }, function (v) { space.space.currencies = v; });
+      else if (kind === 'order') upsert(function () { return safeArray(space.market.orders, 12); }, function (v) { space.market.orders = v; });
+      else if (kind === 'post') upsert(function () { return safeArray(space.forum.posts, 20); }, function (v) { space.forum.posts = v; });
+      else return { ok: false, reason: 'kind' };
+      saveSpace(space);
       return { ok: true };
     }
 
-    // 角色域实体删除：联系人/群聊/消息/行踪/地点——本地删除，下次同步可能重新出现。
-    function deleteCharacterEntity(kind, id, extraId) {
-      kind = cleanText(kind, 20);
-      id = String(id == null ? '' : id);
-      extraId = String(extraId == null ? '' : extraId);
-      var state = current();
-      if (kind === 'contact') {
-        state.chats.contacts = safeArray(state.chats.contacts, 10).filter(function (c) { return String(c.id) !== id; });
-      } else if (kind === 'group') {
-        state.chats.groups = safeArray(state.chats.groups, 6).filter(function (g) { return String(g.id) !== id; });
-      } else if (kind === 'message') {
-        var target = null;
-        safeArray(state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === extraId) target = c; });
-        safeArray(state.chats.groups, 6).forEach(function (g) { if (String(g.id) === extraId) target = g; });
-        if (target) target.messages = safeArray(target.messages, 50).filter(function (m) { return String(m.id) !== id; });
-      } else if (kind === 'track') {
-        state.map.tracks = safeArray(state.map.tracks, 20).filter(function (t) { return String(t.id) !== id; });
-      } else if (kind === 'place') {
-        state.map.places = safeArray(state.map.places, 20).filter(function (p) { return String(p.id) !== id; });
-      } else {
-        return { ok: false, reason: 'kind' };
+    // ---------- 旧玩家域数据迁移（双域时代 → 用户空间） ----------
+    // 镜像键与世界书 yz-psnap 分片读到的旧玩家状态 → 名为「我」的自定义空间；
+    // 迁移完成即删旧镜像键，世界书 yz-psnap 条目随下一次整本替换自然消失。
+    async function migratePlayerToSpace(state) {
+      if (state.migratedPlayer) return false;
+      var chatId = state.chatId;
+      var mirrorRaw = localGet(PLAYER_LOCAL_PREFIX + chatId);
+      var legacy = parseStored(mirrorRaw);
+      var sawSource = mirrorRaw != null;
+      if (!legacy) {
+        try { legacy = await lorebookSnapshotState(chatId, 'player'); sawSource = sawSource || !!legacy; } catch (_) { legacy = null; }
       }
-      state.updatedAt = Date.now();
-      save(activeChatId, state);
-      return { ok: true };
-    }
-
-    // 撤销角色域删除：把删除前快照插回。
-    function restoreCharacterEntity(snap) {
-      if (!snap || !snap.kind) return { ok: false, reason: 'bad' };
-      var state = current();
-      if (snap.kind === 'contact') {
-        var arr = safeArray(state.chats.contacts, 10);
-        if (!arr.some(function (c) { return String(c.id) === String(snap.entity.id); })) arr.push(snap.entity);
-        state.chats.contacts = arr;
-      } else if (snap.kind === 'group') {
-        var arr = safeArray(state.chats.groups, 6);
-        if (!arr.some(function (g) { return String(g.id) === String(snap.entity.id); })) arr.push(snap.entity);
-        state.chats.groups = arr;
-      } else if (snap.kind === 'message') {
-        var target = null;
-        safeArray(state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === String(snap.parentId)) target = c; });
-        safeArray(state.chats.groups, 6).forEach(function (g) { if (String(g.id) === String(snap.parentId)) target = g; });
-        if (target) {
-          var msgs = safeArray(target.messages, 50);
-          if (!msgs.some(function (m) { return String(m.id) === String(snap.entity.id); })) msgs.push(snap.entity);
-          target.messages = msgs;
-        }
-      } else if (snap.kind === 'track') {
-        var arr = safeArray(state.map.tracks, 20);
-        if (!arr.some(function (t) { return String(t.id) === String(snap.entity.id); })) arr.push(snap.entity);
-        state.map.tracks = arr;
-      } else if (snap.kind === 'place') {
-        var arr = safeArray(state.map.places, 20);
-        if (!arr.some(function (p) { return String(p.id) === String(snap.entity.id); })) arr.push(snap.entity);
-        state.map.places = arr;
-      } else {
-        return { ok: false, reason: 'kind' };
-      }
-      state.updatedAt = Date.now();
-      save(activeChatId, state);
-      return { ok: true };
-    }
-
-    // 玩家发帖镜像：玩家域帖子（owner=player）幂等同步进角色域论坛（公开数据）并对账——
-    // 玩家帖子的标题/正文/版块/作者以玩家域为准（模型全量轮改写或删除会被还原），
-    // 角色侧对玩家帖子的评论保留；已删除的玩家帖子从角色域移除。
-    // 仅在论坛功能启用时工作；作者名（{{user}}）异步解析后回填双方副本。
-    async function syncPlayerPosts(chatId) {
-      chatId = CORE.cleanText(chatId || activeChatId, 160);
-      if (chatId !== activeChatId) return false;
-      var flags = getFlags() || {};
-      if (flags.forum === false) return false;
-      var state = current();
-      var player = playerCurrent();
-      var mine = safeArray(player.forum && player.forum.posts, 20);
-      var havePlayerRows = safeArray(state.forum && state.forum.posts, 20).some(function (p) { return String(p && p.owner) === 'player'; });
-      var myComments = safeArray(player.myComments, 40);
-      if (!mine.length && !havePlayerRows && !myComments.length) return false;
-      var name = await resolvePlayerName();
-      // await 期间可能已切换聊天/新轮次替换了状态对象：放弃陈旧快照，
-      // 否则旧 state 的 save 会覆盖新数据（双通道并发已验证会丢帖子）。
-      if (chatId !== activeChatId || state !== current() || player !== playerCurrent()) return false;
-      var changed = false;
-      var hadPlayerRows = false;
-      var originals = safeArray(state.forum && state.forum.posts, 20);
-      // 撞车防护：角色域已有同 id 的非玩家帖（模型可能复用基线里可见的 fp-* 前缀）——
-      // 给玩家帖换一个两边都未占用的新 id（双方同步改名，对账锚点幂等）。
-      mine.forEach(function (post) {
-        if (!post || !post.id) return;
-        var conflict = false;
-        originals.forEach(function (p) {
-          if (p && String(p.id) === String(post.id) && String(p.owner) !== 'player') conflict = true;
-        });
-        if (!conflict) return;
-        var used = {};
-        safeArray(player.forum && player.forum.posts, 20).forEach(function (p) { if (p && p.id) used[String(p.id)] = true; });
-        originals.forEach(function (p) { if (p && p.id) used[String(p.id)] = true; });
-        var n = 1;
-        while (used['fp-' + n]) n += 1;
-        post.id = 'fp-' + n;
-        player.updatedAt = Date.now();
-        changed = true;
-      });
-      var mineIds = {};
-      mine.forEach(function (post) { if (post && post.id) mineIds[String(post.id)] = true; });
-      var kept = [];
-      originals.forEach(function (post) {
-        if (!post) return;
-        if (String(post.owner) === 'player') { hadPlayerRows = true; return; }
-        // 模型改写剥落了 owner 标记的行也按 id 排除：以玩家域对账结果为准，
-        // 避免同 id 两份副本（对账又推一份 = 重复帖）。
-        if (mineIds[String(post.id)]) return;
-        kept.push(post);
-      });
-      if (!mine.length && hadPlayerRows) {
-        // 玩家已删光自己的帖子：角色域同步移除（玩家帖子行以玩家域为准）。
-        state.forum.posts = kept;
-        state.forum = CORE.normalizeForum(state.forum);
-        state.updatedAt = Date.now();
-        save(chatId, state);
-        return true;
-      }
-      mine.forEach(function (post) {
-        if (!post || !post.id) return;
-        // existing 只认 owner=player 的行（撞车防护已保证玩家帖 id 不被角色帖占用）：
-        // 命中即对账更新并保留角色侧评论；未命中（历史重建/清空后）按玩家域插入。
-        var existing = null;
-        originals.forEach(function (p) { if (p && String(p.id) === String(post.id) && String(p.owner) === 'player') existing = p; });
-        if (!existing) {
-          kept.push({ id: cleanText(post.id, 160), owner: 'player', author: name, role: cleanText(post.role, 120), section: cleanText(post.section, 60), time: cleanText(post.time, 80), title: cleanText(post.title, 200), body: cleanText(post.body, 3000), resonance: nzero(post.resonance), unread: nzero(post.unread), seen: nzero(post.seen), comments: [] });
-          changed = true;
-        } else {
-          if (existing.owner !== 'player' || existing.title !== post.title || existing.body !== post.body || existing.section !== post.section || existing.author !== name) {
-            // 对账：以玩家域为准还原被模型改写的内容（含被剥落的 owner 标记），角色侧评论保留。
-            existing.owner = 'player';
-            existing.title = cleanText(post.title, 200);
-            existing.body = cleanText(post.body, 3000);
-            existing.section = cleanText(post.section, 60);
-            existing.author = name;
-            changed = true;
-          }
-          kept.push(existing);
-        }
-        // 玩家侧作者名回填（创建时为空，表单不暴露作者字段）。
-        if (post.author !== name) {
-          post.author = name;
-          player.updatedAt = Date.now();
-          changed = true;
-        }
-      });
-      // 我的帖子被评论的未读信号（客户端维护）：玩家帖的已见评论数 = seen，
-      // 角色域侧非玩家评论（真实新回复）超过 seen 的部分计为新未读，镜像到角色行与玩家源。
-      var unreadChanged = false;
-      mine.forEach(function (post) {
-        if (!post || !post.id) return;
-        var counterpart = null;
-        kept.forEach(function (p) { if (p && String(p.id) === String(post.id) && String(p.owner) === 'player') counterpart = p; });
-        if (!counterpart) return;
-        var replyCount = 0;
-        safeArray(counterpart.comments, 20).forEach(function (c) {
-          if (c && String(c.owner) !== 'player') replyCount += 1;
-        });
-        var seen = nzero(post.seen);
-        var fresh = Math.max(0, replyCount - seen);
-        if (fresh > 0 && nzero(post.unread) + fresh !== nzero(post.unread)) {
-          post.unread = Math.min(99, nzero(post.unread) + fresh);
-          post.seen = replyCount;
-          counterpart.unread = post.unread;
-          counterpart.seen = replyCount;
-          player.updatedAt = Date.now();
-          unreadChanged = true;
-        }
-      });
-      if (unreadChanged) changed = true;
-      // 玩家评论源 → 角色域帖子（pmc-* 评论，作者=玩家名）。帖子可能是角色帖子
-      //（公开数据）：玩家评论任意可见帖子；幂等去重用双键——id 相同或内容键
-      //（作者+时间+内容）相同都视为同一评论。全量轮模型照抄基线时 pmc-* 评论会被
-      // parseForum 重编为 cm-N（丢失 owner 标记）：内容键识别这类副本并补回
-      // owner=player（重新纳入 pmc-* 门禁保护），同时避免重复推送造成双份。
-      var commentsChanged = false;
-      myComments.forEach(function (comment) {
-        if (!comment || !comment.postId || !comment.id) return;
-        var target = null;
-        safeArray(state.forum && state.forum.posts, 20).forEach(function (p) { if (p && String(p.id) === String(comment.postId)) target = p; });
-        if (!target) return;
-        safeArray(target.comments, 20).forEach(function (c) {
-          if (c && !c.owner && c.author === name && c.time === comment.time && c.text === comment.text) {
-            c.owner = 'player';
-            commentsChanged = true;
-          }
-        });
-        var exists = safeArray(target.comments, 20).some(function (c) {
-          return c && (String(c.id) === String(comment.id) ||
-            (c.author === name && c.time === comment.time && c.text === comment.text));
-        });
-        if (exists) return;
-        target.comments = safeArray(target.comments, 20).concat([{ id: CORE.cleanText(comment.id, 160), owner: 'player', author: name, time: CORE.cleanText(comment.time, 80), text: CORE.cleanText(comment.text, 3000) }]);
-        if (target.comments.length > 20) target.comments = tail(target.comments, 20);
-        commentsChanged = true;
-      });
-      if (commentsChanged) {
-        state.forum = CORE.normalizeForum(state.forum);
-        state.updatedAt = Date.now();
-        changed = true;
-      }
-      if (changed) {
-        state.forum.posts = kept;
-        state.forum = CORE.normalizeForum(state.forum);
-        state.updatedAt = Date.now();
-        save(chatId, state);
-        savePlayer(chatId, player);
-      }
-      return changed;
+      // 两个来源都没读到（世界书 API 异常时）不标记完成——下次进入本聊天重试。
+      if (!sawSource) return false;
+      state.migratedPlayer = true;
+      if (!legacy || typeof legacy !== 'object') return false;
+      var touched = (Number(legacy.updatedAt) || 0) > 0 || safeArray(legacy.chats && legacy.chats.contacts, 10).length > 0 || safeArray(legacy.notes && legacy.notes.notes, 30).length > 0 || safeArray(legacy.forum && legacy.forum.posts, 20).length > 0;
+      localRemove(PLAYER_LOCAL_PREFIX + chatId);
+      if (!touched) return false;
+      var meName = I18N.dict().space.meSpaceName || '我';
+      if (spaceNameTaken(state, meName)) meName = meName + '·1';
+      var sp = CORE.normalizeUserSpace({
+        id: 'sp1',
+        name: meName,
+        sendToAI: true,
+        allowAIWrite: true,
+        createdAt: Number(legacy.updatedAt) || Date.now(),
+        tablet: legacy.tablet,
+        chats: legacy.chats,
+        notes: legacy.notes,
+        forum: legacy.forum,
+        market: legacy.market,
+        space: legacy.space,
+        map: legacy.map,
+        updatedAt: legacy.updatedAt
+      }, chatId);
+      // id 避让（罕见：sp1 已被占用）。
+      if (state.spaces.some(function (s) { return s.id === sp.id; })) sp.id = nextSpaceId(state);
+      state.spaces.push(sp);
+      return true;
     }
 
     async function applyText(text, chatId, source) {
@@ -3256,20 +3008,19 @@
       var snapshots = PROTOCOL.extractSnapshots(text);
       if (!snapshots.length) {
         if (/<yz_[a-z0-9_]+\b/i.test(String(text || ''))) {
-          state.sync = Object.assign({}, state.sync, { status: state.revision ? state.sync.status : 'invalid', lastError: 'parse-error', lastSource: source || '', updatedAt: Date.now() });
+          var dsp = ensureDefaultSpaceState(state);
+          dsp.sync = Object.assign({}, dsp.sync, { status: dsp.revision ? dsp.sync.status : 'invalid', lastError: 'parse-error', lastSource: source || '', updatedAt: Date.now() });
           state.updatedAt = Date.now();
           save(chatId, state);
         }
-        return { changed: false, stale: false, applied: false, parseError: state.sync.lastError === 'parse-error' };
+        var perr = (function () { var d = CORE.defaultSpaceState(state); return !!d && d.sync.lastError === 'parse-error'; })();
+        return { changed: false, stale: false, applied: false, parseError: perr };
       }
       var applied = applySnapshotsToState(state, snapshots, source);
       chats[chatId] = applied.state;
       // 重复投递的轮次不重复落盘；解析失败标记需持久化，重开后仍可见。
-      if (applied.changed || applied.state.sync.lastError === 'parse-error') save(chatId, applied.state);
-      // 跨域通道：角色回复（self 消息）与玩家发帖落盘后分别镜像回玩家域/角色域。
-      if (applied.changed) await syncPlayerChannel(chatId);
-      if (applied.changed) await syncPlayerGroups(chatId);
-      if (applied.changed) await syncPlayerPosts(chatId);
+      var dflt = CORE.defaultSpaceState(applied.state);
+      if (applied.changed || (dflt && dflt.sync.lastError === 'parse-error')) save(chatId, applied.state);
       return {
         changed: applied.changed,
         stale: false,
@@ -3278,10 +3029,14 @@
         // 且所有已启封分区评估达标；part/diff 轮与部分达标的全量轮不算——
         // 封印切换/版本更新后的重同步必须等真正达标的全量轮才清除强制标记。
         full: (function () { var a = applied.assessment; return !!a && !a.part && !a.diff && a.ok === true; })(),
-        applied: CORE.safeArray(applied.state.sync.applied, 10).slice(),
+        applied: applied.appliedIds.slice(),
         // 返回 sync 快照而非引用：调用方后续写入状态时不会改变已返回的 assessment。
-        assessment: Object.assign({}, applied.state.sync)
+        assessment: Object.assign({}, dflt ? dflt.sync : {})
       };
+    }
+
+    function ensureDefaultSpaceState(state) {
+      return CORE.ensureDefaultSpace(state);
     }
 
     function eventChatId(event) {
@@ -3304,7 +3059,7 @@
     // 管理页导入：与快照同一条容量红线；normalizeState 负责消毒与字段归一，任何对象都能归一，
     // 因此「无效」只可能是解析失败、超限或结构签名不符——误贴别处 JSON（聊天记录导出、
     // 其它插件存档等）绝不能「导入成功」后把当前角色域数据清空。
-    var IMPORT_SIGNATURE_KEYS = ['schemaVersion', 'revision', 'tablet', 'chats', 'notes', 'forum', 'market', 'space', 'map'];
+    var IMPORT_SIGNATURE_KEYS = ['schemaVersion', 'revision', 'spaces', 'tablet', 'chats', 'notes', 'forum', 'market', 'space', 'map'];
     function importState(raw) {
       var text = String(raw == null ? '' : raw);
       if (text.length > MAX_SNAPSHOT_BYTES) return { ok: false, reason: 'oversized' };
@@ -3356,7 +3111,7 @@
     // 分片包装 {v, ver, rev, updatedAt, kind, index, total, body}：body 为状态 JSON
     // 字符串切片，读取时按 index 拼接还原。单片超 SNAP_SHARD_CHARS、单域超过
     // MAX_SNAP_SHARDS 片时放弃快照（状态超出容量，仅诊断提示）。
-    function buildSnapshotEntries(state, playerState) {
+    function buildSnapshotEntries(state) {
       var entries = [];
       function shard(kind, serialized, rev, updatedAt) {
         if (!serialized) return;
@@ -3386,24 +3141,20 @@
           });
         }
       }
-      if (state && Number(state.revision) >= 1) {
+      var hasData = !!state && (CORE.stateRevision(state) > 0 || CORE.stateDataUpdatedAt(state) > 0);
+      if (hasData) {
         var roleJson;
         try { roleJson = JSON.stringify(state); } catch (error) { roleJson = null; }
-        shard('role', roleJson, state.revision, state.updatedAt);
-      }
-      var touched = !!playerState && ((Number(playerState.updatedAt) || 0) > 0 ||
-        CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).length > 0);
-      if (touched) {
-        var playerJson;
-        try { playerJson = JSON.stringify(playerState); } catch (error) { playerJson = null; }
-        shard('player', playerJson, 0, playerState.updatedAt);
+        shard('role', roleJson, CORE.stateRevision(state), state.updatedAt);
       }
       return entries;
     }
 
     // 纯函数：由 state 构建世界书条目列表（封印交流讯息时不归档；封印舆图时地点名录不归档）。
+    // 默认空间可被删除：缺失时用空白数据（条目自然为空）。
     function buildArchiveEntries(state) {
       var flags = getFlags();
+      if (state && state.spaces) state = CORE.defaultSpaceState(state) || CORE.blankUserSpace(state.chatId, { isDefault: true });
       var chatsData = safeObject(safeObject(state).chats);
       var entries = [];
       function pushEntry(identifier, title, keywords, header, lines) {
@@ -3501,7 +3252,7 @@
         if (!state) return { ok: false, reason: 'missing' };
         var entries = buildArchiveEntries(state);
         // 快照分片：角色域（rev ≥ 1）+ 玩家域（有数据时），与归档条目同一本原子替换。
-        buildSnapshotEntries(state, playerChats[chatId]).forEach(function (entry) { entries.push(entry); });
+        buildSnapshotEntries(state).forEach(function (entry) { entries.push(entry); });
         // 无可写内容时不触碰已有书：空白/未加载状态不得用空 entries 覆盖权威快照。
         if (!entries.length) return { ok: true, entries: 0 };
         var name = ARCHIVE_NAME_PREFIX + chatId.slice(0, 40);
@@ -3557,12 +3308,11 @@
 
     return {
       LOCAL_PREFIX: LOCAL_PREFIX,
-      PLAYER_LOCAL_PREFIX: PLAYER_LOCAL_PREFIX,
       switchChat: switchChat,
       settle: settle,
       rebuildFromHistory: rebuildFromHistory,
       current: current,
-      playerCurrent: playerCurrent,
+      activeSpace: activeSpace,
       applyText: applyText,
       importState: importState,
       syncArchive: syncArchive,
@@ -3570,47 +3320,21 @@
       buildSnapshotEntries: buildSnapshotEntries,
       eventChatId: eventChatId,
       resolveCurrentChatId: resolveCurrentChatId,
-      resolvePlayerName: resolvePlayerName,
-      syncPlayerChannel: syncPlayerChannel,
-      syncPlayerGroups: syncPlayerGroups,
-      syncPlayerPosts: syncPlayerPosts,
-      markPlayerRead: markPlayerRead,
-      restorePlayerReadCursor: restorePlayerReadCursor,
-      sendPlayerMessage: sendPlayerMessage,
-      sendPlayerGroupMessage: sendPlayerGroupMessage,
-      sendPlayerComment: sendPlayerComment,
-      playerThread: playerThread,
-      playerSaveEntity: playerSaveEntity,
-      playerDeleteEntity: playerDeleteEntity,
-      playerRestoreEntity: playerRestoreEntity,
-      deleteCharacterEntity: deleteCharacterEntity,
-      restoreCharacterEntity: restoreCharacterEntity,
+      resolveOwnerName: resolveOwnerName,
+      sendSpaceMessage: sendSpaceMessage,
+      sendSpaceComment: sendSpaceComment,
+      markSpaceThreadSeen: markSpaceThreadSeen,
+      markSpacePostSeen: markSpacePostSeen,
+      spaceSaveEntity: spaceSaveEntity,
+      spaceDeleteEntity: spaceDeleteEntity,
+      spaceRestoreEntity: spaceRestoreEntity,
+      createSpace: createSpace,
+      renameSpace: renameSpace,
+      setSpaceFlag: setSpaceFlag,
+      deleteSpace: deleteSpace,
+      restoreSpace: restoreSpace,
+      setActiveSpace: setActiveSpace,
       saveChat: function (chatId) { return save(chatId, current()); },
-      savePlayerChat: function (chatId, player) { return savePlayer(chatId, player); },
-      // 玩家帖「已读」：客户端未读游标推进（打开帖子详情时由 UI 调用）。
-      // 角色域行 unread 清零由 UI 层直接落盘；此方法推进玩家源 seen 游标，
-      // 下次 syncPlayerPosts 按新 seen 计算增量，已读的评论不再重复计未读。
-      markPostRead: function (postId) {
-        postId = CORE.cleanText(String(postId == null ? '' : postId), 160);
-        if (!postId) return;
-        var state = current();
-        var player = playerCurrent();
-        var replyCount = 0;
-        CORE.safeArray(state.forum && state.forum.posts, 20).forEach(function (p) {
-          if (p && String(p.id) === postId) {
-            CORE.safeArray(p.comments, 20).forEach(function (c) { if (c && String(c.owner) !== 'player') replyCount += 1; });
-          }
-        });
-        var post = null;
-        CORE.safeArray(player.forum && player.forum.posts, 20).forEach(function (p) { if (p && String(p.id) === postId) post = p; });
-        if (!post) return;
-        if (post.unread > 0 || nzero(post.seen) !== replyCount) {
-          post.unread = 0;
-          post.seen = replyCount;
-          player.updatedAt = Date.now();
-          savePlayer(activeChatId, player);
-        }
-      },
       cachedChatIds: function () { return lru.slice(); },
       get activeChatId() { return activeChatId; }
     };
@@ -3734,25 +3458,28 @@
   // 第五轮截断后的单行硬上限：标识行以存在性与 diff 定位为主，长尾字段可弃。
   var ROW_HARD_CAP = 160;
 
-  // 当前数据基线：把 state 按协议行语法序列化进 yzc_ 容器（内部标签与行语法同输出格式，
-  // 但 section() 只认 yz_ 前缀，基线被复读时不会污染 <yz_jade> 解析）。
-  // 多轮对话中模型据此沿用既有 id 与未变化行——重新生成的内容才能与已同步数据关联。
-  // 值内的竖线/换行会被清洗，保证行语法合法。封印功能不进基线。
-  // 超出最近窗口的旧数据只以 archived 行出现（正文不注入），完整历史在世界书归档中按关键词召回。
-  function buildCurrent(state, flags, rng) {
+  // 当前数据基线按「发送空间」分组：sendToAI 的空间各出一份 yzc_ 容器组。
+  // 默认空间（角色本人空间）的容器不带属性；自定义空间容器带 space="空间名"，
+  // 模型回写该空间时在 turn 行第 6 字段填同名空间名（缺省 = 默认空间）。
+  // 多空间并发注入时条目采样上限按空间数均摊（保底 1），注入总量不随空间数膨胀。
+  // 超预算五级淘汰共用同一条池子（见 MAX_BASELINE_CHARS 注释）。
+  function spaceBaselineLabel(space, fallback) {
+    var name = CORE.spaceDisplayName(null, space, fallback || '');
+    return cleanText(name, 120).replace(/["'<>|｜\s]/g, '');
+  }
+
+  // 单个空间的基线行：与旧版逐分区同构（去掉双域通道特殊注入——用户发言 pm/pmg/pmc
+  // 现在就是空间内的普通受保护行，采样强保 + last 标记保证不被预算淘汰）。
+  function buildSpaceSections(space, flags, rng, caps) {
     function on(id) { return !flags || flags[id] !== false; }
     function v(value, cap) {
       return cleanText(value, cap || 3000).replace(/[｜|\t\n\r]/g, ' ');
     }
-    // archived 行类型不在任何解析器的行白名单里：模型复读基线时它不会被当成数据行，
-    // 也无法用 + 行原样重发——它只承载「还有更旧数据存在」这一事实。
     function archived(type, id, summary) {
       return 'archived｜' + type + '｜' + id + '｜' + summary;
     }
-    var s = safeObject(state);
-    // 条目级采样视图：联系人/群聊/帖子超过上限后每轮只注入采样子集（活跃度加权 +
-    // 玩家交互强制包含），隐藏条目完全不出现；渲染/存储/评估/世界书归档不受影响。
-    var sample = (on('msg') || on('forum')) ? sampleEntries(s.chats, s.forum, rng) : { contacts: [], groups: [], posts: [] };
+    var s = safeObject(space);
+    var sample = (on('msg') || on('forum')) ? sampleEntries(s.chats, s.forum, rng, caps) : { contacts: [], groups: [], posts: [] };
     var sections = [];
     function sec(tag) {
       var item = { tag: tag, rows: [] };
@@ -3779,43 +3506,15 @@
       });
       chatList.forEach(function (contact) {
         if (!contact || !hasText(contact.name) || !contact.id) return;
-        var isPlayerContact = String(contact.id) === CORE.PLAYER_CONTACT_ID;
         m.rows.push({ text: 'contact｜' + v(contact.id, 160) + '｜' + v(contact.name, 120) + '｜' + v(contact.relation, 120) + '｜' + v(contact.time, 80) + '｜' + (Number(contact.unread) || 0) + '｜' + v(contact.preview, 300), drop: false });
         var rows = safeArray(contact.messages, 20);
-        if (isPlayerContact) {
-          // 玩家传讯通道：未读行（seq > 已读游标）最多注入 MAX_PLAYER_UNREAD_ROWS 条全行，
-          // 超出部分给一条摘要行；未读行带 last 标记——计入 9000 预算但保留优先级最高（仅极端超限让位）
-          // （明细行 → tablet → 归档行 → 未读行，未读行只有前三级全丢仍超限时才让位）。
-          var cursor = Number(state.sync && state.sync.playerReadCursor) || 0;
-          var unreadRows = [];
-          var readRows = [];
-          rows.forEach(function (message) {
-            if (!message || !message.id) return;
-            var seqMatch = /^pm-(\d+)$/.exec(String(message.id));
-            var row = { text: 'msg｜' + v(contact.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text) };
-            // 未读 = 玩家侧消息（side=other）且 seq > 游标；模型自回复（self）不算未读。
-            if (seqMatch && message.side === 'other' && (Number(seqMatch[1]) || 0) > cursor) {
-              row.last = true;
-              unreadRows.push(row);
-            } else {
-              row.drop = true;
-              readRows.push(row);
-            }
-          });
-          var hiddenRead = readRows.length - RECENT_MSG_ROWS;
-          if (hiddenRead > 0) m.rows.push({ text: archived('msg', v(contact.id, 160), hiddenRead + ' 条旧消息已归档'), drop: false });
-          tail(readRows, RECENT_MSG_ROWS).forEach(function (row) { m.rows.push(row); });
-          if (unreadRows.length > CORE.MAX_PLAYER_UNREAD_ROWS) {
-            m.rows.push({ text: 'unread｜' + v(contact.id, 160) + '｜' + (unreadRows.length - CORE.MAX_PLAYER_UNREAD_ROWS) + ' 条未读传讯未展开', last: true });
-          }
-          unreadRows.slice(-CORE.MAX_PLAYER_UNREAD_ROWS).forEach(function (row) { m.rows.push(row); });
-          return;
-        }
         var hidden = rows.length - RECENT_MSG_ROWS;
         if (hidden > 0) m.rows.push({ text: archived('msg', v(contact.id, 160), hidden + ' 条旧消息已归档'), drop: false });
         tail(rows, RECENT_MSG_ROWS).forEach(function (message) {
           if (!message || !message.id) return;
-          m.rows.push({ text: 'msg｜' + v(contact.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: true });
+          // 用户发言（pm-*）是真实事件：计入预算但保留优先级最高（仅极端超限让位）。
+          var mine = /^pm-\d+$/.test(String(message.id));
+          m.rows.push({ text: 'msg｜' + v(contact.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: !mine, last: mine });
         });
       });
       var groupList = safeArray(chats.groups, 6).filter(function (g) {
@@ -3825,26 +3524,12 @@
         if (!group || !hasText(group.name) || !group.id) return;
         m.rows.push({ text: 'group｜' + v(group.id, 160) + '｜' + v(group.name, 120) + '｜' + (Number(group.members) || 0) + '｜' + v(group.time, 80) + '｜' + (Number(group.unread) || 0) + '｜' + v(group.preview, 300), drop: false });
         var rows = safeArray(group.messages, 24);
-        // 玩家群聊发言（pmg-*）是真实事件：与传讯未读行同级，恒注入（drop:false，
-        // 最多 MAX_PLAYER_GROUP_ROWS 条，超出给归档摘要行）。模型 full 轮必须照抄
-        // pmg 行，parse 后玩家消息原位保留——不会因窗口外归档而丢失、被镜像补回
-        // 时追加成"最新消息"（顺序错乱）。
-        var pmgRows = [];
-        var gmRows = [];
-        rows.forEach(function (message) {
-          if (!message || !message.id) return;
-          (/^pmg-/.test(String(message.id)) ? pmgRows : gmRows).push(message);
-        });
-        var hidden = gmRows.length - RECENT_MSG_ROWS;
+        var hidden = rows.length - RECENT_MSG_ROWS;
         if (hidden > 0) m.rows.push({ text: archived('gmsg', v(group.id, 160), hidden + ' 条旧群消息已归档'), drop: false });
-        tail(gmRows, RECENT_MSG_ROWS).forEach(function (message) {
-          m.rows.push({ text: 'gmsg｜' + v(group.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.sender, 120) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: true });
-        });
-        if (pmgRows.length > CORE.MAX_PLAYER_GROUP_ROWS) {
-          m.rows.push({ text: archived('gmsg', v(group.id, 160), (pmgRows.length - CORE.MAX_PLAYER_GROUP_ROWS) + ' 条更早的玩家发言已归档'), drop: false });
-        }
-        tail(pmgRows, CORE.MAX_PLAYER_GROUP_ROWS).forEach(function (message) {
-          m.rows.push({ text: 'gmsg｜' + v(group.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.sender, 120) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: false });
+        tail(rows, RECENT_MSG_ROWS).forEach(function (message) {
+          if (!message || !message.id) return;
+          var mine = /^pmg-\d+$/.test(String(message.id));
+          m.rows.push({ text: 'gmsg｜' + v(group.id, 160) + '｜' + v(message.id, 160) + '｜' + v(message.sender, 120) + '｜' + v(message.side, 10) + '｜' + v(message.time, 80) + '｜' + v(message.text), drop: !mine, last: mine });
         });
       });
     }
@@ -3855,29 +3540,19 @@
       });
       postList.forEach(function (post) {
         if (!post || !hasText(post.title) || !post.id) return;
-        var isPlayerPost = String(post.owner || '') === 'player';
-        if (isPlayerPost) {
-          // 玩家帖子是真实事件（与传讯未读行同级）：永远全行注入、不归档
-          // （drop:false，last 标记仅极端预算场景最后让位，见 buildCurrent 第四轮），
-          // 行尾带 owner 字段供模型识别；角色对玩家帖子的评论同全行注入。
-          // 行尾带 owner 字段供模型识别；unread = 新回复数（玩家帖恒 0，门禁保护不可改）。
-          var rowText = 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜' + (Number(post.unread) || 0) + '｜player';
-          f.rows.push({ text: rowText, drop: false, last: true });
-          safeArray(post.comments, 20).forEach(function (comment) {
-            if (!comment || !hasText(comment.text)) return;
-            f.rows.push({ text: 'comment｜' + v(post.id, 160) + '｜' + v(comment.author, 120) + '｜' + v(comment.time, 80) + '｜' + v(comment.text), drop: false, last: true });
-          });
-          return;
-        }
-        // 采样选中的帖子全行注入（帖子级裁剪由采样完成，不再有帖子级 archived 行）；
-        // 消息级窗口（评论）保留。
-        f.rows.push({ text: 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜' + (Number(post.unread) || 0), drop: true });
+        var isUserPost = String(post.owner || '') === 'player';
+        // 用户帖子/用户评论（owner=player / pmc-*）是真实事件：全行注入、预算最后让位。
+        var rowText = 'post｜' + v(post.id, 160) + '｜' + v(post.author, 120) + '｜' + v(post.role, 120) + '｜' + v(post.section, 60) + '｜' + v(post.time, 80) + '｜' + v(post.title, 200) + '｜' + v(post.body) + '｜' + (Number(post.resonance) || 0) + '｜' + (Number(post.unread) || 0);
+        if (isUserPost) rowText += '｜player';
+        f.rows.push({ text: rowText, drop: !isUserPost, last: isUserPost });
         var comments = safeArray(post.comments, 20);
+        var userComments = comments.filter(function (c) { return c && /^pmc-/.test(String(c.id) || ''); });
         var hidden = comments.length - RECENT_COMMENT_ROWS;
         if (hidden > 0) f.rows.push({ text: archived('comment', v(post.id, 160), hidden + ' 条旧评论已归档'), drop: false });
         tail(comments, RECENT_COMMENT_ROWS).forEach(function (comment) {
           if (!comment || !hasText(comment.text)) return;
-          f.rows.push({ text: 'comment｜' + v(post.id, 160) + '｜' + v(comment.author, 120) + '｜' + v(comment.time, 80) + '｜' + v(comment.text), drop: true });
+          var mine = /^pmc-/.test(String(comment.id) || '');
+          f.rows.push({ text: 'comment｜' + v(post.id, 160) + '｜' + v(comment.author, 120) + '｜' + v(comment.time, 80) + '｜' + v(comment.text), drop: !mine, last: mine });
         });
       });
     }
@@ -3923,7 +3598,6 @@
         if (!item || !hasText(item.name) || !item.id) return;
         k.rows.push({ text: 'order｜' + v(item.id, 160) + '｜' + v(item.name, 120) + '｜' + v(item.status, 40) + '｜' + v(item.price, 80) + '｜' + v(item.time, 80) + '｜' + v(item.side, 20), drop: false });
       });
-      // 求购区：与行情同构的买公告，窗口外给归档摘要行。
       var requests = safeArray(market.requests, 12);
       requests.forEach(function (item, index) {
         if (!item || !hasText(item.name) || !item.id) return;
@@ -3936,12 +3610,12 @@
     }
     if (on('space')) {
       var sp = sec('space');
-      var space = safeObject(s.space);
-      safeArray(space.currencies, 10).forEach(function (currency) {
+      var spaceData = safeObject(s.space);
+      safeArray(spaceData.currencies, 10).forEach(function (currency) {
         if (!currency || !hasText(currency.kind)) return;
         sp.rows.push({ text: 'currency｜' + v(currency.kind, 60) + '｜' + v(currency.amount, 80), drop: false });
       });
-      var items = safeArray(space.items, 30);
+      var items = safeArray(spaceData.items, 30);
       items.forEach(function (item, index) {
         if (!item || !hasText(item.name) || !item.id) return;
         if (index < items.length - RECENT_ITEM_ROWS) {
@@ -3960,7 +3634,6 @@
         if (!track || !track.id || !hasText(track.place)) return;
         mp.rows.push({ text: 'track｜' + v(track.id, 160) + '｜' + v(track.time, 80) + '｜' + v(track.place, 120) + '｜' + v(track.action, 300), drop: false });
       });
-      // 地点名录：窗口外给归档摘要行（正文靠世界书关键词召回），窗口内全行注入。
       var places = safeArray(mapData.places, 20);
       places.forEach(function (place, index) {
         if (!place || !place.id || !hasText(place.name)) return;
@@ -3971,6 +3644,29 @@
         mp.rows.push({ text: 'place｜' + v(place.id, 160) + '｜' + v(place.name, 120) + '｜' + v(place.domain, 120) + '｜' + v(place.desc), drop: true });
       });
     }
+    return sections;
+  }
+
+  function buildCurrent(state, flags, rng) {
+    // 接受完整聊天状态（含 spaces）或单个空间对象（视图/测试直传）：后者视为唯一发送空间。
+    var allSpaces = state && state.spaces ? safeArray(state.spaces, MAX_SPACES) : (state ? [Object.assign({}, state, { isDefault: true, sendToAI: true })] : []);
+    var senders = allSpaces.filter(function (sp) { return sp.sendToAI; });
+    var share = Math.max(1, senders.length);
+    var caps = {
+      contacts: Math.max(1, Math.floor(MAX_INJECT_CONTACTS / share)),
+      groups: Math.max(1, Math.floor(MAX_INJECT_GROUPS / share)),
+      posts: Math.max(1, Math.floor(MAX_INJECT_POSTS / share))
+    };
+    // 各空间行合并进同一预算池；section 带 space 标签（默认空间 null → 无属性容器）。
+    var sections = [];
+    senders.forEach(function (sp) {
+      buildSpaceSections(sp, flags, rng, caps).forEach(function (item) {
+        item.space = sp.isDefault ? null : spaceBaselineLabel(sp);
+        item.spaceName = sp.isDefault ? '' : cleanText(sp.name, 120);
+        // 默认空间行名冲突检查不在此处——自定义空间行 id 命名空间独立（写回按空间路由）。
+        sections.push(item);
+      });
+    });
     // 发送上限：全部行计入预算，五级淘汰见 MAX_BASELINE_CHARS 注释。
     // 实体标识行（contact/group/folder 等存在性与 diff 定位依赖）永不整行淘汰，仅最后截断。
     var total = 0;
@@ -4007,8 +3703,7 @@
           });
         });
       }
-      // 第四轮：归档行也丢光仍超限时，最后丢 last 标记行（玩家传讯未读行、玩家帖子与
-      // 其评论，真实事件，仅极端场景让位）。
+      // 第四轮：归档行也丢光仍超限时，最后丢 last 标记行（用户真实发言，仅极端场景让位）。
       if (total > MAX_BASELINE_CHARS) {
         sections.forEach(function (item) {
           item.rows.forEach(function (r) {
@@ -4042,7 +3737,7 @@
       var rows = [];
       item.rows.forEach(function (r) { if (r.text) rows.push(r.text); });
       if (!rows.length) return;
-      out.push('<yzc_' + item.tag + '>');
+      out.push('<yzc_' + item.tag + (item.space ? ' space="' + item.space + '"' : '') + '>');
       rows.forEach(function (text) { out.push(text); });
       out.push('</yzc_' + item.tag + '>');
     });
@@ -4058,7 +3753,7 @@
     var lines = [
       '',
       forceFull
-        ? (en ? '[Yu Zhao | FORCED FULL sync this turn — every enabled section in full, mandatory]' : '【修仙传讯法器·玉兆｜本轮强制全量同步，必须执行】')
+        ? (en ? '[Yu Zhao | FORCED FULL sync this turn — output the DEFAULT space in full (user spaces stay diff-only), mandatory]' : '【修仙传讯法器·玉兆｜本轮强制全量同步：默认空间必须整块全量输出（用户空间仍只用 diff），必须执行】')
         : (en ? '[Yu Zhao | Incremental sync in diff format, mandatory]' : '【修仙传讯法器·玉兆｜以 diff 格式增量同步，必须执行】'),
       en ? 'Read the current story, character sheet and relations. After the story text finishes normally, output one <yz_jade> at the end. It is the character\'s artifact data; do not restate it in the story body.' : '读当前剧情、设定与关系。正文正常完成后，在末尾输出一个 <yz_jade>。这是角色的法器数据，不在正文中复述。',
       en ? 'Format: not JSON, not a code block; one row per line, fields separated by ｜ with no ｜ inside values; every section opens and closes on its own tag; rows reference ids declared in the baseline or earlier in the same turn.' : '格式：非 JSON、非代码块；一行一条，字段用 ｜ 分隔，字段内容不使用竖线；每个区块用独立标签开合；行内引用的 id 必须来自基线或本轮同一区块内已声明的 id。',
@@ -4077,20 +3772,21 @@
       lines.push(pack.constraint);
     });
     lines.push(en ? 'No generic templates, no placeholder people, no empty items; everything must be tied to this turn.' : '不得使用通用模板、陌生占位人或空项；所有内容与本轮剧情强相关。');
-    // 玩家传讯通道规则：yz-player 联系人是真实事件，只读维护，回复用 +msg 追加。
-    // 基线是采样视图：联系人/群聊超过上限后每轮只注入活跃子集。
-    if (on('msg')) {
-      lines.push(en
-        ? '- Player channel: the yz-player contact in the baseline is a real player messaging you from outside the world. Its rows and unread count are maintained by the artifact: never rewrite, delete, copy or recreate that contact, and never invent messages from it. To reply, append one +msg｜yz-player｜new-message-id｜self｜absolute date｜your reply. Group chat messages whose sender is the player (ids like pmg-1) are real statements by the player: never rewrite, delete, forge or recreate them; reply with a normal +gmsg row under your own identity. The baseline is a sampled view: when contacts or groups exceed the limit, only an active subset is injected each round. Entries that are absent from the baseline still exist: never recreate, delete or duplicate them, and never claim in the narrative that they vanished.'
-        : '- 传讯通道：基线中 yz-player 联系人是持有玉兆的外界玩家与你的传讯。该联系人的消息与未读数是真实事件，由法器维护：不得改写、删除、复制或新建该联系人，也不得凭空编造其消息。要回复时用 +msg｜yz-player｜新消息id｜self｜绝对时间｜回复内容 追加一行即可。群聊中发送者为玩家（id 形如 pmg-1）的消息是玩家的真实发言：不得改写、删除、伪造或重建，用普通 +gmsg 行以你自己的身份回复即可。基线上未出现的联系人/群聊仍存在（基线是采样视图，每轮只注入活跃子集）：不得重建、删除或复制，也不得在叙事中宣称其消失。');
-    }
-    // 玩家发帖规则：owner=player 的论坛帖子是玩家的真实发帖，只读维护，可用 +comment 评论。
-    // 基线是采样视图：帖子超过上限后每轮只注入活跃子集。
-    if (on('forum')) {
-      lines.push(en
-        ? '- Player posts: forum rows whose owner is player (the trailing field of post rows in the baseline) are real posts by the player. Never rewrite, delete, copy or recreate them, and never invent posts from the player. You may comment on any post, including theirs, with +comment rows. Comments posted by the player (ids like pmc-1) are real statements: never rewrite or delete them; reply with your own +comment rows. The baseline is a sampled view: when posts exceed the limit, only an active subset is injected each round. Posts that are absent from the baseline still exist: never recreate, delete or duplicate them, and never claim in the narrative that they vanished.'
-        : '- 玩家发帖：基线中 post 行尾 owner 为 player 的帖子是玩家的真实发帖。不得改写、删除、复制或重建这些帖子，也不得凭空编造玩家的帖子；可以用 +comment 行在任意帖子（包括玩家的）下评论。玩家发布的评论（id 形如 pmc-1）是玩家的真实发言：不得改写或删除，用你自己的 +comment 行回复即可。基线上未出现的帖子仍存在（基线是采样视图，每轮只注入活跃子集）：不得重建、删除或复制，也不得在叙事中宣称其消失。');
-    }
+    // 用户空间规则：多空间注入与写回路由（含拒写语义说明）。
+    var spaceLines = [];
+    (ctx.spaces || []).forEach(function (sp) {
+      if (sp.isDefault) return;
+      spaceLines.push('「' + cleanText(sp.name, 120) + '」' + (sp.writable ? (en ? '(writable)' : '（可写）') : (en ? '(read-only)' : '（只读）')));
+    });
+    lines.push(en
+      ? '- User spaces: the artifact keeps several isolated data spaces. The default one is YOUR OWN space (character ' + (ctx.characterName || '') + '): baseline containers <yzc_*> without a space attribute are its data; your <yz_jade> output without a space field writes it. Other user spaces: ' + (spaceLines.length ? spaceLines.join(', ') : '(none)') + '. Their baseline rows sit in containers tagged space="NAME"; to update one, output ANOTHER complete <yz_jade> block whose turn row ends with ｜NAME as the 6th field. One block writes exactly one space.'
+      : '- 用户空间：法器内并存多个互相隔离的数据空间。默认空间是你（角色 ' + (ctx.characterName || '') + '）本人的空间：基线中不带 space 属性的 <yzc_*> 容器就是它的数据，输出的 <yz_jade> 不带空间字段时写入它。其余用户空间：' + (spaceLines.join('、') || '（无）') + '。它们的数据在基线中带 space="空间名" 属性标记；需要更新某个用户空间时，另行输出一个完整的 <yz_jade> 块，并在其 turn 行末尾以第 6 个字段填写该空间名。一个块只写一个空间。');
+    lines.push(en
+      ? '- User-space minimums: only diff mode is accepted for non-default spaces (full rewrites of private user data are discarded by the artifact); a space marked read-only rejects every write. In user spaces, in every space, rows owned by the user are real statements: contacts with ids starting c-, messages pm-N/pmg-N, posts with owner player and comments pmc-N — never rewrite, delete, copy or forge them (the artifact rejects such rows). Reply to a user thread by appending a +msg/+gmsg/+comment row with a fresh id.'
+      : '- 用户空间约束：非默认空间只接受 diff 轮（全量重写会被法器丢弃）；标注只读的空间拒收一切写入。任何空间内归属用户的行都是真实发言：c- 前缀联系人、pm-N/pmg-N 消息、owner=player 的帖子与 pmc- 评论——不得改写、删除、复制或伪造（这类行会被法器直接拒绝）。要回复用户线程，用全新 id 追加你自己的 +msg/+gmsg/+comment 行即可。');
+    lines.push(en
+      ? '- Data of every listed space is established fact for this character: act consistently with it, and never move rows between spaces.'
+      : '- 各空间的数据都是既定事实：叙事须与之一致，且不得把数据行在空间之间搬运。');
     // issue 回声：当前未达标项（≤3 条，按 lang 选语种），要求模型用 + 行补齐。
     var issueItems = (Array.isArray(ctx.issues) ? ctx.issues : []).slice(0, 3).map(function (issue) {
       var code = issue && issue.code ? String(issue.code) : '';
@@ -4105,8 +3801,8 @@
     lines.push('<yz_jade>');
     lines.push('<yz_meta>');
     lines.push(forceFull
-      ? (en ? 'turn｜unique-turn-id｜character name｜what changed this turn｜full' : 'turn｜本轮唯一ID｜角色名｜本轮变化摘要｜full')
-      : (en ? 'turn｜unique-turn-id｜character name｜what changed this turn｜diff' : 'turn｜本轮唯一ID｜角色名｜本轮变化摘要｜diff'));
+      ? (en ? 'turn｜unique-turn-id｜character name｜what changed this turn｜full｜(optional target user-space name)' : 'turn｜本轮唯一ID｜角色名｜本轮变化摘要｜full｜（可选）目标用户空间名')
+      : (en ? 'turn｜unique-turn-id｜character name｜what changed this turn｜diff｜(optional target user-space name)' : 'turn｜本轮唯一ID｜角色名｜本轮变化摘要｜diff｜（可选）目标用户空间名'));
     lines.push('</yz_meta>');
     PROMPT_FEATURES.forEach(function (feature) {
       if (!on(feature.id)) return;
@@ -4122,7 +3818,7 @@
     // 重新生成的数据才能与已同步内容关联（多轮连续性）。
     var currentRows = Array.isArray(ctx.current) ? ctx.current.filter(function (rowText) { return CORE.hasText(rowText); }) : [];
     if (currentRows.length) {
-      lines.push(en ? 'Baseline: <yz_current> below is the artifact\'s current data (yzc_ tags are containers only — your output still uses the <yz_jade> format above).' : '基线：<yz_current> 内是法器的当前数据（yzc_ 标签仅为容器，输出仍用上面的 <yz_jade> 格式）。');
+      lines.push(en ? 'Baseline: <yz_current> below is the artifact\'s current data grouped by space — yzc_ containers without a space attribute belong to your default space, containers with space="NAME" belong to that user space (yzc_ tags are containers only — your output still uses the <yz_jade> format above).' : '基线：<yz_current> 内是法器的当前数据，按空间分组：不带 space 属性的 yzc_ 容器属于你的默认空间，带 space="空间名" 的属于该用户空间（yzc_ 标签仅为容器，输出仍用上面的 <yz_jade> 格式）。');
       if (!forceFull) {
         lines.push(en ? '- Diff against this baseline: output only the + / - rows for what this turn\'s story changed; never restate unchanged rows;' : '- 对照基线出 diff：本轮剧情影响了哪些行就输出哪些 +/- 行，未变化的行一律不复述；');
         lines.push(en ? '- New ids must not collide with the baseline.' : '- 新增 id 不得与基线冲突。');
@@ -4259,17 +3955,14 @@
     return null;
   }
 
-  function renderNodes(disabled, state, locked) {
+  function renderNodes(disabled, state) {
     var t = I18N.dict();
     disabled = disabled || {};
-    locked = locked || {};
     return FEATURES.map(function (feature) {
       var name = t.features[feature.id];
       var off = !!feature.toggleable && disabled[feature.id] === false;
-      // 玩家域锁定：管理页是角色域本地系统页，玩家域内视觉封印并拦截点击。
-      var lockedNode = !!locked[feature.id];
-      var cls = 'yz-node t-' + feature.tone + (off || lockedNode ? ' sealed' : '') + (lockedNode ? ' yz-node-locked' : '');
-      var badge = (off || lockedNode) ? null : nodeBadge(feature, disabled, state);
+      var cls = 'yz-node t-' + feature.tone + (off ? ' sealed' : '');
+      var badge = off ? null : nodeBadge(feature, disabled, state);
       var badgeHtml = '';
       // 标点随语言（zh '，' / en ', '），避免 en 界面泄漏中文标点。
       var sep = tr('runtime.sep.badge');
@@ -4281,62 +3974,31 @@
         // 新同步只保留 b-new 呼吸光效，不渲染文字角标，避免遮挡卦名。
         else { aria = name + sep + t.badge.new; }
       }
-      // 玩家域锁定 vs 封印的视觉区分：封印 = 灰化「封」字（功能被禁用）；
-      // 锁定（管理页仅角色域可用）= 专属金色「锁」徽标 + aria 说明，避免误读为被封印。
-      var seal = '';
-      if (off) { seal = '<i class="yz-seal">' + CORE.escapeHtml(t.sealGlyph) + '</i>'; }
-      else if (lockedNode) { seal = '<i class="yz-seal yz-seal-locked">' + CORE.escapeHtml(t.lockGlyph) + '</i>'; aria = name + sep + t.manageLocked; }
+      var seal = off ? '<i class="yz-seal">' + CORE.escapeHtml(t.sealGlyph) + '</i>' : '';
       return '<button type="button" class="' + cls + '" data-action="open-feature" data-feature="' + feature.id + '" style="left:' + feature.pos[0] + '%;top:' + feature.pos[1] + '%" aria-label="' + CORE.escapeHtml(aria) + '" title="' + CORE.escapeHtml(name) + ' (' + CORE.escapeHtml(t.gua[feature.id] || '') + ')"><span class="yz-glyph">' + feature.glyph + '</span><b>' + CORE.escapeHtml(name) + '</b><em>' + CORE.escapeHtml(t.gua[feature.id] || '') + '</em>' + seal + badgeHtml + '</button>';
     }).join('');
   }
 
-  // 玩家域主界面信息：已送达/已回统计（玩家域只读会话的状态反馈）。
-  function playerThreadCounts(thread) {
-    var messages = CORE.safeArray(thread && thread.messages, 20);
-    var delivered = 0;
-    var replied = 0;
-    messages.forEach(function (message, index) {
-      if (!message || message.side !== 'self') return;
-      delivered += 1;
-      for (var i = index + 1; i < messages.length; i += 1) {
-        if (messages[i] && messages[i].side === 'other') { replied += 1; break; }
-      }
-    });
-    return { delivered: delivered, replied: replied };
-  }
-
+  // 主界面：卦盘徽标与统计都取「当前空间」的数据；hero 展示空间名与最近一轮摘要。
   function renderHome(state, flags, ui) {
     var t = I18N.dict();
     ui = ui || {};
-    var isPlayer = ui.domain === 'player';
-    var sync = state.sync || {};
-    var st = syncStatusOf(state);
-    var hero;
-    var footer;
-    if (isPlayer) {
-      // 玩家域：主界面展示玩家身份与传讯状态（数据只存本机，不经模型）。
-      var pname = ui.playerName || t.playerFallbackName;
-      var thread = CORE.safeArray(ui.playerState && ui.playerState.chats && ui.playerState.chats.contacts, 10).filter(function (c) {
-        return String(c && c.id) === CORE.PLAYER_THREAD_ID;
-      })[0];
-      var counts = playerThreadCounts(thread);
-      // 角色新回复未读：玩家域主页同步行带未读角标（呼吸光效），"等角色回复"可感知。
-      var unreadBadge = thread && Number(thread.unread) > 0 ? '<u class="yz-unread">' + CORE.escapeHtml(Number(thread.unread) > 99 ? '99+' : String(thread.unread)) + '</u>' : '';
-      hero = '<div class="yz-hero-line"><b>' + CORE.escapeHtml(pname) + '</b><p>' + CORE.escapeHtml(t.playerHomeInfo) + '</p></div>';
-      footer = '<div class="yz-sync complete yz-sync-static' + (thread && Number(thread.unread) > 0 ? ' yz-unread-row' : '') + '"><i></i><span>' + CORE.escapeHtml(t.playerSentWord + ' ' + counts.delivered + ' · ' + t.playerRepliedWord + ' ' + counts.replied) + unreadBadge + '</span></div>';
-    } else {
-      hero = '<div class="yz-hero-line"><b>' + CORE.escapeHtml(CORE.hasText(sync.roleName) ? sync.roleName : t.appName) + '</b><p>' + CORE.escapeHtml(sync.summary || t.awaitingSync) + '</p>' +
-        // 空数据（从未同步）时给新用户一句「接下来干什么」的行动指引，避免八格卦盘无从下手。
-        (sync.status === 'empty' || !CORE.safeArray(state.processedTurns, 1).length
-          ? '<em class="yz-home-empty">' + CORE.escapeHtml(t.homeEmpty) + '</em>'
-          : '') +
-        '</div>';
-      footer = '<button type="button" class="yz-sync ' + CORE.escapeHtml(st.status) + '" data-action="sync-detail" data-sync><i></i><span>' + CORE.escapeHtml(st.text) + '</span></button>';
-    }
+    var space = ui.space || (state && state.spaces ? (CORE.defaultSpaceState(state) || state.spaces[0]) : state) || {};
+    var spaceName = ui.spaceName || CORE.spaceDisplayName(state, space, t.appName);
+    var sync = space.sync || {};
+    var st = syncStatusOf(space);
+    var isDefault = space.isDefault === true;
+    var hero = '<div class="yz-hero-line"><b>' + CORE.escapeHtml(spaceName) + '</b><p>' + CORE.escapeHtml(sync.summary || (isDefault ? t.awaitingSync : t.spaceLocalHint)) + '</p>' +
+      // 空数据（从未同步）时给新用户一句「接下来干什么」的行动指引，避免八格卦盘无从下手。
+      (isDefault && (sync.status === 'empty' || !CORE.safeArray(space.processedTurns, 1).length)
+        ? '<em class="yz-home-empty">' + CORE.escapeHtml(t.homeEmpty) + '</em>'
+        : '') +
+      '</div>';
+    var footer = '<button type="button" class="yz-sync ' + CORE.escapeHtml(st.status) + '" data-action="sync-detail" data-sync><i></i><span>' + CORE.escapeHtml(st.text) + '</span></button>';
     return '<div class="yz-home" data-home>' +
       '<div class="yz-disc">' +
       '<div class="yz-ring"></div>' +
-      renderNodes(flags, state, isPlayer ? { manage: true } : null) +
+      renderNodes(flags, space) +
       '<div class="yz-scroll-ring"></div>' +
       '<button type="button" class="yz-core" data-action="core" aria-label="' + CORE.escapeHtml(t.coreAria) + '"><span class="yz-taiji">☯</span></button>' +
       '</div>' +
@@ -4450,35 +4112,10 @@
     });
   }
 
-  function renderChatList(state, nav, search) {
-    var t = I18N.dict();
-    var chats = CORE.safeObject(state.chats);
-    var kw = searchKw(search);
-    var view = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
-    var body = '';
-    var items;
-    if (view === 'groups') {
-      items = unreadFirst(CORE.safeArray(chats.groups, 6).filter(function (row) {
-        return filterMatch(kw, [row.name, row.preview, row.time]);
-      })).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
-      if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
-      else body = '<div class="yz-page-list">' + items.join('') + '</div>';
-      return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true) +
-        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.groups, 6).length, search) + body + '</main>';
-    }
-    items = unreadFirst(CORE.safeArray(chats.contacts, 10).filter(function (row) {
-      return filterMatch(kw, [row.name, row.relation, row.preview, row.time]);
-    })).map(function (row) { return chatRow(t, row, 'chat', ''); });
-    if (!items.length) body = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.contacts) + '</div>';
-    else body = '<div class="yz-page-list">' + items.join('') + '</div>';
-    return '<main class="yz-page-inner" data-marker="msg-chats">' + yzHeader(t.features.msg, true) +
-      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.contacts, 10).length, search) + body + '</main>';
-  }
-
-  // 群聊是公开数据（双域同一份角色域数据）。气泡左右按「渲染视角」判定：
-  // 角色域：自己发的（side=self 且非玩家消息）在右，其余（含玩家 pmg-* 消息）在左；
-  // 玩家域：玩家消息（pmg-*，含镜像后的 side=other）在右，角色消息在左。
-   function renderMsgDetail(state, nav, group, search, tag, composerGroupId, playerView, archivedFlag, flags, sending) {
+  // 空间会话详情：气泡左右按 side 判定（self=空间本人/用户发言在右）。
+  // 联系人/群聊都是空间内普通实体；私聊与群聊都带发言输入框（用户直写不经模型评估）。
+  // data-thread-input 由 App 层绑定：sendSpaceMessage / sendSpaceComment。
+  function renderMsgDetail(state, nav, group, search, tag, flags, ui) {
     var t = I18N.dict();
     var chats = CORE.safeObject(state.chats);
     var kw = searchKw(search);
@@ -4486,170 +4123,68 @@
     var rowItem = null;
     rows.forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) rowItem = item; });
     if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false, tag) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '<br><small class="yz-archived-hint">' + CORE.escapeHtml(t.guards.chatArchived) + '</small></div></main>';
+    var sealed = flags && flags.msg === false;
+    var isUserThread = /^c-/.test(String(rowItem.id));
+    var userView = isUserThread || state.isDefault === false || ui.userSpaceView === true;
     var bubbles = CORE.safeArray(rowItem.messages, group ? 24 : 20).filter(function (message) {
       return filterMatch(kw, [message.text, message.sender, message.time]);
     }).map(function (message) {
-      var isPlayerMsg = group && /^pmg-/.test(String(message.id || ''));
-      var mine = message.side === 'self'
-        ? (playerView ? isPlayerMsg : !isPlayerMsg)
-        : (playerView && isPlayerMsg);
-      var showSender = group && !mine;
-      var sender = showSender ? '<b class="yz-sender">' + CORE.escapeHtml(message.sender || (message.side === 'self' ? t.labels.self : '')) + '</b>' : '';
-      var delBtn = (!playerView && message.side === 'other')
-        ? ' <button type="button" class="yz-bubble-del" data-action="delete-message" data-id="' + CORE.escapeHtml(String(message.id)) + '" data-parent-id="' + CORE.escapeHtml(String(rowItem.id)) + '">×</button>'
-        : '';
+      // 右气泡 = 用户真实发言（pm-*/pmg-*，任何空间）；默认空间的模型线程维持旧语义
+      // （self=角色自己的消息在右）；用户空间/用户线程里 AI 一律在左、带发送者名。
+      var mine = /^(pm-|pmg-)/.test(String(message.id || '')) ? true : (!userView && message.side === 'self');
+      var showSender = !mine && (group || isUserThread || userView);
+      var senderName = message.sender || rowItem.name || (message.side === 'self' ? (ui.ownerName || '') : '');
+      var sender = showSender ? '<b class="yz-sender">' + CORE.escapeHtml(senderName || '') + '</b>' : '';
+      var delBtn = ' <button type="button" class="yz-bubble-del" data-action="delete-message" data-id="' + CORE.escapeHtml(String(message.id)) + '" data-parent-id="' + CORE.escapeHtml(String(rowItem.id)) + '">×</button>';
       return '<div class="yz-bubble-row ' + (mine ? 'self' : 'other') + '">' +
         (!mine && group ? '<span class="yz-bubble-ava">' + ava(message.sender || '?') + '</span>' : '') +
         '<div class="yz-bubble-wrap">' + sender + '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + delBtn + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
         '</div>';
     }).join('');
-    if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.awaitingSync) + '</div>';
-    // 玩家侧消息窗口截断痕迹（玩家群聊发言最多保留 24 条，更早的已归档）。
-    if (archivedFlag) {
-      bubbles = '<div class="yz-archived-note">' + CORE.escapeHtml(tr('runtime.player.msgArchived', { n: 24 })) + '</div>' + bubbles;
-    }
-    // 角色域会话截断痕迹：联系人 20 条/群聊 24 条窗口外的更早消息已归档——
-    // 与玩家域一致在会话顶部说明，否则旧消息悄悄消失会误以为被删。
-    if (!archivedFlag && rowItem && rowItem.archived) {
+    if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.msgThreadEmpty) + '</div>';
+    if (rowItem.archived) {
       bubbles = '<div class="yz-archived-note">' + CORE.escapeHtml(tr('runtime.player.msgArchived', { n: group ? 24 : 20 })) + '</div>' + bubbles;
     }
     var title = CORE.escapeHtml(rowItem.name) + (group && Number(rowItem.members) ? ' (' + CORE.escapeHtml(String(rowItem.members)) + CORE.escapeHtml(t.labels.membersUnit) + ')' : '');
-    // 玩家域群聊（公开数据）：底部群聊发言输入框（data-group-msg-input 由 App 层绑定）。
-    var groupSealed = flags && flags.msg === false;
     var composer;
-    if (groupSealed && composerGroupId) {
+    if (sealed) {
       composer = '<div class="yz-composer yz-composer-sealed">' + CORE.escapeHtml(t.toast.sealedMsg) + '</div>';
     } else {
-      composer = composerGroupId
-        ? '<div class="yz-composer"><input type="text" data-group-msg-input data-group-id="' + CORE.escapeHtml(composerGroupId) + '" placeholder="' + CORE.escapeHtml(t.playerGroupMsgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerGroupMsgPlaceholder) + '" maxlength="3000">' +
-          '<button type="button" class="yz-send" data-action="send-group-msg" data-group-id="' + CORE.escapeHtml(composerGroupId) + '">' + CORE.escapeHtml(t.playerSend) + '</button></div>'
-        : '';
+      composer = '<div class="yz-composer"><input type="text" data-thread-input data-thread-id="' + CORE.escapeHtml(String(rowItem.id)) + '" data-group="' + (group ? '1' : '0') + '" placeholder="' + CORE.escapeHtml(t.msgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.msgPlaceholder) + '" maxlength="3000">' +
+        '<button type="button" class="yz-send" data-action="send-thread-msg" data-thread-id="' + CORE.escapeHtml(String(rowItem.id)) + '" data-group="' + (group ? '1' : '0') + '">' + CORE.escapeHtml(t.send) + '</button></div>';
     }
     return '<main class="yz-page-inner yz-page-composer" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' +
       yzHeader(title, false, tag) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
   }
 
-  function renderMsg(state, nav, search, flags, sending) {
-    nav = nav || { app: 'msg', view: 'chats', params: {} };
-    if (nav.view === 'chat') return renderMsgDetail(state, nav, false, search, undefined, undefined, undefined, undefined, flags, sending);
-    if (nav.view === 'gchat') return renderMsgDetail(state, nav, true, search, undefined, undefined, undefined, undefined, flags, sending);
-    return renderChatList(state, nav, search);
-  }
-  // 玩家域交流讯息：固定「与角色传讯」会话（私讯跨域写入点）。
-  // 玩家消息为右侧气泡，附 已送达/已读/已回 状态；角色回复经通道镜像为左侧气泡。
-  // 已回 = 线程中该消息之后存在角色回复；已读 = seq ≤ 角色域已读游标（注入即已读）。
-  // 群聊是公开数据（跨域一致）：玩家域的群组列表/群聊详情渲染角色域数据并带「公开」标识。
-  function renderMsgPlayer(characterState, playerState, nav, search, tag, failedSet, flags, sending) {
+  function renderMsg(state, nav, search, flags, ui) {
+    ui = ui || {};
     var t = I18N.dict();
-    failedSet = failedSet || {};
-    var kw = searchKw(search);
     nav = nav || { app: 'msg', view: 'chats', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
-    if (view === 'gchat') {
-      // 群聊详情（公开）：复用角色域渲染（玩家视角），玩家域加「公开」标识与群聊发言输入框。
-      // 玩家侧群消息窗口（24 条）截断过的标记一并传给详情页，展示「更早已归档」痕迹。
-      var playerGroup = null;
-      CORE.safeArray(playerState.chats && playerState.chats.groups, 6).forEach(function (g) {
-        if (g && String(g.id) === String(nav.params && nav.params.id)) playerGroup = g;
-      });
-      return renderMsgDetail(characterState, nav, true, search, tag, String(nav.params && nav.params.id) || '', true, playerGroup && playerGroup.archived, flags, sending);
-    }
+    if (view === 'chat') return renderMsgDetail(state, nav, false, search, '', flags, ui);
+    if (view === 'gchat') return renderMsgDetail(state, nav, true, search, '', flags, ui);
+    if (view === 'contact-form') return renderSpaceForm(state, nav, ui);
+    // 会话列表：联系人 + 群聊两个页签；联系人页底部「＋ 新增联系人」（自定义名称）。
+    var chats = CORE.safeObject(state.chats);
+    var kw = searchKw(search);
+    var body;
     if (view === 'groups') {
-      // 群组列表（公开）：渲染角色域群组，行内未读徽标与角色域一致；有新回复的置顶 + 光效。
-      var gitems = unreadFirst(CORE.safeArray(characterState.chats && characterState.chats.groups, 6).filter(function (row) {
+      var gitems = unreadFirst(CORE.safeArray(chats.groups, 6).filter(function (row) {
         return filterMatch(kw, [row.name, row.preview, row.time]);
       })).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
-      var gbody = gitems.length ? '<div class="yz-page-list">' + gitems.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
-      return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true, tag) +
-        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], 'groups') + searchBoxIf(CORE.safeArray(characterState.chats && characterState.chats.groups, 6).length, search) + gbody + '</main>';
+      body = gitems.length ? '<div class="yz-page-list">' + gitems.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
+      return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true) +
+        yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.groups, 6).length, search) + body + '</main>';
     }
-    var thread = null;
-    CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).forEach(function (c) {
-      if (String(c && c.id) === CORE.PLAYER_THREAD_ID) thread = c;
-    });
-    if (view === 'chat') {
-      // 已送达集合：角色域 yz-player 联系人中已存在的玩家消息 id（投递确认）。
-      var delivered = {};
-      var characterContact = null;
-      CORE.safeArray(characterState.chats && characterState.chats.contacts, 10).forEach(function (c) {
-        if (String(c && c.id) === CORE.PLAYER_CONTACT_ID) characterContact = c;
-      });
-      CORE.safeArray(characterContact && characterContact.messages, 20).forEach(function (m) { delivered[String(m && m.id)] = true; });
-      var cursor = Number(characterState.sync && characterState.sync.playerReadCursor) || 0;
-      var bubbles = CORE.safeArray(thread && thread.messages, 20).filter(function (message) {
-        return filterMatch(kw, [message.text, message.time]);
-      }).map(function (message) {
-        if (message.side === 'self') {
-          var seqMatch = /^pm-(\d+)$/.exec(String(message.id) || '');
-          var status = t.playerStatusSent;
-          var failed = !!failedSet[String(message.id)];
-          var replied = false;
-          var idx = CORE.safeArray(thread.messages, 20).indexOf(message);
-          for (var i = idx + 1; i < CORE.safeArray(thread.messages, 20).length; i += 1) {
-            if (thread.messages[i] && thread.messages[i].side === 'other') { replied = true; break; }
-          }
-          // 投递失败优先于一切状态：显示「未送达」+ 重发按钮（点击重跑镜像）。
-          if (failed) status = t.playerStatusUndelivered;
-          else if (replied) status = t.playerStatusReplied;
-          else if (seqMatch && (Number(seqMatch[1]) || 0) <= cursor && delivered[String(message.id)]) status = t.playerStatusRead;
-          var retryBtn = failed
-            ? '<button type="button" class="yz-retry-btn" data-action="retry-msg" data-id="' + CORE.escapeHtml(String(message.id)) + '">' + CORE.escapeHtml(t.playerRetry) + '</button>'
-            : '';
-          var delBtnSelf = ' <button type="button" class="yz-bubble-del" data-action="delete-message" data-id="' + CORE.escapeHtml(String(message.id)) + '" data-parent-id="' + CORE.escapeHtml(String(CORE.PLAYER_THREAD_ID)) + '">×</button>';
-          return '<div class="yz-bubble-row self">' +
-            '<div class="yz-bubble-wrap"><div class="yz-bubble">' + CORE.escapeHtml(message.text) + delBtnSelf + '</div>' +
-            '<time>' + CORE.escapeHtml(message.time || '') + '<i class="yz-msg-status' + (failed ? ' bad' : '') + '">' + CORE.escapeHtml(status) + '</i></time>' + retryBtn + '</div>' +
-            '</div>';
-        }
-        return '<div class="yz-bubble-row other">' +
-          '<span class="yz-bubble-ava">' + ava(thread && thread.name || '?') + '</span>' +
-          '<div class="yz-bubble-wrap"><b class="yz-sender">' + CORE.escapeHtml(thread && thread.name || '') + '</b>' +
-          '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
-          '</div>';
-      }).join('');
-      if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.playerThreadEmpty) + '</div>';
-      // 超限截断痕迹：最近 20 条窗口外的更早消息已归档（thread.archived 在截断时置位），
-      // 在会话顶部给出「更早已归档」说明，避免用户以为消息凭空消失。
-      if (thread && thread.archived) {
-        bubbles = '<div class="yz-archived-note">' + CORE.escapeHtml(tr('runtime.player.msgArchived', { n: 20 })) + '</div>' + bubbles;
-      }
-      var title = CORE.escapeHtml(thread ? thread.name : t.playerThreadFallback);
-      // 封印后传讯通道关闭：隐藏输入框，显示封印横幅，防止用户误以为能发消息。
-      var sealed = flags && flags.msg === false;
-      var composer;
-      if (sealed) {
-        composer = '<div class="yz-composer yz-composer-sealed">' + CORE.escapeHtml(t.toast.sealedMsg) + '</div>';
-      } else {
-        var sendDisabled = sending ? ' disabled' : '';
-        composer = '<div class="yz-composer"><input type="text" data-msg-input placeholder="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerMsgPlaceholder) + '" maxlength="3000"' + sendDisabled + '>' +
-          '<button type="button" class="yz-send' + (sending ? ' yz-send-busy' : '') + '" data-action="send-msg"' + sendDisabled + '>' + (sending ? '…' : CORE.escapeHtml(t.playerSend)) + '</button></div>';
-      }
-      return '<main class="yz-page-inner yz-page-composer" data-marker="player-chat">' +
-        yzHeader(title) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
-    }
-    // 会话列表：未建立线程时给首次传讯入口（固定会话形态，无需选联系人）。
-    var items = [];
-    if (thread && filterMatch(kw, [thread.name, thread.preview, thread.time])) {
-      // 角色新回复未读：线程行带数字角标 + 呼吸光效（chatRow 的 unread 驱动）。
-      items.push(chatRow(t, { id: CORE.PLAYER_THREAD_ID, name: thread.name, relation: t.playerThreadRelation, time: thread.time, preview: thread.preview, unread: thread.unread || 0 }, 'chat', ''));
-    }
-    var body;
-    if (items.length) {
-      // 全已读入口：有未读时一键清零（主页「讯息」角标同步熄灭，不必逐条点开）。
-      var markAll = thread && Number(thread.unread) > 0
-        ? '<button type="button" class="yz-mark-all" data-action="mark-thread-read">' + CORE.escapeHtml(t.playerMarkAllRead) + '</button>'
-        : '';
-      body = '<div class="yz-page-list">' + items.join('') + '</div>' + markAll;
-    }
-    else if (kw) body = '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
-    else body = '<div class="yz-empty">' + CORE.escapeHtml(t.playerNoThread) + '</div>' +
-      button('navigate', t.playerStartThread, { view: 'chat', id: CORE.PLAYER_THREAD_ID }, 'yz-start-thread');
-    return '<main class="yz-page-inner" data-marker="player-chats">' + yzHeader(t.features.msg, true) +
-      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(playerState.chats && playerState.chats.contacts, 10).length, search) + body + '</main>';
+    var items = unreadFirst(CORE.safeArray(chats.contacts, 10).filter(function (row) {
+      return filterMatch(kw, [row.name, row.relation, row.preview, row.time]);
+    })).map(function (row) { return chatRow(t, row, 'chat', ''); });
+    body = items.length ? '<div class="yz-page-list">' + items.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.contacts) + '</div>';
+    var cta = '<button type="button" class="yz-add-btn" data-action="new-contact">＋ ' + CORE.escapeHtml(t.addContact) + '</button>';
+    return '<main class="yz-page-inner" data-marker="msg-chats">' + yzHeader(t.features.msg, true) +
+      yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.contacts, 10).length, search) + body + cta + '</main>';
   }
-
-  // ---------- 玩家域 CRUD：表单页与列表页操作控件 ----------
-  // 玩家直写不经模型评估；列表行尾「编辑」按钮 + 列表底部「新建」CTA + 表单页保存/两击删除。
 
   function playerEntityWord(kind, t) {
     return t.playerWord[kind] || kind;
@@ -4667,13 +4202,13 @@
 
   // 行尾编辑按钮（复用管理页清空按钮的样式语义，操作是进入表单）。
   function playerEditBtn(kind, id) {
-    return '<button type="button" class="yz-edit-btn" data-action="player-edit" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(id)) + '" aria-label="' + CORE.escapeHtml(I18N.dict().playerEdit) + '">✎</button>';
+    return '<button type="button" class="yz-edit-btn" data-action="entity-edit" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(id)) + '" aria-label="' + CORE.escapeHtml(I18N.dict().playerEdit) + '">✎</button>';
   }
 
   // 可编辑列表行：主区（导航或静态展示）+ 行尾编辑/删除按钮（button 嵌 button 非法，外层用 div）。
   function editableListRow(mainHtml, kind, id, armed) {
     var t = I18N.dict();
-    var delBtn = '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="player-delete" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(id)) + '"' + (armed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(armed ? t.playerDeleteConfirm : t.playerDelete) + '</button>';
+    var delBtn = '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="entity-delete" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(id)) + '"' + (armed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(armed ? t.playerDeleteConfirm : t.playerDelete) + '</button>';
     return '<div class="yz-row yz-static yz-manage-row">' + mainHtml + playerEditBtn(kind, id) + delBtn + '</div>';
   }
 
@@ -4681,7 +4216,7 @@
   function playerAddBtn(kind, folderId) {
     var t = I18N.dict();
     var extra = folderId ? ' data-folder="' + CORE.escapeHtml(String(folderId)) + '"' : '';
-    return '<button type="button" class="yz-add-btn" data-action="player-new" data-kind="' + CORE.escapeHtml(kind) + '"' + extra + '>＋ ' + CORE.escapeHtml(playerVerbNoun(t.playerNewWord, playerEntityWord(kind, t))) + '</button>';
+    return '<button type="button" class="yz-add-btn" data-action="entity-new" data-kind="' + CORE.escapeHtml(kind) + '"' + extra + '>＋ ' + CORE.escapeHtml(playerVerbNoun(t.playerNewWord, playerEntityWord(kind, t))) + '</button>';
   }
 
   // 表单字段描述：key 与 data-form-field 对应，保存时由 App 层统一读取。
@@ -4689,6 +4224,10 @@
     function field(key, label, type, value, options, max) {
       return { key: key, label: label, type: type || 'text', value: value == null ? '' : value, options: options, max: max };
     }
+    if (kind === 'contact') return [
+      field('name', t.contactFieldName, 'text', entity && entity.name, null, 120),
+      field('relation', t.contactFieldRelation, 'text', entity && entity.relation, null, 120)
+    ];
     if (kind === 'folder') return [field('name', t.playerFieldName, 'text', entity && entity.name, null, 120)];
     if (kind === 'note') {
       return [
@@ -4744,7 +4283,7 @@
 
   // 玩家域编辑/新建表单页：新建时 id 为空；编辑时预填现有实体。
   // 删除按钮走两击确认（ui.armed 复用管理页武装状态机）。
-  function renderPlayerForm(pstate, nav, ui) {
+  function renderSpaceForm(pstate, nav, ui) {
     var t = I18N.dict();
     var params = nav.params || {};
     var kind = params.kind;
@@ -4788,8 +4327,8 @@
     body += '</div>';
     var armed = !!(ui && ui.armed && ui.armed.id === kind + ':' + String(params.id));
     body += '<div class="yz-form-actions">' +
-      '<button type="button" class="yz-send" data-action="player-save" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(params.id || '')) + '">' + CORE.escapeHtml(t.playerSave) + '</button>' +
-      (isEdit ? '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="player-delete" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(params.id)) + '"' + (armed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(armed ? t.playerDeleteConfirm : t.playerDelete) + '</button>' : '') +
+      '<button type="button" class="yz-send" data-action="entity-save" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(params.id || '')) + '">' + CORE.escapeHtml(t.playerSave) + '</button>' +
+      (isEdit ? '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="entity-delete" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(params.id)) + '"' + (armed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(armed ? t.playerDeleteConfirm : t.playerDelete) + '</button>' : '') +
       '</div>';
     return '<main class="yz-page-inner" data-marker="player-form">' +
       yzHeader(title) + body + '</main>';
@@ -4802,7 +4341,7 @@
     var kw = searchKw(search);
     nav = nav || { app: 'notes', view: 'folders', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'folders';
-    if (player && view === 'form') return renderPlayerForm(state, nav, ui);
+    if (player && view === 'form') return renderSpaceForm(state, nav, ui);
     if (view === 'note') {
       var rowNote = null;
       CORE.safeArray(notes.notes, 30).forEach(function (note) { if (String(note.id) === String(nav.params && nav.params.id)) rowNote = note; });
@@ -4813,8 +4352,8 @@
       if (player) {
         var noteArmed = !!(ui && ui.armed && ui.armed.id === 'note:' + String(rowNote.id));
         actions = '<div class="yz-form-actions">' +
-          '<button type="button" class="yz-send" data-action="player-edit" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button>' +
-          '<button type="button" class="yz-clear-btn' + (noteArmed ? ' armed' : '') + '" data-action="player-delete" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '"' + (noteArmed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(noteArmed ? t.playerDeleteConfirm : t.playerDelete) + '</button>' +
+          '<button type="button" class="yz-send" data-action="entity-edit" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button>' +
+          '<button type="button" class="yz-clear-btn' + (noteArmed ? ' armed' : '') + '" data-action="entity-delete" data-kind="note" data-id="' + CORE.escapeHtml(rowNote.id) + '"' + (noteArmed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(noteArmed ? t.playerDeleteConfirm : t.playerDelete) + '</button>' +
           '</div>';
       }
       return '<main class="yz-page-inner" data-marker="note-detail">' +
@@ -4858,7 +4397,7 @@
     var kw = searchKw(search);
     nav = nav || { app: 'forum', view: 'root', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'root';
-    if (player && view === 'form') return renderPlayerForm(state, nav, ui);
+    if (player && view === 'form') return renderSpaceForm(state, nav, ui);
     if (view === 'post') {
       var post = null;
       CORE.safeArray(forum.posts, 20).forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) post = item; });
@@ -4873,8 +4412,8 @@
       var commentsFull = CORE.safeArray(post.comments, 20).length >= 20 && !kw;
       var isMine = String(post.owner || '') === 'player';
       var postArmed = !!(ui && ui.armed && ui.armed.id === 'post:' + String(post.id));
-      var editBtn = (player && isMine) ? '<div class="yz-form-actions"><button type="button" class="yz-send" data-action="player-edit" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button>' +
-          '<button type="button" class="yz-clear-btn' + (postArmed ? ' armed' : '') + '" data-action="player-delete" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '"' + (postArmed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(postArmed ? t.playerDeleteConfirm : t.playerDelete) + '</button></div>' : '';
+      var editBtn = (player && isMine) ? '<div class="yz-form-actions"><button type="button" class="yz-send" data-action="entity-edit" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '">' + CORE.escapeHtml(t.playerEdit) + '</button>' +
+          '<button type="button" class="yz-clear-btn' + (postArmed ? ' armed' : '') + '" data-action="entity-delete" data-kind="post" data-id="' + CORE.escapeHtml(post.id) + '"' + (postArmed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(postArmed ? t.playerDeleteConfirm : t.playerDelete) + '</button></div>' : '';
       // 玩家域（公开数据）：底部评论输入框（data-comment-input 由 App 层绑定发送）。
       var commentBox = player
         ? '<div class="yz-composer"><input type="text" data-comment-input data-post-id="' + CORE.escapeHtml(post.id) + '" placeholder="' + CORE.escapeHtml(t.playerCommentPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.playerCommentPlaceholder) + '" maxlength="3000">' +
@@ -4911,18 +4450,16 @@
       }
       return button('navigate', row, { view: 'post', id: post.id }, 'yz-row' + (hasUnread ? ' yz-unread-row' : ''));
     }).join('') : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.posts) + '</div>';
-    var cta = player ? playerAddBtn('post', '') : '';
-    // 角色域论坛只读：给出可读性边界说明，避免把「没有发帖/评论入口」误读为缺功能。
-    var hint = player ? '' : readOnlyHint(t.playerReadOnlyForum);
-    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBoxIf(CORE.safeArray(state.forum && state.forum.posts, 20).length, search) + '<div class="yz-page-list">' + list + '</div>' + cta + hint + '</main>';
+    var cta = playerAddBtn('post', '');
+    return '<main class="yz-page-inner" data-marker="forum-list">' + yzHeader(t.features.forum, false, tag) + searchBoxIf(CORE.safeArray(state.forum && state.forum.posts, 20).length, search) + '<div class="yz-page-list">' + list + '</div>' + cta + '</main>';
   }
 
   function marketRow(avatarName, title, sub, meta, foot, asButton, editTarget) {
     var inner = ava(avatarName) + '<span class="yz-row-copy"><b>' + title + '<i>' + sub + '</i></b><em>' + meta + '</em></span><time>' + foot + '</time>';
     // asButton：玩家域可编辑列表的主区（yz-manage-main 是 flex 按钮，布局与行一致）。
-    // 绑 player-edit 让整行可点进编辑表单，避免「可点无动作」的假 affordance。
+    // 绑 entity-edit 让整行可点进编辑表单，避免「可点无动作」的假 affordance。
     if (asButton) {
-      var attrs = ' data-action="player-edit" data-kind="' + CORE.escapeHtml(editTarget && editTarget.kind || '') + '" data-id="' + CORE.escapeHtml(String(editTarget && editTarget.id || '')) + '"';
+      var attrs = ' data-action="entity-edit" data-kind="' + CORE.escapeHtml(editTarget && editTarget.kind || '') + '" data-id="' + CORE.escapeHtml(String(editTarget && editTarget.id || '')) + '"';
       return '<button type="button" class="yz-manage-main"' + attrs + '>' + inner + '</button>';
     }
     return '<div class="yz-row yz-static">' + inner + '</div>';
@@ -4939,7 +4476,7 @@
     var kw = searchKw(search);
     nav = nav || { app: 'market', view: 'listings', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
-    if (player && view === 'form') return renderPlayerForm(state, nav, ui);
+    if (player && view === 'form') return renderSpaceForm(state, nav, ui);
     var body;
     // 当前 tab 是否有数据：空列表不渲染检索框（纯占位）。
     var hasRows = view === 'orders' ? CORE.safeArray(market.orders, 12).length
@@ -4970,7 +4507,7 @@
           CORE.escapeHtml(order.name), '<span class="' + sideCls + '">' + CORE.escapeHtml(side) + '</span>',
           CORE.escapeHtml(order.status || ''),
           CORE.escapeHtml(order.time || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(formatNum(order.price)) + '</u>', !!player, player && { kind: 'order', id: order.id });
-        // 整行已是 player-edit 按钮：不再叠加行尾 ✎（双入口同一动作，✎ 冗余）。
+        // 整行已是 entity-edit 按钮：不再叠加行尾 ✎（双入口同一动作，✎ 冗余）。
         return player ? row : row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.orders) + '</div>';
     } else if (view === 'requests') {
@@ -4996,11 +4533,9 @@
           CORE.escapeHtml(listing.seller || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(formatNum(listing.price)) + '</u>');
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.listings) + '</div>';
     }
-    var cta = (player && view === 'orders') ? playerAddBtn('order', '') : '';
-    // 角色域订单是私有数据的只读视图：给出可读性的边界说明，避免「没有新建入口」被误读为缺功能。
-    var hint = (!player && view === 'orders') ? readOnlyHint(t.playerReadOnlyOrders) : '';
+    var cta = view === 'orders' ? playerAddBtn('order', '') : '';
     return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true, tag) +
-      yzTabs([['listings', t.tabs.listings], ['requests', t.tabs.requests], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBoxIf(hasRows, search) + body + cta + hint + '</main>';
+      yzTabs([['listings', t.tabs.listings], ['requests', t.tabs.requests], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBoxIf(hasRows, search) + body + cta + '</main>';
   }
 
   // 纯数字串加千分位；非纯数字（含单位/文本）原样返回——金额字段是自由文本。
@@ -5022,7 +4557,7 @@
     var kw = searchKw(search);
     nav = nav || { app: 'space', view: 'items', params: {} };
     var view = (nav.view && nav.view !== 'root') ? nav.view : 'items';
-    if (player && view === 'form') return renderPlayerForm(state, nav, ui);
+    if (player && view === 'form') return renderSpaceForm(state, nav, ui);
     var body;
     if (view === 'currencies') {
       var currencies = CORE.safeArray(space.currencies, 10).filter(function (currency) {
@@ -5031,9 +4566,9 @@
       body = currencies.length ? '<div class="yz-page-list">' + currencies.map(function (currency) {
         var inner = '<span class="yz-coin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(currency.kind) + '</b></span><time class="yz-amount">' + CORE.escapeHtml(formatNum(currency.amount)) + '</time>';
         var row = player
-          ? '<button type="button" class="yz-manage-main" data-action="player-edit" data-kind="currency" data-id="' + CORE.escapeHtml(String(currency.kind)) + '">' + inner + '</button>'
+          ? '<button type="button" class="yz-manage-main" data-action="entity-edit" data-kind="currency" data-id="' + CORE.escapeHtml(String(currency.kind)) + '">' + inner + '</button>'
           : '<div class="yz-row yz-static">' + inner + '</div>';
-        // 整行已是 player-edit 按钮：不再叠加行尾 ✎（双入口冗余）。
+        // 整行已是 entity-edit 按钮：不再叠加行尾 ✎（双入口冗余）。
         return row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.currencies) + '</div>';
     } else {
@@ -5047,19 +4582,17 @@
           CORE.escapeHtml(item.name), CORE.escapeHtml(item.grade || ''),
           CORE.escapeHtml(item.desc || ''),
           CORE.escapeHtml(qtyShown), !!player, player && { kind: 'item', id: item.id });
-        // 整行已是 player-edit 按钮：不再叠加行尾 ✎（双入口冗余）。
+        // 整行已是 entity-edit 按钮：不再叠加行尾 ✎（双入口冗余）。
         return row;
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.items) + '</div>';
     }
-    var cta = player ? playerAddBtn(view === 'currencies' ? 'currency' : 'item', '') : '';
-    // 角色域储物只读：给边界说明，避免把「没有管理入口」误读为功能缺失。
-    var hint = !player ? readOnlyHint(t.playerReadOnlySpace) : '';
+    var cta = playerAddBtn(view === 'currencies' ? 'currency' : 'item', '');
     var hasRows = view === 'currencies' ? CORE.safeArray(space.currencies, 10).length : CORE.safeArray(space.items, 30).length;
     return '<main class="yz-page-inner" data-marker="space-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.space, true) +
-      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBoxIf(hasRows, search) + body + cta + hint + '</main>';
+      yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBoxIf(hasRows, search) + body + cta + '</main>';
   }
 
-  function renderMap(state, search, tag, player) {
+  function renderMap(state, search, tag) {
     var t = I18N.dict();
     var map = CORE.safeObject(state.map);
     var kw = searchKw(search);
@@ -5079,12 +4612,12 @@
     // 行踪按时间逆序（最新在上，紧贴当前所在地）：数据按追加顺序存（旧→新），倒排展示。
     var timeline = tracks.length ? '<div class="yz-map-tracks"><h3>' + CORE.escapeHtml(t.mapTitles.tracks) + '</h3><div class="yz-timeline">' +
       tracks.slice().reverse().map(function (track) {
-        var trackDel = player ? ' <button type="button" class="yz-bubble-del" data-action="delete-track" data-id="' + CORE.escapeHtml(String(track.id)) + '">×</button>' : '';
+        var trackDel = ' <button type="button" class="yz-bubble-del" data-action="delete-track" data-id="' + CORE.escapeHtml(String(track.id)) + '">×</button>';
         return '<div class="yz-track" style="display:flex;align-items:center;gap:8px"><time>' + CORE.escapeHtml(track.time || '') + '</time><div><b>' + CORE.escapeHtml(track.place) + '</b>' + (CORE.hasText(track.action) ? '<p>' + CORE.escapeHtml(track.action) + '</p>' : '') + '</div>' + trackDel + '</div>';
       }).join('') + '</div></div>' : '';
     var roster = places.length ? '<div class="yz-map-places"><h3>' + CORE.escapeHtml(t.mapTitles.places) + '</h3><div class="yz-page-list">' +
       places.map(function (place) {
-        var placeDel = player ? ' <button type="button" class="yz-bubble-del" data-action="delete-place" data-id="' + CORE.escapeHtml(String(place.id)) + '">×</button>' : '';
+        var placeDel = ' <button type="button" class="yz-bubble-del" data-action="delete-place" data-id="' + CORE.escapeHtml(String(place.id)) + '">×</button>';
         return '<div class="yz-row yz-static" style="display:flex;align-items:center;gap:8px"><span class="yz-map-pin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(place.name) + '</b>' +
           (CORE.hasText(place.domain) ? '<i>' + CORE.escapeHtml(place.domain) + '</i>' : '') +
           (CORE.hasText(place.desc) ? '<em>' + CORE.escapeHtml(place.desc) + '</em>' : '') + '</span>' + placeDel + '</div>';
@@ -5097,7 +4630,7 @@
       var curMatch = filterMatch(kw, [cur.place, cur.domain, cur.desc]);
       if (!curMatch && !tracks.length && !places.length) empty = '<div class="yz-empty">' + CORE.escapeHtml(t.searchNoMatch) + '</div>';
     } else if (!hasData) {
-      empty = '<div class="yz-empty">' + CORE.escapeHtml(player ? (t.playerMapEmpty || t.guards.tracks) : t.guards.tracks) + '</div>';
+      empty = '<div class="yz-empty">' + CORE.escapeHtml(t.guards.tracks) + '</div>';
     }
     return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map, false, tag) + searchBoxIf(hasData, search) + hero + timeline + roster + empty + '</main>';
   }
@@ -5107,7 +4640,7 @@
   }
 
   // 同步详情页正文：主界面同步行、太极核心与「玉兆管理」诊断区三个入口共用，不重复实现。
-  function renderSyncDetail(state) {
+  function renderSyncDetail(state, whole) {
     var t = I18N.dict();
     var sync = state.sync || {};
     var st = syncStatusOf(state);
@@ -5131,7 +4664,7 @@
       body += diagRow(t.diag.lastError, '<span class="yz-bad-text">' + CORE.escapeHtml(errText) + '</span>');
     }
     body += diagRow(t.diag.updated, CORE.escapeHtml(formatDateTime(sync.updatedAt)));
-    var usage = snapshotUsage(state);
+    var usage = snapshotUsage(whole || state);
     var pct = Math.round(usage.percent);
     body += '<div class="yz-diag-row"><small>' + CORE.escapeHtml(t.diag.storage) + '</small>' +
       '<div class="yz-meter' + (usage.percent > 80 ? ' warn' : '') + '"><i style="width:' + pct + '%"></i></div>' +
@@ -5154,18 +4687,52 @@
     return { id: featureId, expiresAt: now + WIPE_CONFIRM_MS };
   }
 
-  function renderManage(state, flags, ui) {
+  // 空间管理页：切换/新建/重命名/删除空间 + sendToAI / allowAIWrite 开关。
+  function renderSpaceManage(state, t) {
+    var spaces = CORE.safeArray(state.spaces, CORE.MAX_SPACES);
+    var activeId = state.activeSpaceId;
+    var rows = spaces.map(function (sp) {
+      var name = CORE.spaceDisplayName(state, sp, t.spaceDefaultName);
+      var isActive = sp.id === activeId;
+      var armed = !!(state && sp && false);
+      var badges = '<i class="yz-space-badges">' +
+        (sp.isDefault ? '<em class="yz-space-tag">' + CORE.escapeHtml(t.spaceTagDefault) + '</em>' : '') +
+        (sp.sendToAI !== false ? '<em class="yz-space-tag">' + CORE.escapeHtml(t.spaceTagSend) + '</em>' : '') +
+        (sp.allowAIWrite !== false ? '<em class="yz-space-tag">' + CORE.escapeHtml(t.spaceTagWrite) + '</em>' : '') +
+        '</i>';
+      var enter = isActive
+        ? '<span class="yz-space-current">' + CORE.escapeHtml(t.spaceCurrent) + '</span>'
+        : '<button type="button" class="yz-tab" data-action="space-enter" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceEnter) + '</button>';
+      var sendBtn = '<button type="button" class="yz-clear-btn' + (sp.sendToAI !== false ? ' armed' : '') + '" data-action="space-flag" data-flag="sendToAI" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceSendToggle) + ' ' + (sp.sendToAI !== false ? t.manage.on : t.manage.off) + '</button>';
+      var writeBtn = '<button type="button" class="yz-clear-btn' + (sp.allowAIWrite !== false ? ' armed' : '') + '" data-action="space-flag" data-flag="allowAIWrite" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceWriteToggle) + ' ' + (sp.allowAIWrite !== false ? t.manage.on : t.manage.off) + '</button>';
+      var rename = sp.isDefault ? '' :
+        '<div class="yz-space-rename"><input type="text" data-space-rename="' + CORE.escapeHtml(sp.id) + '" value="' + CORE.escapeHtml(sp.name) + '" maxlength="120" aria-label="' + CORE.escapeHtml(t.spaceRenameLabel) + '">' +
+        '<button type="button" class="yz-tab" data-action="space-rename" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceRenameBtn) + '</button></div>';
+      var del = '<button type="button" class="yz-clear-btn" data-action="space-delete" data-id="' + CORE.escapeHtml(sp.id) + '" data-wipe-base="' + CORE.escapeHtml(t.spaceDeleteConfirm) + '">' + CORE.escapeHtml(sp.isDefault ? t.spaceDeleteDefault : t.spaceDelete) + '</button>';
+      return '<div class="yz-row yz-static yz-manage-row yz-space-row">' +
+        '<div class="yz-manage-main" style="display:block"><b>' + CORE.escapeHtml(name) + '</b>' + badges + '</div>' +
+        '<div class="yz-space-actions">' + enter + sendBtn + writeBtn + del + '</div>' + rename + '</div>';
+    }).join('');
+    var addRow = '<div class="yz-space-rename"><input type="text" data-space-input placeholder="' + CORE.escapeHtml(t.spaceNewPlaceholder) + '" maxlength="120" aria-label="' + CORE.escapeHtml(t.spaceNewPlaceholder) + '">' +
+      '<button type="button" class="yz-add-btn" data-action="space-create">' + CORE.escapeHtml(t.spaceCreateBtn) + '</button></div>';
+    return '<main class="yz-page-inner" data-marker="manage-spaces">' + yzHeader(t.spaceManageTitle) +
+      '<p class="yz-manage-info">' + CORE.escapeHtml(t.spaceManageInfo) + '</p>' +
+      '<div class="yz-page-list">' + rows + '</div>' + addRow + '</main>';
+  }
+
+  function renderManage(state, flags, ui, nav) {
     var t = I18N.dict();
     flags = flags || {};
     ui = ui || {};
-    var st = syncStatusOf(state);
+    if (nav && nav.view === 'spaces') return renderSpaceManage(state.spaces ? state : { spaces: [state], chatId: state.chatId }, t);
+    var st = syncStatusOf(state.spaces ? (CORE.defaultSpaceState(state) || state) : state);
     // 顶部折叠诊断区：头部为状态徽标 + 摘要一行，点击展开与详情页共用的 renderSyncDetail 内容。
     var diag = '<section class="yz-diag">' +
       '<button type="button" class="yz-diag-head" data-action="toggle-diag" aria-expanded="' + (ui.diagOpen ? 'true' : 'false') + '">' +
       '<span class="yz-statusdot ' + CORE.escapeHtml(st.status) + '"></span><b>' + CORE.escapeHtml(st.text) + '</b>' +
-      '<span class="yz-diag-sum">' + CORE.escapeHtml((state.sync || {}).summary || t.awaitingSync) + '</span>' +
+      '<span class="yz-diag-sum">' + CORE.escapeHtml(((state.spaces ? CORE.defaultSpaceState(state) : state).sync || {}).summary || t.awaitingSync) + '</span>' +
       '</button>' +
-      (ui.diagOpen ? '<div class="yz-diag-body">' + renderSyncDetail(state) + '</div>' : '') +
+      (ui.diagOpen ? '<div class="yz-diag-body">' + renderSyncDetail(state.spaces ? (CORE.defaultSpaceState(state) || state) : state, state) + '</div>' : '') +
       '</section>';
     var rows = FEATURES.filter(function (feature) { return feature.toggleable; }).map(function (feature) {
       var onFlag = flags[feature.id] !== false;
@@ -5181,6 +4748,8 @@
     // 显式复位入口：长按 FAB 复位不可发现，且持久化数据异常或无法拖动时也需要恢复手段。
     var resetRow = '<div class="yz-row yz-static yz-manage-row">' +
       '<button type="button" class="yz-manage-main" data-action="reset-fab"><span class="yz-glyph-sm">' + FAB_ICON + '</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(t.manage.resetFab) + '</b></span></button></div>';
+    var spaceRow = '<div class="yz-row yz-static yz-manage-row">' +
+      '<button type="button" class="yz-manage-main" data-action="switch-space"><span class="yz-glyph-sm">◎</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(t.spaceManageTitle) + '</b><em>' + CORE.escapeHtml(t.spaceManageSub) + '</em></span></button></div>';
     var dataRows = ['export', 'import'].map(function (kind) {
       var label = kind === 'export' ? t.manage.export : t.manage.import;
       return '<button type="button" class="yz-row yz-static yz-manage-row yz-manage-main" data-action="toggle-data-panel" data-panel="' + kind + '">' +
@@ -5210,56 +4779,30 @@
       '<p class="yz-manage-info">' + CORE.escapeHtml(t.manage.info) + '</p>' +
       '<div class="yz-io-actions"><button type="button" class="yz-tab" data-action="nav-manage">' + CORE.escapeHtml(t.manage.openManage || '打开玉兆管理') + '</button></div>' +
       diag +
-      '<div class="yz-page-list">' + rows + resetRow + dataRows + '</div>' + panel + '</main>';
+      '<div class="yz-page-list">' + rows + spaceRow + resetRow + dataRows + '</div>' + panel + '</main>';
   }
 
-  // 域切换与公开数据标识：
-  // 私有数据（玉牌/讯息/玉册/坊市订单/储物/舆图）随域切换数据源；
-  // 公开数据（天下论坛、坊市行情/拍卖、群聊）跨域一致，永远渲染角色域数据并带「公开」标识。
-  function headerTagText(isPlayer, nav, t) {
-    if (!isPlayer) return '';
-    if (nav.app === 'forum') return t.playerPublicTag;
-    if (nav.app === 'market') {
-      var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
-      if (view !== 'orders') return t.playerPublicTag;
-    }
-    if (nav.app === 'msg') {
-      var mview = (nav.view && nav.view !== 'root') ? nav.view : 'chats';
-      if (mview === 'groups' || mview === 'gchat') return t.playerPublicTag;
-    }
-    return t.playerDomainShort;
-  }
-
-  function renderPage(state, nav, flags, ui, domain, playerState) {
+  // 统一页面渲染：传入当前空间对象（含各分区），不再区分角色域/玩家域。
+  // 公开数据概念（跨域一致）随双域一并废除——每个用户空间各自独立一份数据。
+  function renderPage(state, nav, flags, ui) {
     nav = nav || { app: 'home', view: 'root', params: {}, stack: [] };
     ui = ui || {};
+    var space = ui.space || state;
     var search = ui.search || '';
-    var isPlayer = domain === 'player';
-    // 玩家域绝不回退渲染角色域数据（数据域隔离）：playerState 缺失/空白时渲染空态，
-    // 不会把角色域私有数据泄漏到玩家域。
-    var pstate = isPlayer ? (playerState || CORE.blankPlayerState(state && state.chatId)) : state;
     var t = I18N.dict();
-    var tag = headerTagText(isPlayer, nav, t);
-    if (nav.app === 'tablet') return isPlayer ? renderTablet(pstate, search, t.playerEmptyPrivate) : renderTablet(state, search);
-    if (nav.app === 'msg') return isPlayer ? renderMsgPlayer(state, pstate, nav, search, tag, ui.sendFailed, flags, ui.sending) : renderMsg(state, nav, search, flags, ui.sending);
-    if (nav.app === 'notes') return isPlayer ? renderNotes(pstate, nav, search, true, ui) : renderNotes(state, nav, search);
+    var tag = ui.spaceName || '';
+    if (nav.app === 'tablet') return renderTablet(space, search);
+    if (nav.app === 'msg') return renderMsg(space, nav, search, flags, ui);
+    if (nav.app === 'notes') return renderNotes(space, nav, search, true, ui);
     if (nav.app === 'forum') {
-      // 论坛是公开数据：列表/详情用角色域合并视图（含镜像进来的玩家帖子）；
-      // 玩家域额外提供发帖 CTA、帖子编辑入口，表单视图走玩家域数据源。
-      return renderForum(isPlayer ? (nav.view === 'form' ? pstate : state) : state, nav, search, tag, isPlayer, ui);
+      if ((nav.view && nav.view !== 'root') === 'form') return renderSpaceForm(space, nav, ui);
+      return renderForum(space, nav, search, tag, true, ui);
     }
-    if (nav.app === 'market') {
-      var view = (nav.view && nav.view !== 'root') ? nav.view : 'listings';
-      // 坊市订单是私有数据（随域切换）；行情/拍卖是公开数据（跨域一致）；
-      // 表单视图（玩家域 CRUD）同样只走玩家数据源。
-      return (isPlayer && (view === 'orders' || view === 'form')) ? renderMarket(pstate, nav, search, tag, true, ui) : renderMarket(state, nav, search, tag);
-    }
-    if (nav.app === 'space') return isPlayer ? renderSpace(pstate, nav, search, true, ui) : renderSpace(state, nav, search);
-    // 舆图是私有数据（双域独立数据源）：玩家域渲染玩家域数据，绝不回退角色域
-    //（角色所在地/行踪/地点名录属角色私密信息，不得泄漏到玩家域）。
-    if (nav.app === 'map') return renderMap(isPlayer ? pstate : state, search, isPlayer ? tag : '', isPlayer);
-    if (nav.app === 'sync') return '<main class="yz-page-inner" data-marker="sync">' + yzHeader(I18N.dict().diag.title) + renderSyncDetail(state) + '</main>';
-    if (nav.app === 'manage') return renderManage(state, flags, ui);
+    if (nav.app === 'market') return renderMarket(space, nav, search, tag, true, ui);
+    if (nav.app === 'space') return renderSpace(space, nav, search, true, ui);
+    if (nav.app === 'map') return renderMap(space, search, tag);
+    if (nav.app === 'sync') return '<main class="yz-page-inner" data-marker="sync">' + yzHeader(I18N.dict().diag.title) + renderSyncDetail(space, state) + '</main>';
+    if (nav.app === 'manage') return renderManage(state, flags, ui, nav);
     return '';
   }
 
@@ -5290,7 +4833,7 @@
     var t = I18N.dict();
     return '<div id="yz1-overlay" aria-hidden="true"><div id="yz1-jade" role="dialog" tabindex="-1" aria-label="' + CORE.escapeHtml(t.appName) + '">' +
       '<div class="yz-topbar"><b>' + CORE.escapeHtml(t.brand.title) + '</b><span class="yz-sub">' + CORE.escapeHtml(t.brand.sub) + '</span>' +
-      '<button type="button" class="yz-btn yz-domain-btn" data-action="toggle-domain" aria-label="' + CORE.escapeHtml(t.playerCharacterDomain) + '">' + CORE.escapeHtml(t.playerCharacterDomain) + '</button>' +
+      '<button type="button" class="yz-btn yz-space-btn" data-action="switch-space" aria-label="' + CORE.escapeHtml(t.spaceSwitchAria) + '">' + CORE.escapeHtml(t.spaceShort) + ' ▾</button>' +
       '<button type="button" class="yz-btn" data-action="close" aria-label="' + CORE.escapeHtml(t.closePhone) + '">×</button></div>' +
       '<div class="yz-screen">' + renderHome(state, flags) + '<div class="yz-page" data-page hidden></div></div>' +
       '</div></div>';
@@ -5302,7 +4845,6 @@
     renderHome: renderHome,
     renderTablet: renderTablet,
     renderMsg: renderMsg,
-    renderMsgPlayer: renderMsgPlayer,
     renderNotes: renderNotes,
     renderForum: renderForum,
     renderMarket: renderMarket,
@@ -5311,6 +4853,7 @@
     renderManage: renderManage,
     renderPage: renderPage,
     renderSyncDetail: renderSyncDetail,
+    renderSpaceForm: renderSpaceForm,
     renderNodes: renderNodes,
     syncStatusOf: syncStatusOf,
     formatDateTime: formatDateTime,
@@ -5371,8 +4914,6 @@
     '.yz-node em{position:absolute;bottom:3px;right:9px;font-style:normal;font-size:8px;opacity:.8;color:#9fd8c0}',
     '.yz-node.sealed{filter:grayscale(1);opacity:.4;cursor:not-allowed;border-style:dotted}',
     '.yz-node .yz-seal{position:absolute;bottom:3px;left:9px;font-style:normal;font-size:8px;color:#ffd27a}',
-    '.yz-node.yz-node-locked .yz-seal-locked{left:auto;right:9px;color:#ffd27a;border:1px solid rgba(255,210,122,.45);border-radius:7px;padding:0 5px;line-height:14px}',
-    '.yz-node.yz-node-locked .yz-glyph,.yz-node.yz-node-locked b{opacity:.55}',
     '.yz-node:not(.sealed) .yz-glyph{animation:yzBreath 3s ease-in-out infinite}',
     '@keyframes yzBreath{0%,100%{opacity:.7}50%{opacity:1}}',
     '.t-gold{color:#ffe9a8;border-color:rgba(255,233,168,.5);text-shadow:0 0 10px rgba(255,233,168,.5)}',
@@ -5500,7 +5041,14 @@
     '.yz-search .yz-search-clear:hover{background:rgba(70,180,140,.25);color:#dff7ec}',
     '.yz-search .yz-search-clear.hidden{display:none!important}',
     // —— 双玉兆：顶栏域切换、页头域/公开标识 ——
-    '.yz-domain-btn{min-width:58px;padding:0 10px;border-radius:15px;font-size:11px;letter-spacing:1px;white-space:nowrap}',
+    '.yz-space-btn{min-width:58px;max-width:132px;padding:0 10px;border-radius:15px;font-size:11px;letter-spacing:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.yz-space-row b{display:inline-flex;align-items:center;gap:6px}',
+    '.yz-space-badges{margin-left:8px;display:inline-flex;gap:4px;vertical-align:middle}',
+    '.yz-space-tag{font-style:normal;font-size:9px;color:#9fd8bd;border:1px solid rgba(159,216,189,.35);border-radius:7px;padding:0 5px;line-height:14px}',
+    '.yz-space-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;margin-top:4px}',
+    '.yz-space-current{font-size:11px;color:#67e6a8;padding:2px 8px}',
+    '.yz-space-rename{display:flex;gap:6px;margin-top:6px;align-items:center}',
+    '.yz-space-rename input{flex:1;min-width:0;background:rgba(8,20,16,.7);border:1px solid rgba(120,220,180,.25);border-radius:9px;color:#e9f3ee;padding:7px 9px;font-size:13px}',
     '.yz-header-tag{font-style:normal;font-size:9px;letter-spacing:1px;color:#9fd8c0;border:1px solid rgba(159,224,143,.4);border-radius:9px;padding:1px 7px;flex:none;margin-left:4px}',
     // —— 玩家域传讯：输入框固定在页底，气泡区独立滚动 ——
     '.yz-page-composer{display:flex;flex-direction:column}',
@@ -5514,10 +5062,6 @@
     '.yz-send:hover{background:rgba(90,210,165,.55)}',
     '.yz-send:disabled,.yz-send-busy{opacity:.45;cursor:not-allowed;pointer-events:none}',
     '.yz-composer-sealed{justify-content:center;align-items:center;color:#7fae9a;font-size:12px;letter-spacing:1px;border-color:rgba(242,165,154,.3);background:rgba(90,30,24,.35)}',
-    '.yz-msg-status{font-style:normal;color:#7fae9a;font-size:9px;letter-spacing:1px;margin-left:6px}',
-    '.yz-msg-status.bad{color:#f2a59a}',
-    '.yz-retry-btn{margin:3px 6px 0;padding:2px 10px;border:1px solid rgba(242,165,154,.5);background:rgba(90,30,24,.55);color:#f5c8c0;border-radius:10px;font-size:10px;font-family:inherit;cursor:pointer}',
-    '.yz-start-thread{display:block;width:calc(100% - 24px);margin:0 auto;height:38px;border:1px solid rgba(170,255,225,.45);background:rgba(70,180,140,.3);color:#f2fff9;border-radius:19px;font-size:13px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
     // —— 玩家域 CRUD：表单、行尾编辑、底部新建 ——
     '.yz-add-btn{display:block;width:calc(100% - 24px);margin:6px auto 4px;height:38px;border:1px solid rgba(170,255,225,.45);background:rgba(70,180,140,.3);color:#f2fff9;border-radius:19px;font-size:13px;letter-spacing:2px;font-family:inherit;cursor:pointer}',
     '.yz-edit-btn{flex:none;align-self:center;border:1px solid rgba(150,255,215,.2);background:none;color:#9fd8c0;border-radius:10px;height:26px;padding:0 9px;font-size:12px;line-height:1;font-family:inherit;cursor:pointer}',
@@ -5535,7 +5079,6 @@
     '.yz-step{flex:0 0 42px;height:36px;border:1px solid rgba(150,255,215,.2);background:rgba(6,20,16,.85);color:#a8e6c8;border-radius:10px;font-size:17px;cursor:pointer;font-family:inherit}',
     '.yz-step:active{transform:scale(.94)}',
     '.yz-archived-note{font-size:11px;color:#7fae9a;text-align:center;padding:7px 0 2px;letter-spacing:.5px;border-bottom:1px dashed rgba(150,255,215,.12);margin-bottom:2px}',
-    '.yz-mark-all{display:block;margin:10px auto 2px;background:rgba(120,255,200,.1);border:1px solid rgba(150,255,215,.3);color:#a8e6c8;border-radius:14px;padding:5px 16px;font-size:12px;cursor:pointer;font-family:inherit}',
     '.yz-form-check{display:flex!important;align-items:center;gap:8px;cursor:pointer}',
     '.yz-form-check input{accent-color:#67e6a8;width:16px;height:16px}',
     '.yz-form-actions{display:flex;gap:8px;padding:10px 0 4px;align-items:center}',
@@ -5626,7 +5169,7 @@
     '#yz1-confirm .yz-confirm-ok{background:rgba(255,122,107,.18);border:1px solid rgba(255,140,120,.65);color:#ffb0a3;font-weight:600}',
     // —— 窄屏适配：英文顶栏在 320-360px 手机可能溢出（品牌字距+域按钮+关闭），
     // 缩小字距、隐藏副标、压缩间距，保证一行放下不折行。
-    '@media (max-width:374px){.yz-topbar{gap:6px}.yz-topbar b{font-size:16px;letter-spacing:4px}.yz-topbar .yz-sub{display:none}.yz-domain-btn{min-width:52px;padding:0 7px;font-size:10px}}'
+    '@media (max-width:374px){.yz-topbar{gap:6px}.yz-topbar b{font-size:16px;letter-spacing:4px}.yz-topbar .yz-sub{display:none}.yz-space-btn{min-width:52px;padding:0 7px;font-size:10px}}'
   ].join('\n');
 
   function containsEnvelope(value) {
@@ -5701,25 +5244,12 @@
     // 快照恢复的 in-flight 锁：rebuildFromHistory 是异步的，连点两次会触发第二次
     // stale 分支、报误导性的「聊天已切换」红 toast——进行中再点直接忽略。
     var restoreBusy = false;
-    // 传讯发送中锁：快速双击发送按钮时，第二次调用在第一次 syncPlayerChannel 完成前
-    // 直接忽略——防止并发同步导致角色回复被镜像两次。
-    var sending = false;
-    // 本轮 generation:prepare 推进已读游标前的旧值：生成失败/取消时回退，
-    // 否则玩家消息被提前标已读、下轮没有未读角标提示（虽然其实没收到回复）。
-    var cursorBeforePrepare = null;
     var wipeTimer = 0;
     // 列表页/详情页检索关键词：纯内存过滤瞬态，任何导航（含关闭）都复位。
     var search = '';
-    // 双玉兆域：character = 角色域（模型数据），player = 玩家域（本机数据）。
-    // 域切换只换数据源不换 UI（评审结论）；公开数据（论坛/坊市行情拍卖）跨域一致。
-    var domain = 'character';
-    // 传讯投递失败集合（内存瞬态）：同步角色域失败时标记未送达消息 id，UI 显示「未送达」+ 重发。
-    var sendFailed = {};
     // 关闭玉兆时记录离开位置（本会话内再打开恢复；chat:opened 换聊天后清空回主页）。
+    // 空间选择持久化在 state.activeSpaceId（每聊天独立），不再需要会话内域记忆。
     var savedNav = null;
-    var savedDomain = null;
-    // {{user}}（宿主用户身份名）解析缓存：chat:opened 时刷新，渲染时兜底 catalog 文案。
-    var playerNameCache = '';
 
     // 界面语言唯一真值源是宿主 locale（tavo.plugin.i18n）；
     // lang 设置仅决定注入提示词的语言（生成内容语言策略，见 settings.info）。
@@ -6000,52 +5530,50 @@
       if (sub) sub.textContent = t.brand.sub;
       var closeBtn = overlay.querySelector('[data-action="close"]');
       if (closeBtn) closeBtn.setAttribute('aria-label', t.closePhone);
-      // 域切换按钮：显示「→ 目标域」（可操作的方向感），aria 补充当前域与切换说明——
-      // 只显示当前域会被当成只读状态标签、想不到可点。
-      var domainBtn = overlay.querySelector('[data-action="toggle-domain"]');
-      if (domainBtn) {
-        var current = domain === 'player' ? t.playerDomain : t.playerCharacterDomain;
-        domainBtn.textContent = current + ' ▾';
-        domainBtn.setAttribute('aria-label', tr('runtime.player.switchAria', { from: current, to: domain === 'player' ? t.playerCharacterDomain : t.playerDomain }));
+      // 空间切换按钮：显示当前空间名，点开进入空间管理（切换/新建/删除/开关）。
+      var spaceBtn = overlay.querySelector('[data-action="switch-space"]');
+      if (spaceBtn) {
+        var label = currentSpaceName();
+        spaceBtn.textContent = (label || t.spaceShort) + ' ▾';
+        spaceBtn.setAttribute('aria-label', tr('runtime.space.switchAria', { name: label || t.spaceShort }));
       }
     }
 
-    // 域切换：只换数据源不换 UI——停留在当前页面，重渲染后即看到另一域的数据。
-    // 公开数据（论坛/坊市行情拍卖）跨域一致不受影响。
-    function toggleDomain() {
-      domain = domain === 'player' ? 'character' : 'player';
-      // 跨域消毒：私有详情子页（聊天详情/笔记/表单等）在另一域可能没有对应实体，
-      // 回退到该 app 根视图，避免「找不到联系人/备忘」空页与错线程。
-      if (domain === 'player' && (nav.app === 'manage' || nav.app === 'sync')) {
-        // 管理页与同步诊断仅对角色域可用：切到玩家域直接回主页。
-        nav = { app: 'home', view: 'root', params: {}, stack: [] };
-      } else {
-        var fallback = null;
-        if (nav.app === 'msg') { if (nav.view === 'chat') fallback = 'chats'; }
-        else if (nav.app === 'notes') { if (nav.view === 'note' || nav.view === 'folder' || nav.view === 'form') fallback = 'folders'; }
-        else if (nav.app === 'market') { if (nav.view === 'form') fallback = 'listings'; }
-        else if (nav.app === 'space') { if (nav.view === 'form') fallback = 'items'; }
-        else if (nav.app === 'forum') { if (nav.view === 'form') fallback = 'root'; }
-        if (fallback) { nav.view = fallback; nav.params = {}; nav.stack = []; }
-      }
+    function currentSpace() {
+      return runtime.activeSpace();
+    }
+
+    function currentSpaceName() {
+      var state = runtime.current();
+      var sp = currentSpace();
+      if (!sp) return '';
+      return CORE.spaceDisplayName(state, sp, sp.isDefault ? I18N.dict().spaceDefaultName : '');
+    }
+
+    // 切换空间：停留在当前页面（子页消毒后），重渲染即看到新空间数据。
+    function switchSpaceTo(id) {
+      var result = runtime.setActiveSpace(id);
+      if (!result.ok) return;
+      // 子页消毒：详情/表单页在新空间可能没有对应实体，回退到该 app 根视图。
+      if (nav.app === 'msg' && (nav.view === 'chat' || nav.view === 'gchat' || nav.view === 'contact-form')) { nav.view = 'chats'; nav.params = {}; nav.stack = []; }
+      else if (nav.app === 'notes' && (nav.view === 'note' || nav.view === 'folder' || nav.view === 'form')) { nav.view = 'folders'; nav.params = {}; nav.stack = []; }
+      else if ((nav.app === 'market' || nav.app === 'space' || nav.app === 'forum') && nav.view === 'form') { nav.view = nav.app === 'market' ? 'listings' : nav.app === 'space' ? 'items' : 'root'; nav.params = {}; nav.stack = []; }
       resetSearch();
       clearToast();
       render();
     }
 
-    // {{user}} 解析（chat.persona.name）：聊天切换时刷新缓存，供玩家域主界面展示。
-    function refreshPlayerName() {
-      runtime.resolvePlayerName().then(function (name) {
-        playerNameCache = name;
-        render();
-      }).catch(function () {});
+    // {{user}} 解析（chat.persona.name）：聊天切换时刷新，供用户发言署名。
+    function refreshOwnerName() {
+      runtime.resolveOwnerName().then(function () { render(); }).catch(function () {});
     }
 
     function render() {
       var overlay = ensureShell();
       renderShellStatic(overlay);
       var state = runtime.current();
-      var playerState = runtime.playerCurrent();
+      var space = runtime.activeSpace();
+      var spaceName = currentSpaceName();
       var fab = hostDocument.getElementById(FAB_ID);
       if (fab) {
         // 玉兆打开时隐藏 FAB：全屏面板之上不再飘一个可点的玉佩（点击会静默踢回主页）。
@@ -6063,12 +5591,12 @@
         pageNode.hidden = true;
         pageNode.innerHTML = '';
         var homeWrap = hostDocument.createElement('div');
-        homeWrap.innerHTML = VIEWS.renderHome(state, featureFlags, { domain: domain, playerState: playerState, playerName: playerNameCache });
+        homeWrap.innerHTML = VIEWS.renderHome(state, featureFlags, { space: space, spaceName: spaceName });
         if (homeWrap.firstElementChild) home.outerHTML = homeWrap.firstElementChild.outerHTML;
         var freshHome = overlay.querySelector('[data-home]');
         if (freshHome) {
           var syncNode = freshHome.querySelector('[data-sync]');
-          if (syncNode && home !== freshHome) renderHomeSync(syncNode, state);
+          if (syncNode && home !== freshHome) renderHomeSync(syncNode, space);
         }
       } else {
         if (home) home.classList.add('hidden');
@@ -6080,7 +5608,7 @@
         // 用户每次发一条评论都要重新滚到底部。聊天详情带检索时同样要恢复位置，
         // 不能每次按键都被钉回底部。
         var savedScroll = ((nav.view === 'chat' || nav.view === 'gchat') && !search) ? null : pageNode.scrollTop;
-        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, sendFailed: sendFailed, sending: sending }, domain, playerState);
+        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, space: space, spaceName: spaceName });
         // 首页无导航历史时隐藏返回按钮：nav.stack 为空且当前是入口页时隐藏。
         var backBtn = pageNode.querySelector('.yz-back');
         if (backBtn) backBtn.hidden = nav.app === 'home' && nav.stack.length === 0;
@@ -6103,10 +5631,9 @@
             try { freshInput.setSelectionRange(search.length, search.length); } catch (_) {}
           }
         }
-        // 玩家域输入框同理（传讯/群聊发言/论坛评论）：整体重渲染后恢复焦点，支持连续输入。
+        // 发言输入框同理（会话/论坛评论）：整体重渲染后恢复焦点，支持连续输入。
         if (focused && focused.getAttribute) {
-          var boxType = focused.getAttribute('data-msg-input') !== null ? 'data-msg-input'
-            : focused.getAttribute('data-group-msg-input') !== null ? 'data-group-msg-input'
+          var boxType = focused.getAttribute('data-thread-input') !== null ? 'data-thread-input'
             : focused.getAttribute('data-comment-input') !== null ? 'data-comment-input' : '';
           if (boxType) {
             var freshAny = pageNode.querySelector('[' + boxType + ']');
@@ -6116,13 +5643,13 @@
       }
     }
 
-    function renderHomeSync(node, state) {
+    function renderHomeSync(node, space) {
       if (!node) return;
       var t = I18N.dict();
-      var st = VIEWS.syncStatusOf(state);
+      var st = VIEWS.syncStatusOf(space);
       node.className = 'yz-sync ' + CORE.escapeHtml(st.status);
       node.innerHTML = '<i></i><span>' + CORE.escapeHtml(st.text) + '</span>';
-      var sync = state.sync || {};
+      var sync = (space && space.sync) || {};
       var hero = node.parentElement && node.parentElement.querySelector('.yz-hero-line');
       if (hero) {
         var heroTitle = CORE.hasText(sync.roleName) ? sync.roleName : t.appName;
@@ -6146,10 +5673,11 @@
     }
 
     function markAppliedSeen(featureId) {
-      var state = runtime.current();
-      var seen = CORE.safeArray(state.sync && state.sync.appliedSeen, 20);
+      var space = runtime.activeSpace();
+      if (!space) return;
+      var seen = CORE.safeArray(space.sync && space.sync.appliedSeen, 20);
       if (seen.indexOf(featureId) >= 0) return;
-      state.sync.appliedSeen = seen.concat([featureId]).slice(-20);
+      space.sync.appliedSeen = seen.concat([featureId]).slice(-20);
       runtime.saveChat(runtime.activeChatId);
     }
 
@@ -6160,11 +5688,6 @@
       if (!feature) return;
       if (feature.toggleable && featureFlags[featureId] === false) {
         showToast(tr('runtime.toast.sealed', { name: t.features[feature.id] || featureId }), true);
-        return;
-      }
-      // 玉兆管理是角色域本地系统页：玩家域内封印卦位，点击仅提示不可用。
-      if (featureId === 'manage' && domain === 'player') {
-        showToast(t.playerManageLocked, true);
         return;
       }
       clearToast();
@@ -6212,15 +5735,16 @@
     function clearFeatureData(featureId) {
       var blank = CORE.blankFeatureField(featureId);
       if (!blank) return;
-      runtime.current()[CORE.FEATURE_FIELDS[featureId]] = blank;
+      // 清空是跨空间操作：所有用户空间的该分区一起归零（导出/导入的整份状态同样处理）。
+      CORE.safeArray(runtime.current().spaces, 6).forEach(function (sp) {
+        sp[CORE.FEATURE_FIELDS[featureId]] = blank;
+      });
       // 强制下一轮全量重建：单功能清空后 sync 状态/旧摘要/issue 回声仍指向旧数据，
       // 不清 pendingFull 的话 meta-only diff 轮提前返回，假「complete」绿点残留。
       runtime.current().pendingFull = true;
       // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
       clearPending = true;
       runtime.saveChat(runtime.activeChatId);
-      if (featureId === 'forum') runtime.syncPlayerPosts(runtime.activeChatId);
-      if (featureId === 'msg') runtime.syncPlayerChannel(runtime.activeChatId);
       // 清空后刷新世界书：消息归档条目与全状态快照都同步更新。
       runtime.syncArchive(runtime.activeChatId);
       armedWipe = null;
@@ -6233,27 +5757,15 @@
     function clearAllData() {
       var chatId = runtime.activeChatId;
       var state = runtime.current();
-      var player = runtime.playerCurrent();
-      Object.keys(CORE.FEATURE_FIELDS).forEach(function (featureId) {
-        var blank = CORE.blankFeatureField(featureId);
-        if (!blank) return;
-        state[CORE.FEATURE_FIELDS[featureId]] = blank;
-        if (CORE.FEATURE_FIELDS[featureId] in player) player[CORE.FEATURE_FIELDS[featureId]] = blank;
-      });
-      // 玩家域评论源同样归零，避免残留回显。
-      player.myComments = [];
-      // 重置同步状态并强制下一轮全量重建：不清的话 status 残留「complete」假绿、
-      // 旧角色名/摘要继续显示、且下一轮 meta-only diff 提前返回不改状态——
-      // 空数据却显示「已同步」，模型可能连续多轮空转。processedTurns 不清
-      // （防历史水化把已清除数据复活），revision 保留同理。
+      // 全部用户空间数据归零：只剩一个空白默认空间（同步状态一并重置）。
+      // 强制下一轮全量重建：不清 pendingFull 的话 meta-only diff 轮提前返回，
+      // 空数据却显示「已同步」。processedTurns 不清（防历史水化把已清除数据复活）。
+      state.spaces = [CORE.blankUserSpace(chatId, { id: CORE.DEFAULT_SPACE_ID, isDefault: true })];
+      state.activeSpaceId = CORE.DEFAULT_SPACE_ID;
       state.pendingFull = true;
       // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
       clearPending = true;
-      state.sync = { status: 'empty', turnId: '', roleName: '', summary: '', applied: [], appliedSeen: [], issues: [], updatedAt: 0 };
       runtime.saveChat(chatId);
-      runtime.savePlayerChat(chatId, player);
-      runtime.syncPlayerPosts(chatId);
-      runtime.syncPlayerChannel(chatId);
       runtime.syncArchive(chatId);
       armedWipe = null;
       render();
@@ -6336,11 +5848,9 @@
       if (!samePage) nav.stack.push({ app: nav.app, view: nav.view, params: nav.params });
       nav.view = view;
       nav.params = params || {};
-      if (view === 'chat' || view === 'gchat') clearUnread(view, params && params.id);
+      if (view === 'chat' || view === 'gchat') clearUnread(params && params.id);
       // 打开帖子详情即视为已读：客户端清零 unread（落盘），角标与呼吸光效不再常驻。
       if (view === 'post') clearPostUnread(params && params.id);
-      // 打开玩家域传讯线程即已读：线程未读清零（角色回复角标熄灭）。
-      if (view === 'chat' && domain === 'player') clearPlayerThreadUnread();
       resetSearch();
       armedWipe = null;
       render();
@@ -6363,7 +5873,9 @@
       while (nav.stack.length) {
         var top = nav.stack[nav.stack.length - 1];
         var isLostDetail = ((kind === 'note') && (top.app === 'notes') && (top.view === 'note') && String(top.params && top.params.id) === String(id)) ||
-                           ((kind === 'post') && (top.app === 'forum') && (top.view === 'post') && String(top.params && top.params.id) === String(id));
+                           ((kind === 'post') && (top.app === 'forum') && (top.view === 'post') && String(top.params && top.params.id) === String(id)) ||
+                           ((kind === 'contact' || kind === 'group') && (top.app === 'msg') && String(top.params && top.params.id) === String(id)) ||
+                           ((kind === 'message') && (top.app === 'msg') && (top.view === 'chat' || top.view === 'gchat') && String(top.params && top.params.id) === String(id));
         if (!isLostDetail) break;
         nav.stack.pop();
       }
@@ -6391,46 +5903,18 @@
       render();
     }
 
-    function clearUnread(view, id) {
-      var state = runtime.current();
+    // 线程未读点开即清零：当前空间的会话线程（seen 游标对齐尾随回复数）。
+    function clearUnread(id) {
       if (!id) return;
-      if (view === 'chat') {
-        CORE.safeArray(state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === String(id)) c.unread = 0; });
-      } else {
-        CORE.safeArray(state.chats.groups, 6).forEach(function (g) { if (String(g.id) === String(id)) g.unread = 0; });
-      }
-      runtime.saveChat(runtime.activeChatId);
+      var space = runtime.activeSpace();
+      if (space) runtime.markSpaceThreadSeen(space.id, id);
     }
 
-    // 帖子未读点开即清零（与聊天/群聊同语义）：论坛是公开数据，角色域合并视图渲染，
-    // 清零直接落盘角色域状态（diff 未显式带 unread 时模型保留原值，客户端清零为准）。
+    // 帖子未读点开即清零（与聊天同语义，当前空间内）。
     function clearPostUnread(id) {
       if (!id) return;
-      runtime.markPostRead(id);
-      var state = runtime.current();
-      CORE.safeArray(state.forum && state.forum.posts, 20).forEach(function (p) {
-        if (String(p && p.id) === String(id)) p.unread = 0;
-      });
-      runtime.saveChat(runtime.activeChatId);
-    }
-
-    // 玩家域传讯线程未读清零：打开线程即已读（角色回复不再亮角标）。
-    function clearPlayerThreadUnread() {
-      var player = runtime.playerCurrent();
-      var thread = null;
-      CORE.safeArray(player && player.chats && player.chats.contacts, 10).forEach(function (c) {
-        if (c && String(c.id) === CORE.PLAYER_THREAD_ID) thread = c;
-      });
-      if (!thread || !(thread.unread > 0)) return;
-      thread.unread = 0;
-      runtime.savePlayerChat(runtime.activeChatId, player);
-    }
-
-    // 「全部已读」：列表页一键清零线程未读（不进入会话详情）。
-    function markThreadAllRead() {
-      clearPlayerThreadUnread();
-      showToast(I18N.dict().playerMarkAllRead);
-      render();
+      var space = runtime.activeSpace();
+      if (space) runtime.markSpacePostSeen(space.id, id);
     }
 
     function goHome() {
@@ -6473,10 +5957,6 @@
       } else {
         nav = { app: 'home', view: 'root', params: {}, stack: [] };
       }
-      // 打开默认回到角色域（除非本会话内离开时在玩家域且仍属同一聊天）。
-      if (!savedDomain) domain = 'character';
-      else domain = savedDomain;
-      savedDomain = null;
       resetSearch();
       render();
       // 打开时按当前视觉视口收敛玉兆高度（覆盖 iOS 底部工具栏等 vv < 100vh 的场景）。
@@ -6496,7 +5976,6 @@
       resetManagePanels();
       // 记录离开位置（同一聊天内再打开时恢复），管理页瞬态不保存。
       savedNav = { app: nav.app, view: nav.view, params: nav.params, stack: [] };
-      savedDomain = domain;
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
       resetSearch();
       overlay.classList.remove('open');
@@ -6529,7 +6008,7 @@
           // 同步诊断详情」一致，主页中央按钮不能是死按钮）；功能页点击回主界面。
           // 玩家域主页无同步概念（同步诊断仅角色域），保持无操作的「回主界面」语义。
           if (action === 'core') {
-            if (nav.app !== 'home' || domain === 'player') return resetSearch(), render();
+            if (nav.app !== 'home') return resetSearch(), render();
             return openSyncDetail();
           }
           if (action === 'toggle-diag') { diagOpen = !diagOpen; return render(); }
@@ -6542,22 +6021,25 @@
           if (action === 'copy-export') return copyExport();
           if (action === 'import-submit') return submitImport();
           if (action === 'clear-search') { resetSearch(); return render(); }
-          if (action === 'toggle-domain') return toggleDomain();
+          if (action === 'switch-space') { nav = { app: 'manage', view: 'spaces', params: {}, stack: nav.stack || [] }; return render(); }
           if (action === 'nav-manage') { nav = { app: 'manage', view: 'root', params: {}, stack: nav.stack || [] }; return render(); }
-          if (action === 'send-msg') return sendPlayerMessage();
-          if (action === 'mark-thread-read') return markThreadAllRead();
-          if (action === 'retry-msg') return retryPlayerMessage(target.getAttribute('data-id') || '');
-          if (action === 'send-group-msg') return sendPlayerGroupMessage();
-          if (action === 'send-comment') return sendPlayerComment();
-          if (action === 'player-new') return openPlayerForm(target.getAttribute('data-kind'), '', target.getAttribute('data-folder') || '');
-          if (action === 'player-edit') return openPlayerForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '', '');
-          if (action === 'player-save') return savePlayerForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
-          if (action === 'player-delete') return deletePlayerEntity(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
-          if (action === 'delete-contact') return deleteCharacterItem('contact', target.getAttribute('data-id') || '');
-          if (action === 'delete-group') return deleteCharacterItem('group', target.getAttribute('data-id') || '');
-          if (action === 'delete-message') return deleteCharacterItem('message', target.getAttribute('data-id') || '', target.getAttribute('data-parent-id') || '');
-          if (action === 'delete-track') return deleteCharacterItem('track', target.getAttribute('data-id') || '');
-          if (action === 'delete-place') return deleteCharacterItem('place', target.getAttribute('data-id') || '');
+          if (action === 'send-thread-msg') return sendThreadMessage(target.getAttribute('data-thread-id') || '');
+          if (action === 'send-comment') return sendPostComment();
+          if (action === 'new-contact') return openSpaceForm('contact', '', '');
+          if (action === 'entity-new') return openSpaceForm(target.getAttribute('data-kind'), '', target.getAttribute('data-folder') || '');
+          if (action === 'entity-edit') return openSpaceForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '', '');
+          if (action === 'entity-save') return saveSpaceForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
+          if (action === 'entity-delete') return deleteSpaceItem(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
+          if (action === 'delete-contact') return deleteSpaceItem('contact', target.getAttribute('data-id') || '');
+          if (action === 'delete-group') return deleteSpaceItem('group', target.getAttribute('data-id') || '');
+          if (action === 'delete-message') return deleteSpaceItem('message', target.getAttribute('data-id') || '', target.getAttribute('data-parent-id') || '');
+          if (action === 'delete-track') return deleteSpaceItem('track', target.getAttribute('data-id') || '');
+          if (action === 'delete-place') return deleteSpaceItem('place', target.getAttribute('data-id') || '');
+          if (action === 'space-enter') return switchSpaceTo(target.getAttribute('data-id') || '');
+          if (action === 'space-create') return createSpaceFromForm();
+          if (action === 'space-flag') return toggleSpaceFlag(target.getAttribute('data-id') || '', target.getAttribute('data-flag') || '');
+          if (action === 'space-delete') return deleteSpaceRow(target.getAttribute('data-id') || '');
+          if (action === 'space-rename') return renameSpaceRow(target.getAttribute('data-id') || '');
           // 数量步进：调整相邻数量输入框的值（不整页重渲染，保留焦点与编辑状态）。
           if (action === 'qty-step') {
             var stepper = target.parentNode;
@@ -6595,11 +6077,10 @@
       });
       // 模态焦点陷阱：Tab / Shift+Tab 在对话框内的可见按钮间循环，避免焦点移出到背后页面。
       overlay.addEventListener('keydown', function (event) {
-        // 玩家域输入框（传讯/群聊发言/论坛评论）：回车直接发送（发送后清空输入并重渲染）。
+        // 发言输入框（会话/论坛评论）：回车直接发送（发送后清空输入并重渲染）。
         if (event.key === 'Enter' && event.target && event.target.getAttribute) {
-          if (event.target.getAttribute('data-msg-input') !== null) { event.preventDefault(); sendPlayerMessage(); return; }
-          if (event.target.getAttribute('data-group-msg-input') !== null) { event.preventDefault(); sendPlayerGroupMessage(); return; }
-          if (event.target.getAttribute('data-comment-input') !== null) { event.preventDefault(); sendPlayerComment(); return; }
+          if (event.target.getAttribute('data-thread-input') !== null) { event.preventDefault(); sendThreadMessage(event.target.getAttribute('data-thread-id') || ''); return; }
+          if (event.target.getAttribute('data-comment-input') !== null) { event.preventDefault(); sendPostComment(); return; }
         }
         if (event.key !== 'Tab') return;
         var focusables = Array.prototype.filter.call(overlay.querySelectorAll('button'), function (el) {
@@ -6636,8 +6117,9 @@
       overlay.addEventListener('focusin', function (event) {
         var target = event.target;
         if (!target || !target.getAttribute) return;
-        if (target.getAttribute('data-msg-input') === null && target.getAttribute('data-group-msg-input') === null &&
-            target.getAttribute('data-comment-input') === null && target.getAttribute('data-search-input') === null) return;
+        if (target.getAttribute('data-thread-input') === null &&
+            target.getAttribute('data-comment-input') === null && target.getAttribute('data-search-input') === null &&
+            target.getAttribute('data-space-input') === null) return;
         if (!hostWindow.visualViewport) return;
         setTimeout(function () {
           if (target.isConnected) target.scrollIntoView({ block: 'nearest' });
@@ -6645,93 +6127,59 @@
       });
     }
 
-    // 玩家发讯（私讯通道的 UI 侧）：读取输入框 → 写入玩家域 → 投递角色域。
-    function sendPlayerMessage() {
-      if (!enabled() || domain !== 'player') return;
-      if (sending) return;
+    // 会话发言（UI 侧）：读输入框 → 直写当前空间线程（本机操作，不经模型、不可能失败）。
+    // 空间 sendToAI 开启时下一轮基线自动携带这条发言；allowAIWrite 开启时 AI 可回帖。
+    function sendThreadMessage(threadId) {
+      if (!enabled()) return;
       if (featureFlags.msg === false) { showToast(I18N.dict().toast.sealedMsg, true); return; }
       var overlay = hostDocument.getElementById(OVERLAY_ID);
-      var box = overlay && overlay.querySelector('[data-msg-input]');
+      var box = overlay && overlay.querySelector('[data-thread-input]');
       if (!box) return;
+      var id = threadId || box.getAttribute('data-thread-id') || '';
       var text = String(box.value || '');
-      if (!CORE.hasText(text.trim())) { showToast(I18N.dict().playerEmptyInput, true); return; }
+      if (!CORE.hasText(text.trim())) { showToast(I18N.dict().emptyInput, true); return; }
+      var space = runtime.activeSpace();
+      if (!space) return;
+      var sent = runtime.sendSpaceMessage(space.id, id, text);
+      if (!sent) { showToast(I18N.dict().spaceMissingEntity, true); return; }
       box.value = '';
-      sending = true;
-      render();
-      var sent = runtime.sendPlayerMessage(runtime.activeChatId, text);
-      if (!sent) { sending = false; render(); return; }
-      showToast(I18N.dict().playerSentToast);
-      runtime.syncPlayerChannel(runtime.activeChatId).then(function () {
-        delete sendFailed[sent.id];
-        sending = false;
-        render();
-      }).catch(function () {
-        sendFailed[sent.id] = true;
-        showToast(I18N.dict().playerSendFailed, true);
-        sending = false;
-        render();
-      });
-    }
-
-    // 重发未送达的传讯：重新执行镜像（幂等，id 去重不会产生重复行）。
-    function retryPlayerMessage(messageId) {
-      if (!enabled() || domain !== 'player' || sending) return;
-      runtime.syncPlayerChannel(runtime.activeChatId).then(function () {
-        delete sendFailed[String(messageId)];
-        showToast(I18N.dict().playerSentToast);
-        render();
-      }).catch(function () {
-        showToast(I18N.dict().playerSendFailed, true);
-        render();
-      });
-    }
-
-    // 玩家群聊发言（公开数据上的真实发言）：读输入框 → 写入玩家域源 → 镜像角色域群组。
-    function sendPlayerGroupMessage() {
-      if (!enabled() || domain !== 'player') return;
-      if (sending) return;
-      if (featureFlags.msg === false) { showToast(I18N.dict().toast.sealedMsg, true); return; }
-      var overlay = hostDocument.getElementById(OVERLAY_ID);
-      var box = overlay && overlay.querySelector('[data-group-msg-input]');
-      if (!box) return;
-      var groupId = box.getAttribute('data-group-id');
-      var text = String(box.value || '');
-      if (!CORE.hasText(text.trim())) { showToast(I18N.dict().playerEmptyInput, true); return; }
-      box.value = '';
-      var sent = runtime.sendPlayerGroupMessage(runtime.activeChatId, groupId, text);
-      if (!sent) return;
-      showToast(I18N.dict().playerGroupSentToast);
-      // 群聊详情渲染的是角色域数据（公开数据）：镜像需先 await resolvePlayerName，
-      // 镜像完成后必须再重渲染一次，否则发送的消息要等下次导航才出现。
-      runtime.syncPlayerGroups(runtime.activeChatId).then(function () { render(); }).catch(function () { render(); });
+      showToast(I18N.dict().msgSentToast);
       render();
     }
 
-    // 玩家论坛评论（公开数据上的真实发言）：读输入框 → 写入玩家域源 → 镜像角色域帖子。
-    function sendPlayerComment() {
-      if (!enabled() || domain !== 'player') return;
-      // 封印 forum 后评论镜像停止：明示而非假成功。
+    // 论坛评论（当前空间内的帖子）：同样本机直写。
+    function sendPostComment() {
+      if (!enabled()) return;
       if (featureFlags.forum === false) { showToast(I18N.dict().toast.sealedForum, true); return; }
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       var box = overlay && overlay.querySelector('[data-comment-input]');
       if (!box) return;
       var postId = box.getAttribute('data-post-id');
       var text = String(box.value || '');
-      if (!CORE.hasText(text.trim())) { showToast(I18N.dict().playerEmptyInput, true); return; }
+      if (!CORE.hasText(text.trim())) { showToast(I18N.dict().emptyInput, true); return; }
+      var space = runtime.activeSpace();
+      if (!space) return;
+      var sent = runtime.sendSpaceComment(space.id, postId, text);
+      if (!sent) { showToast(I18N.dict().spaceMissingEntity, true); return; }
       box.value = '';
-      var sent = runtime.sendPlayerComment(runtime.activeChatId, postId, text);
-      if (!sent) return;
-      showToast(I18N.dict().playerCommentSentToast);
-      // 帖子详情渲染的是角色域数据（公开数据）：镜像完成后必须再重渲染一次，
-      // 否则玩家评论要等下次导航才出现。
-      runtime.syncPlayerPosts(runtime.activeChatId).then(function () { render(); }).catch(function () { render(); });
+      showToast(I18N.dict().commentSentToast);
       render();
     }
 
-    // ---------- 玩家域 CRUD UI 动作 ----------
-    // 玩家直写不经模型评估；表单页通过 nav.view='form' + params 承载。
-    function openPlayerForm(kind, id, folderId) {
-      if (domain !== 'player') return;
+    // ---------- 空间实体 CRUD UI 动作 ----------
+
+    // 用户直写不经模型评估；表单页通过 nav.view='form' + params 承载。
+    // 联系人表单挂在 msg app 的 contact-view 下（renderMsg 识别）。
+    function openSpaceForm(kind, id, folderId) {
+      if (kind === 'contact') {
+        clearToast();
+        nav.stack.push({ app: nav.app, view: nav.view, params: nav.params });
+        nav.view = 'contact-form';
+        nav.params = { kind: 'contact', id: id || '' };
+        resetSearch();
+        armedWipe = null;
+        return render();
+      }
       clearToast();
       nav.stack.push({ app: nav.app, view: nav.view, params: nav.params });
       nav.view = 'form';
@@ -6765,8 +6213,7 @@
       box.focus();
     }
 
-    function savePlayerForm(kind, id) {
-      if (domain !== 'player') return;
+    function saveSpaceForm(kind, id) {
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       var scope = overlay && overlay.querySelector('[data-page]');
       if (!scope) return;
@@ -6780,7 +6227,8 @@
       var dict = I18N.dict();
       // reason → 字段名（playerFormFields 的 key 与运行时校验点一致）。
       var REASON_FIELD = { name: 'name', title: 'title', kind: 'kind', kindClash: 'kind' };
-      var result = runtime.playerSaveEntity(kind, raw, id);
+      var space = runtime.activeSpace();
+      var result = space ? runtime.spaceSaveEntity(space.id, kind, raw, id) : { ok: false, reason: 'space' };
       if (!result || !result.ok) {
         var reason = (result && result.reason) || '';
         if (reason === 'folder') {
@@ -6788,7 +6236,8 @@
           showToast(dict.playerFormNeedFolder, true);
           return;
         }
-        if (reason === 'missing') { showToast(dict.playerFormMissing, true); return; }
+        if (reason === 'missing') { showToast(dict.spaceMissingEntity, true); return; }
+        if (reason === 'full') { showToast(dict.spaceEntityFull, true); return; }
         var fieldKey = REASON_FIELD[reason];
         if (fieldKey) {
           var label = '';
@@ -6798,19 +6247,14 @@
           showToast(message, true);
           return;
         }
-        showToast(dict.playerFormRequired, true);
+        showToast(dict.spaceMissingEntity, true);
         return;
       }
-      // 发帖保存要等镜像进角色域（公开数据）后再回列表，列表立即能看到新帖。
-      var finish = function () { showToast(I18N.dict().playerSaved); backNav(); };
-      if (result && typeof result.then === 'function') {
-        Promise.resolve(result).then(finish, function () { showToast(I18N.dict().playerFormRequired, true); });
-        return;
-      }
-      finish();
+      showToast(I18N.dict().playerSaved);
+      backNav();
     }
 
-    // 删除：两击确认（复用管理页武装状态机，key = kind:id），确认后直写删除。
+    // 删除：两击确认（复用管理页武装状态机，key = kind:id），确认后直写当前空间。
     // 删除成功给出「撤销」入口（会话内快照）：玉册夹级联删除其下备忘也一并还原。
     var undoSnap = null;
 
@@ -6818,41 +6262,33 @@
       if (!undoSnap) return;
       var snap = undoSnap;
       undoSnap = null;
-      var result = snap.characterDomain ? runtime.restoreCharacterEntity(snap) : runtime.playerRestoreEntity(snap.kind, snap);
+      var result = snap.spaceSnapshot ? runtime.restoreSpace(snap.entity) : runtime.spaceRestoreEntity(snap);
       if (result && result.ok) {
         showToast(I18N.dict().playerRestored);
         render();
       } else {
-        showToast(I18N.dict().playerFormMissing, true);
+        showToast(I18N.dict().spaceMissingEntity, true);
       }
     }
 
-    function deletePlayerEntity(kind, id) {
-      if (domain !== 'player') return;
-      var key = kind + ':' + id;
+    function deleteSpaceItem(kind, id, extraId) {
+      var key = kind + ':' + id + (extraId ? ':' + extraId : '');
       var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
       clearTimeout(wipeTimer);
       wipeTimer = 0;
+      var space = runtime.activeSpace();
       if (!next) {
-        // 删除前快照（供撤销）：玉册夹连同其下备忘一起带走。
-        var snapshot = { kind: kind, id: String(id), entity: null, notes: [] };
-        var player = runtime.playerCurrent();
-        var entity = CORE.playerFindEntity(player, kind, id);
-        if (entity) snapshot.entity = CORE.clone(entity);
-        if (kind === 'folder' && CORE.safeArray(player.notes && player.notes.notes, 30)) {
-          snapshot.notes = CORE.safeArray(player.notes.notes, 30).filter(function (n) { return String(n && n.folderId) === String(id); }).map(function (n) { return CORE.clone(n); });
-        }
-        var result = runtime.playerDeleteEntity(kind, id);
+        var result = space ? runtime.spaceDeleteEntity(space.id, kind, id, extraId || '') : { ok: false, reason: 'space' };
         armedWipe = null;
         if (result.ok) {
-          undoSnap = snapshot.entity ? snapshot : null;
+          undoSnap = result.snapshot && result.snapshot.entity ? result.snapshot : null;
           // 撤销 toast 用 6s 窗口：手机端「读 toast + 抬手点击」2.4s 通常不够。
           if (undoSnap) showToast(I18N.dict().playerDeleted, false, { label: I18N.dict().playerUndo, fn: undoDelete }, 6000);
           else showToast(I18N.dict().playerDeleted);
           backNavSkippingDeleted(kind, id);
           return;
         }
-        showToast(result && result.reason === 'missing' ? I18N.dict().playerFormMissing : I18N.dict().playerFormRequired, true);
+        showToast(result && result.reason === 'missing' ? I18N.dict().spaceMissingEntity : I18N.dict().spaceMissingEntity, true);
         return;
       }
       armedWipe = next;
@@ -6870,61 +6306,60 @@
         }
       }, VIEWS.WIPE_CONFIRM_MS + 50);
       startWipeCountdown();
-      // 武装第一击：只更新按钮文案（局部 DOM），不整页重渲染——保留表单未保存的编辑。
-      var btn = hostDocument.querySelector('#' + OVERLAY_ID + ' .yz-clear-btn[data-action="player-delete"][data-kind="' + CORE.escapeHtml(kind) + '"][data-id="' + CORE.escapeHtml(String(id)) + '"]');
+      // 武装第一击：局部更新按钮文案，不整页重渲染（保留表单未保存的编辑）。
+      var confirmKey = 'delete' + kind.charAt(0).toUpperCase() + kind.slice(1) + 'Confirm';
+      var btn = hostDocument.querySelector('#' + OVERLAY_ID + ' [data-kind="' + CORE.escapeHtml(kind) + '"][data-id="' + CORE.escapeHtml(String(id)) + '"].yz-clear-btn') ||
+        hostDocument.querySelector('#' + OVERLAY_ID + ' [data-action="delete-' + CORE.escapeHtml(kind) + '"][data-id="' + CORE.escapeHtml(String(id)) + '"]');
       if (btn) {
         btn.classList.add('armed');
-        btn.setAttribute('data-wipe-base', I18N.dict().playerDeleteConfirm);
-        btn.textContent = I18N.dict().playerDeleteConfirm;
+        btn.setAttribute('data-wipe-base', I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm);
+        btn.textContent = I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm;
         return;
       }
       render();
     }
 
-    // 角色域实体删除（联系人/群聊/消息/行踪/地点）：两击确认 + 撤销。
-    function deleteCharacterItem(kind, id, extraId) {
-      if (domain === 'player') return;
-      var key = kind + ':' + id + (extraId ? ':' + extraId : '');
+    // ---------- 空间管理 UI 动作 ----------
+    function createSpaceFromForm() {
+      var overlay = hostDocument.getElementById(OVERLAY_ID);
+      var box = overlay && overlay.querySelector('[data-space-input]');
+      var name = box ? String(box.value || '') : '';
+      if (!CORE.hasText(name.trim())) { showToast(I18N.dict().spaceNameRequired, true); return; }
+      var result = runtime.createSpace(name.trim());
+      if (!result.ok) {
+        showToast(result.reason === 'full' ? I18N.dict().spaceLimitReached : result.reason === 'clash' ? I18N.dict().spaceNameClash : I18N.dict().spaceNameRequired, true);
+        return;
+      }
+      if (box) box.value = '';
+      showToast(I18N.dict().spaceCreated);
+      render();
+    }
+
+    function toggleSpaceFlag(id, flag) {
+      if (flag !== 'sendToAI' && flag !== 'allowAIWrite') return;
+      var space = CORE.findSpaceState(runtime.current(), id);
+      var result = runtime.setSpaceFlag(id, flag, !(space && space[flag]));
+      if (!result.ok && result.reason === 'default') { showToast(I18N.dict().spaceDefaultWrite, true); return; }
+      render();
+    }
+
+    // 删除空间（两击确认 + 撤销）：默认空间删除后由 AI 写入自动重建。
+    function deleteSpaceRow(id) {
+      var key = 'space:' + id;
       var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
       clearTimeout(wipeTimer);
       wipeTimer = 0;
       if (!next) {
-        var snapshot = { kind: kind, id: String(id), parentId: extraId || '', entity: null, characterDomain: true };
-        var state = runtime.current();
-        if (kind === 'contact') {
-          var found = null;
-          CORE.safeArray(state.chats && state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === String(id)) found = c; });
-          if (found) snapshot.entity = CORE.clone(found);
-        } else if (kind === 'group') {
-          var found = null;
-          CORE.safeArray(state.chats && state.chats.groups, 6).forEach(function (g) { if (String(g.id) === String(id)) found = g; });
-          if (found) snapshot.entity = CORE.clone(found);
-        } else if (kind === 'message') {
-          var target = null;
-          CORE.safeArray(state.chats && state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === extraId) target = c; });
-          CORE.safeArray(state.chats && state.chats.groups, 6).forEach(function (g) { if (String(g.id) === extraId) target = g; });
-          if (target) {
-            CORE.safeArray(target.messages, 50).forEach(function (m) { if (String(m.id) === String(id)) snapshot.entity = CORE.clone(m); });
-          }
-        } else if (kind === 'track') {
-          var found = null;
-          CORE.safeArray(state.map && state.map.tracks, 20).forEach(function (t) { if (String(t.id) === String(id)) found = t; });
-          if (found) snapshot.entity = CORE.clone(found);
-        } else if (kind === 'place') {
-          var found = null;
-          CORE.safeArray(state.map && state.map.places, 20).forEach(function (p) { if (String(p.id) === String(id)) found = p; });
-          if (found) snapshot.entity = CORE.clone(found);
-        }
-        var result = runtime.deleteCharacterEntity(kind, id, extraId);
+        var result = runtime.deleteSpace(id);
         armedWipe = null;
         if (result.ok) {
-          undoSnap = snapshot.entity ? snapshot : null;
-          if (undoSnap) showToast(I18N.dict().playerDeleted, false, { label: I18N.dict().playerUndo, fn: undoDelete }, 6000);
-          else showToast(I18N.dict().playerDeleted);
-          backNavSkippingDeleted(kind, id);
+          undoSnap = { spaceSnapshot: true, entity: result.snapshot };
+          showToast(I18N.dict().spaceDeleted, false, { label: I18N.dict().playerUndo, fn: undoDelete }, 6000);
+          if (nav.app === 'manage' && nav.view === 'spaces') nav.stack = [];
+          render();
           return;
         }
-        showToast(I18N.dict().playerFormRequired, true);
+        render();
         return;
       }
       armedWipe = next;
@@ -6934,17 +6369,26 @@
         render();
       }, VIEWS.WIPE_CONFIRM_MS + 50);
       startWipeCountdown();
-      // 武装第一击：更新按钮文案
-      var actionMap = { contact: 'delete-contact', group: 'delete-group', message: 'delete-message', track: 'delete-track', place: 'delete-place' };
-      var sel = '#' + OVERLAY_ID + ' [data-action="' + (actionMap[kind] || '') + '"][data-id="' + CORE.escapeHtml(String(id)) + '"]';
-      var btn = hostDocument.querySelector(sel);
+      var btn = hostDocument.querySelector('#' + OVERLAY_ID + ' [data-action="space-delete"][data-id="' + CORE.escapeHtml(id) + '"]');
       if (btn) {
-        var confirmKey = 'delete' + kind.charAt(0).toUpperCase() + kind.slice(1) + 'Confirm';
         btn.classList.add('armed');
-        btn.setAttribute('data-wipe-base', I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm);
-        btn.textContent = I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm;
+        btn.setAttribute('data-wipe-base', I18N.dict().spaceDeleteConfirm);
+        btn.textContent = I18N.dict().spaceDeleteConfirm + tr('runtime.sep.count', { n: Math.ceil(VIEWS.WIPE_CONFIRM_MS / 1000) });
+      }
+      render();
+    }
+
+    function renameSpaceRow(id) {
+      var overlay = hostDocument.getElementById(OVERLAY_ID);
+      var box = overlay && overlay.querySelector('[data-space-rename="' + id + '"]');
+      var name = box ? String(box.value || '') : '';
+      if (!CORE.hasText(name.trim())) { showToast(I18N.dict().spaceNameRequired, true); return; }
+      var result = runtime.renameSpace(id, name.trim());
+      if (!result.ok) {
+        showToast(result.reason === 'clash' ? I18N.dict().spaceNameClash : result.reason === 'default' ? I18N.dict().spaceDefaultNameLocked : I18N.dict().spaceNameRequired, true);
         return;
       }
+      showToast(I18N.dict().spaceRenamed);
       render();
     }
 
@@ -7148,9 +6592,8 @@
         nav = { app: 'home', view: 'root', params: {}, stack: [] };
         // 换聊天后放弃上一聊天的离开位置：新会话从主页开始。
         savedNav = null;
-        savedDomain = null;
-        // 切换聊天后刷新 {{user}} 玩家名缓存（用户身份可能随聊天不同）。
-        refreshPlayerName();
+        // 切换聊天后刷新 {{user}} 用户身份名缓存（发言署名用；用户身份可能随聊天不同）。
+        refreshOwnerName();
         render();
       });
 
@@ -7182,27 +6625,35 @@
         if (chatId !== runtime.activeChatId) await runtime.switchChat(chatId);
         await runtime.settle();
         var state = runtime.current();
+        var defaultSpace = CORE.defaultSpaceState(state);
+        var spaceInfos = state.spaces.map(function (sp) {
+          return {
+            name: CORE.spaceDisplayName(state, sp, ''),
+            isDefault: !!sp.isDefault,
+            writable: sp.sendToAI !== false && sp.allowAIWrite !== false
+          };
+        });
+        var allIssues = [];
+        state.spaces.forEach(function (sp) {
+          CORE.safeArray(sp.sync && sp.sync.issues, 20).forEach(function (issue) { if (allIssues.length < 6) allIssues.push(issue); });
+        });
         var ctx = {
-          // 强制全量轮：从未同步、封印切换/版本更新后的持久化标记，或本轮内存标记；其余轮次一律 diff 增量。
-          forceFull: state.revision === 0 || flagsDirty || state.pendingFull === true,
-          issues: CORE.safeArray(state.sync && state.sync.issues, 20),
-          // 当前数据基线：全量轮与 diff 轮都注入，模型据此沿用既有 id 与未变化行（多轮连续性）。
+          // 强制全量轮：默认空间从未同步、封印切换/版本更新后的持久化标记，或本轮内存标记；
+          // 其余轮次一律 diff 增量（非默认空间恒 diff，见提示词空间规则）。
+          forceFull: !defaultSpace || defaultSpace.revision === 0 || flagsDirty || state.pendingFull === true,
+          issues: allIssues,
+          spaces: spaceInfos,
+          characterName: defaultSpace ? CORE.spaceDisplayName(state, defaultSpace, '') : '',
+          // 当前数据基线：全量轮与 diff 轮都注入（sendToAI 空间分组），模型据此沿用既有 id 与未变化行。
           current: PROMPT.buildCurrent(state, featureFlags)
         };
-        // 传讯通道已读游标：基线注入即已读（评审结论）。玩家消息随基线进入模型上下文，
-        // 未读数随之清零；消息本体保留在角色域线程中，模型可继续回复。
-        // 记录推进前的游标：本轮若生成失败/取消则回退，玩家消息不被提前标已读。
-        if (featureFlags.msg !== false) {
-          cursorBeforePrepare = state.sync && state.sync.playerReadCursor;
-          runtime.markPlayerRead(chatId);
-        }
         return PROMPT.mutatePrepareEvent(event, promptLang(), featureFlags, ctx);
       });
 
       plugin.on('generation:success', async function (event) {
         if (!enabled()) return event;
         // 清除进行中时丢弃本轮 protocol block：用户在生成期间清了数据，旧协议写回会复活已清除的数据。
-        if (clearPending) { clearPending = false; cursorBeforePrepare = null; render(); return event; }
+        if (clearPending) { clearPending = false; render(); return event; }
         var raw = pickEnvelopePayload(event);
         // 该 Hook 每个 handler 只有约 5 秒预算且超时整体丢弃：先同步完成纯字符串的正文剥离
         // （阻止协议块进入已保存消息的关键动作），快照应用走异步、持久化已在 runtime 后台化。
@@ -7224,10 +6675,8 @@
             }
             // 数据有变化时后台刷新世界书（消息归档条目 + 全状态快照；不占用本 Hook 的 5 秒预算等待）。
             if (result.changed) runtime.syncArchive(chatId);
-          } catch (error) { dbg('generation:success apply failed', error); if (cursorBeforePrepare !== null) { runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare); cursorBeforePrepare = null; } }
+          } catch (error) { dbg('generation:success apply failed', error); }
         }
-        // 生成成功：已读游标推进被确认，清除回退标记。
-        cursorBeforePrepare = null;
         render();
         return event;
       });
@@ -7279,20 +6728,11 @@
       plugin.on('generation:error', function () {
         if (!enabled()) return;
         clearPending = false;
-        // 本轮生成失败：回退已读游标（prepare 时推进了），玩家消息重新计未读。
-        if (cursorBeforePrepare !== null) {
-          runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare);
-          cursorBeforePrepare = null;
-        }
         showToast(I18N.dict().toast.generationError, true);
       });
       plugin.on('generation:cancelled', function () {
         if (!enabled()) return;
         clearPending = false;
-        if (cursorBeforePrepare !== null) {
-          runtime.restorePlayerReadCursor(runtime.activeChatId, cursorBeforePrepare);
-          cursorBeforePrepare = null;
-        }
         showToast(I18N.dict().toast.cancelled, true);
       });
     }

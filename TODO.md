@@ -1,6 +1,6 @@
 # 玉兆 开发待办（TODO）
 
-> 当前基线：v2.2.1（冒烟 890 项全绿）。
+> 当前基线：v3.0.0（冒烟 815 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
 > 本文件只记录未完成工作。已完成的工作与全部变更记录见 CHANGELOG.md。
 
 ---
@@ -14,12 +14,13 @@
 ## 开发约束（每个候选必过）
 
 所有新增数据形态必须逐项过「数据形态扩展审计」：
-buildCurrent 窗口化、条目级注入采样（sampleEntries 强制集/活跃度加权/冷门保底/隐藏不提示）、
-MAX_BASELINE_CHARS 预算、diff 合并、达标评估、内容指纹去重、
-版本迁移、四层备份链、世界书归档关键词——任何一项遗漏都会破坏现有 890 项测试基线语义。
-玩家域新增数据形态另需过：三层存储（不进世界书）、不经模型评估、跨域幂等、CRUD 校验与删除级联；
-公开数据发布另需过：owner 维度、镜像对账（含评论保留与 id 撞车改名）、评估豁免、提示词保护、
-跨域镜像并发复查（await 后状态同一性）。
+buildCurrent 窗口化、条目级注入采样（sampleEntries 强制集/活跃度加权/冷门保底/隐藏不提示，
+多发送空间时按空间数均摊）、MAX_BASELINE_CHARS 预算、diff 合并、达标评估（仅默认空间）、
+内容指纹去重（按空间隔离）、版本迁移、世界书快照（单链承载全部空间）、世界书归档关键词——
+任何一项遗漏都会破坏现有测试基线语义。
+空间内用户直写另需过：CRUD 校验与删除级联、真实发言门禁（c-/pm/pmg/pmc/owner=player 不可被
+模型改写）、未读 seen 游标（recomputeThreadUnread）、空间路由（turn 行第 6 字段，
+unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
 - 冒烟门禁：`node --check entry.js && node tests/smoke.mjs`（基线 890 项全绿）
 - 发布门禁：MCP `tavo_plugin_validate` → `tavo_plugin_audit` → `tavo_plugin_package`，
@@ -154,3 +155,53 @@ MAX_BASELINE_CHARS 预算、diff 合并、达标评估、内容指纹去重、
 - [ ] 内容联想（长按输入框弹出上下文建议）
 - [ ] 语音输入（ASR 集成）
 - [ ] 自定义主题/背景（纯装饰）
+
+---
+
+## v3.0.0 空间改版进度（2026-08-31）
+
+双域（角色域/玩家域）→ 用户空间重构。设计决策：所有空间同构全套 schema；
+旧玩家域数据迁移为「我」空间；默认空间（{{char}}）可删除、数据到达时自动重建；
+协议带空间参数（turn 行第 6 字段）。
+
+### 已完成
+
+- [x] **Core 数据层**：`blankUserSpace/normalizeUserSpace/normalizeState(v2)`、
+      `findSpaceState`（id→名称→缺省默认）、`ensureDefaultSpace`、`stateRevision/stateDataUpdatedAt`、
+      用户线程未读 `recomputeThreadUnread`（pm 尾随回复 − seen；用户帖非玩家评论 − seen）
+- [x] **迁移**：v1 顶层分区读入即整体迁入默认空间（schemaVersion 2）；旧玩家域镜像/
+      yz-psnap 世界书分片 → 「我」空间 + `migratedPlayer` 幂等标记 + 旧键删除；
+      yz-player/yz-character 固定通道联系人归一为 c- 前缀（进门禁保护）
+- [x] **AI 协议**：parseMeta 第 6 字段；applySnapshot 空间路由 + 三类拒写
+      （space.unknown/space.denied/space.full）+ 非默认空间 diff-only + 用户空间豁免达标底线
+- [x] **注入**：buildCurrent 按 sendToAI 空间分组（`<yzc_* space="名">`，默认无属性）、
+      采样上限均摊、预算共池五级淘汰、用户真实行 last 保护；buildPrompt 空间协议 zh/en、
+      turn 模板、基线分组说明、forceFull 限定默认空间
+- [x] **门禁**：c- 联系人不可增删改；线程内消息不可覆盖/删除（可追加 self/other 新行）；
+      pm-N/pmg-N/pmc-N 全局拒伪造；owner=player 帖不可触碰（原有语义保留至所有空间）
+- [x] **Runtime**：空间 CRUD（create/rename/setSpaceFlag/delete/restore/setActiveSpace，
+      上限 6、名称唯一、默认强制 AI 可写且不可改名）；实体 CRUD 统一
+      （spaceSaveEntity/spaceDeleteEntity/spaceRestoreEntity + contact 种类 c- 前缀）；
+      sendSpaceMessage/sendSpaceComment/markSpaceThreadSeen/markSpacePostSeen；
+      跨域镜像通道（syncPlayerChannel/Groups/Posts、已读游标、投递重试、{{user}} 镜像）整体移除
+- [x] **持久化**：单存储键/单快照链承载全部空间；syncArchive 整本替换自然退役 yz-psnap；
+      importState v1/v2 双签名；BroadcastChannel 单键归一
+- [x] **UI 一套化**：删除玩家域渲染栈与域切换；讯息列表「新增联系人」CTA + 行内删除、
+      会话/群聊/论坛评论输入框全空间可用、气泡右=pm*/pmg*（默认模型线程维持 self 在右）、
+      玉册/论坛/坊市订单/储物全空间可编辑、舆图行删除；顶栏空间按钮 + 管理页 spaces 视图
+      （进入/改名/两开关/两击删除+撤销/新建输入）；删除统一 deleteSpaceItem + 6s 撤销
+- [x] **文案与视觉**：locale 新增 runtime.space.*（zh/en 双语齐全），清理 38+3 个死键，
+      补 lockedHint；空间管理页 CSS；死 CSS（retry/status/start-thread/mark-all/locked 徽标）移除
+- [x] **测试**：双域契约整体替换为用户空间契约（生命周期/路由/门禁/拒写 issue/迁移/
+      未读生命周期/注入分组/提示词规则/导入 v2/空间管理视图渲染）；微任务排干修复；
+      `node --check entry.js && node tests/smoke.mjs` 815 项全绿
+- [x] **文档**：CHANGELOG v3.0.0、DESIGN.md 第六节重写 + 持久化/重建段落更新、README 特性/协议/安装更新
+- [x] **版本**：PLUGIN_VERSION/manifest = 3.0.0，releaseNotes.3_0_0 双语
+
+### 待完成（发布前）
+
+- [ ] git commit + push origin main（含本轮 TODO 更新）
+- [ ] 打包 `../yu-zhao-v3.0.0.tpg`（manifest/entry.js/locales×2/cover.png）
+- [ ] MCP 发布门禁：`tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
+- [ ] 真机回归：旧档升级（v2.2.1 → v3.0.0 自动迁移「我」空间）、空间切换/新建/删除+撤销、
+      跨空间收发与 AI 回帖未读、只读/关发送开关生效、世界书快照恢复、触屏两击确认

@@ -287,9 +287,8 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   turnId+lastSource/applied 分区/issues 翻译/lastError（非空才显示）/更新时间（手工
   `YYYY-MM-DD HH:mm` UTC 格式，不用 toLocaleString）/容量进度条（>80% 警示色）/
   revision/processedTurns 数/chatId。
-- 管理页数据操作：单功能清空（行尾次级按钮两击确认，3 秒超时还原，纯函数
-  `nextWipeState` 直测；执行 = 分区重置 blank + 落盘，不动 processedTurns；清空
-  forum/msg 分区后立即补投玩家帖/传讯镜像——玩家真实数据以玩家域为源，无空窗）、
+- 管理页数据操作：单功能清空（行尾次级按钮两击确认，5 秒超时还原，纯函数
+  `nextWipeState` 直测；执行 = 所有空间的该分区重置 blank + 落盘，不动 processedTurns）、
   存档导出（只读 textarea + 全选复制；导出内容超过导入容量红线
   `MAX_SNAPSHOT_BYTES` 时拦截并提示，保证导出→导入 round-trip 不断裂）、导入
   （normalizeState 校验 + 超 MAX_SNAPSHOT_BYTES 拒收）。
@@ -298,109 +297,67 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   且不在 `sync.appliedSeen`（持久化于 state.sync，openFeature 并入、下轮 applied 移除），
   仅呼吸光效不加文字角标。封印态不显示任何徽标；aria-label 附徽标语义。
 - 侧边栏动作：`open-jade`（复用 open()）、`resync-history`（rebuildFromHistory + toast）。
-  重建 = 从世界书快照（权威存储）重新装载角色域与玩家域并覆盖内存态，随后按玩家域
-  补投跨域通道；快照/镜像均无数据时保留现状并提示「世界书中没有玉兆数据快照」。
+  重建 = 从世界书快照（权威存储）重新装载整份状态（含全部用户空间）并覆盖内存态；
+  快照/镜像均无数据时保留现状并提示「世界书中没有玉兆数据快照」。
   历史消息正文经正文剥离后不含协议块，不再作为重建数据源。
 
-## 六、双玉兆架构：玩家域 + 传讯通道（一期核心）
+## 六、用户空间架构（v3.0.0 改版）
 
-**定位**：玩家 = 安装插件的 Tavo 用户；玉兆数据以游戏角色为主体（玩家"偷窥"角色视角）。
-玩家交互需要独立「玩家域」，与「角色域」数据隔离但可互通。
+双域设计（角色域/玩家域）废除。每份聊天的数据由 N 个**用户空间**承载，
+只维护一套 UI；跨域镜像通道（syncPlayerChannel/Groups/Posts、已读游标、
+投递重试、公开/私有数据区分）整体移除。
 
-### 域模型
+### 6.1 数据模型
 
-- **角色域**（既有 `state`）：模型协议数据，经评估/指纹/预算/世界书归档，逻辑完全不变。
-- **玩家域**（新增 `playerState`）：与角色域同构的私有数据容器（tablet/chats/notes/
-  market 订单/space/map），forum 分区只承载玩家帖子（`owner=player` 归一化过滤）、
-  market 全量（求购与行情/拍卖为公开数据渲染角色域，玩家域存副本仅展示用）——
-  **不经模型评估（写什么是什么）**；无 revision/processedTurns/指纹/hydration/pendingFull，
-  两域绝不共享这些字段。
-- **存储三层**：宿主 chat 键（`yz_jade_player_v1`）+ 本地镜像（`yz-jade-player-v1:<chatId>`）
-  + 全局备份（`yz-jade-player-v1-backup:<chatId>`），按 updatedAt 取新；
-  **不进世界书**（快照/归档只服务角色域）。
-- **公开数据跨域一致**：天下论坛（玩家帖子镜像为公开数据，双域一致）、坊市行情/拍卖、
-  群聊（群组列表与群聊详情）永远渲染角色域数据并带「公开」标识；私有数据随域切换
-  数据源。域切换按钮在顶栏：只换数据源不换 UI。**按钮文案 = 当前域**（角色域/玩家域，
-  点击切换到另一域）；每次打开玉兆默认回到角色域（玩家域是本机私有侧，主动切换才
-  进入；升级用户首见角色域数据，不被误认为数据在玩家域）；玩家域渲染绝不回退角色域
-  数据（数据域隔离）。
-- 玩家身份 = `{{user}}`（宿主用户身份名 `chat.persona.name`），缺失时回退 catalog 文案
-  （zh「道友」/ en「Fellow Daoist」）。
+- 顶层 `state`：`{schemaVersion:2, chatId, pluginVersion, pendingFull, activeSpaceId,
+  migratedPlayer, hydration, spaces:[Space], updatedAt}`。单存储键、单快照链。
+- `Space`：与旧版状态同构的全套分区（tablet/chats/notes/forum/market/space/map）
+  加空间元信息与模型域字段：
+  `{id, name, isDefault, sendToAI, allowAIWrite, createdAt, revision, processedTurns,
+  sync, updatedAt}`。每个空间有自己的 revision/sync/去重指纹。
+- **默认空间**（id `sp0`）：锚定 `{{char}}`（代指角色）。name 恒空，显示时解析为
+  角色名（`sync.roleName` 优先）；`allowAIWrite` 恒真（协议缺省落点）；可删除，
+  无空间参数的数据到达时自动重建。
+- 自定义空间：`createSpace(name)` 上限 6 个、名称唯一（trim + 大小写不敏感）；
+  可改名；两 flag 默认开。归一层兜底：重复 id 重发、重名补后缀、多默认只留第一个。
+- v1→v2 迁移在 `normalizeState` 内完成（顶层分区整体搬进默认空间，读到时即升级，
+  无迁移窗口）；旧玩家域数据在 `migratePlayerToSpace`（doSwitchChat 链路）一次
+  性升级为「我」空间并删除旧键，`migratedPlayer` 标记防重复迁移。
 
-### 传讯通道（唯一跨域写入点）
+### 6.2 AI 协议：空间参数路由
 
-- 玩家域「交流讯息」= 固定「与角色传讯」会话（`yz-character` 线程）；底部输入框发讯。- 发送：玩家消息 `pm-<seq>` 写入玩家线程（self），并投递为角色域 `yz-player` 联系人的
-  other 消息（真实事件，不经模型评估）。**幂等**：双方按消息 id upsert，重复同步无副本；
-  并发同步（send 内部 + 显式调用）经「await 先于检查/变更」的同步段保证不重复建联系人。
-- **镜像保尾**：双向镜像都以 id 全量去重（不取头部切片——超 20 条后不会重复推送），
-  并各自保尾 20 条（与角色域 normalize 同策略，新消息永远在场、最旧淘汰）；
-  已读游标/未读统计同样全量扫描。
-- 角色域评估豁免：`yz-player` 联系人不参与联系人数与每人消息数底线（玩家发讯不拉低
-  达标度），也不凑联系人数（真实缺口仍暴露）。
-- 未读数由客户端维护（seq > 已读游标的 other 消息数），模型不得改写。
-- **已读游标**（`state.sync.playerReadCursor`，注入即已读）：prepare 注入基线后推进，
-  未读清零，消息本体保留在角色域线程；sync 整体重建时必须保留该字段（防跨轮反弹）。
-- **回复**：模型在后续轮次以普通 `+msg｜yz-player｜新id｜self｜绝对时间｜正文` 自然回复；
-  通道把角色域 self 消息镜像回玩家线程（other + reply 标记）。
-- **只读防护（代码级）**：diffChats 对 `yz-player` 联系人做与 diffForum 玩家帖同语义的
-  门禁——模型只能 `+msg self` 追加自己的回复（新 id）；`-msg`、`side=other`（伪造玩家
-  消息）、改写既有玩家消息（pm-*）、contact 级增删改一律拒绝（提示词亦明令禁止）。
-- **UI 状态标记**：已回（线程中该消息之后存在角色回复）> 已读（seq ≤ 游标且已投递）>
-  已送达；玩家域主界面显示 已送达/已回 统计。
-- **注入预算**：未读行计入 9000 预算但淘汰优先级最高——五级淘汰的最后一级（明细行 →
-  tablet 字段 → 归档行 → last 真实事件行 → 标识行截断）；每轮未读全行上限
-  `MAX_PLAYER_UNREAD_ROWS = 5`，超出给一条 `unread｜yz-player｜N 条未读` 摘要行；
-  已读消息按最近窗口 6 条 + archived 行常规处理。
-- 封印 msg 后通道停止工作（不注入/不镜像），双方各自保留数据；历史重建/清空后
-  `syncPlayerChannel` 按玩家域补投回角色域。
-- 玉兆管理（艮）是角色域本地系统页：玩家域内封印卦位，点击仅提示不可用。
+- `turn` 行第 6 字段（可选）= 目标空间名；缺省/`sp0` → 默认空间。
+  `findSpaceState` 按 id → 名称（trim+忽略大小写）解析。
+- 拒写记入目标（或默认）空间 `sync.issues` 并回声：`space.unknown`（未知空间）、
+  `space.denied`（allowAIWrite=false）、`space.full`（非默认空间只接受 diff 轮——
+  全量轮会抹掉用户私有数据，直接丢弃）。
+- 基线注入按空间分组：`sendToAI` 的空间各出 `<yzc_*>` 容器，默认空间不带属性、
+  自定义空间带 `space="空间名"`；条目采样上限按发送空间数均摊（保底 1），
+  五级预算淘汰全空间共用一条池子。完整性底线评估（assess）只对默认空间生效。
 
-### 公开数据上的玩家发言（群聊 / 论坛）
+### 6.3 真实发言门禁（任何空间一致）
 
-玩家可以参与公开数据（群聊、论坛帖子）的对话，模式与传讯通道同构：
-**立即同步进角色域，不要求即时反馈——模型在后续对话轮次自然回复**。
+- 用户内容 id 前缀：联系人 `c-<n>`、私讯 `pm-<n>`、群讯 `pmg-<n>`、评论 `pmc-<n>`、
+  用户帖 `owner=player`。模型不得增删改这些行（diff 应用器直接丢弃）；
+  c- 线程允许模型追加新行（self/other 皆可，不得覆盖/删除既有行）。
+- 未读为客户端语义：用户线程 unread = 最后一条 pm/pmg 之后的回复数 − `seen`
+  （打开详情 `markSpaceThreadSeen` 推进）；用户帖 unread = 非用户评论数 − `seen`。
+  `recomputeThreadUnread` 在每次空间写入与快照应用后重算；模型线程的 unread
+  仍由协议字段维护，不被触碰。
 
-- **群聊发言**：玩家域群聊详情（公开渲染）底部发言框；源数据在玩家域群组
-  （id `pmg-<n>` 确定性幂等），`syncPlayerGroups` 镜像为角色域群组消息
-  （`sender` = 玩家名 `{{user}}`、`side=other`——玩家消息在角色域是「对方发的」，
-  与传讯通道同语义），模型在后续轮次以普通 `+gmsg`
-  新 id 回复（回复留在角色域群组，玩家域渲染即见）。玩家已发言的群组被模型
-  删除时由对账重建（真实发言不丢）。
-- **气泡左右按渲染视角**（公开数据双域同一份角色域数据）：角色域——自己发的
-  （`side=self` 且非玩家消息）在右，其余（含玩家 `pmg-*` 消息）在左；玩家域——
-  玩家消息（`pmg-*`，含镜像后的 `side=other`）在右，角色消息在左。
-- **论坛评论**：玩家域帖子详情底部评论框；源数据在玩家域 `myComments`
-  （id `pmc-<n>`，帖主可能是角色帖子），`syncPlayerPosts` 合并为角色域帖子评论
-  （`owner=player`、作者 = 玩家名），模型以 `+comment` 自然回复。
-- **只读防护（代码级）**：`pmg-*` 消息任何增删改一律拒绝（diffChats）；命中
-  `pmc-*` 评论的覆盖/删除拒绝（diffForum，评论无 id 的 diff 格式下按
-  作者+时间+内容匹配，改写版本只会成为普通 cm 新评论、不顶替本体）。
-- **评估豁免**：群聊消息底线只数非 `pmg-*` 消息、帖子评论底线只数非 `pmc-*`
-  评论——玩家发言不凑角色域达标，也不拉低（与传讯豁免同语义）。
-- 提示词明令：群聊中 `pmg-*`（sender 为玩家）消息与 `pmc-*` 评论是真实事件，
-  不得改写/删除/伪造，用普通行以自身身份回复。
+### 6.4 UI：一套空间视图
 
-### 玩家域 CRUD（二期）：玩家直写，不经模型评估
-
-- 记事玉册：玉册夹 / 备忘 的增删改（表单页：新建无预填、编辑预填；备忘含禁制锁定
-  checkbox 与隐藏 folderId；删除玉册夹级联删除其下备忘）。
-- 芥子空间：物品（名称/数量/品阶/描述）与钱财（种类+数额；种类为唯一键，重命名 =
-  移除旧种类写入新种类）的增删改。
-- 坊市订单：创建/编辑/删除，方向（买入/卖出）归一为 buy/sell，时间戳 = 本机 UTC。
-- 交互：列表页底部「新建」CTA + 行尾「编辑」按钮（`editableListRow` 主区按钮 +
-  编辑按钮，button 嵌 button 非法的处理与管理页同）；表单页保存/删除（删除走两击
-  确认，复用 `nextWipeState` 武装状态机，key = kind:id，导航即复位）。
-- 数据形态审计：全部直写 `playerState`，不经模型、不进世界书、不触发角色域任何逻辑；
-  id 确定性生成（`playerNextId`：pf-/pn-/pi-/po-<n>，重载不冲突）；
-  写入后按各分区归一器重排（文件夹计数派生等）；校验失败返回 reason 供 UI 提示。
-- **先验后改**：校验全部通过后才变更对象——失败路径绝不留下空必填实体（空实体下次
-  normalize 整行丢弃并级联其下数据）；货币重命名撞已有种类拒绝（种类是唯一键，防重复行）；
-  全部数值字段统一非负钳制（`nzero`，unread/qty/resonance/bids/members 等）。
-- **并发安全**：跨域镜像（syncPlayerChannel/syncPlayerPosts）在唯一 await
-  （`resolvePlayerName`）后复查状态对象同一性——双通道交错时放弃陈旧快照，绝不覆盖
-  新轮次落盘（探针验证）；doSwitchChat 读存储前排空落盘队列。
-- 角色域页面不受影响：CRUD 控件只出现在玩家域（renderNotes/renderSpace/renderMarket
-  的 player 标志），角色域列表保持纯只读。
+- 顶栏空间按钮显示当前空间名，点击进入管理页 spaces 视图：切换（进入）、
+  发送AI / AI可写开关、改名（默认空间禁改）、删除（两击确认 + 6s 撤销，
+  默认空间按钮文案「清空重建」）、底部新建输入。
+- `activeSpaceId` 持久化在 state（每聊天独立）；空间切换做子页消毒（详情/表单
+  回退根视图）。所有功能页统一可编辑：讯息列表带「新增联系人」CTA（自定义名称），
+  私聊/群聊/论坛评论在任何空间都有发言输入框，玉册/坊市订单/储物/舆图删除、
+  表单编辑（entity-new/edit/save/delete 动作）不再是玩家域专属。
+- 气泡左右：右 = 用户真实发言（pm/pmg id）；默认空间的模型线程维持旧语义
+  （self 在右）；用户空间/用户线程里 AI 一律在左带发送者名。
+- 空间数据变更统一走 `saveSpace`（updatedAt + 未读重算 + 落盘）。
+- 归档/召回条目只从默认空间构建（用户空间数据每轮基线注入，无需归档）。
 
 ## 七、状态与持久化
 
