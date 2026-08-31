@@ -200,6 +200,17 @@ ok(/var clearPending = false;/.test(source) && /clearPending = true;/.test(sourc
 ok(/var openEpoch = 0;/.test(source) && /var epoch = \+\+openEpoch;/.test(source), 'overlay 开关有 epoch 计数器防异步竞态');
 // S6 回归：本地数据损坏警告——load() 检测 JSON 损坏并弹 toast。
 ok(/var rawMirror = localGet\(/.test(source) && /mirrorCorrupted/.test(source), 'load() 检测 localStorage 数据损坏并警告');
+// 角色域实体删除：deleteCharacterEntity 支持 contact/group/message/track/place。
+ok(/function deleteCharacterEntity\(kind, id, extraId\)/.test(source), 'deleteCharacterEntity 支持角色域删除');
+ok(/function restoreCharacterEntity\(snap\)/.test(source), 'restoreCharacterEntity 支持角色域撤销');
+// 联系人/群聊列表有删除按钮。
+ok(/data-action="delete-contact"/.test(source), '联系人列表有删除按钮');
+ok(/data-action="delete-group"/.test(source), '群聊列表有删除按钮');
+// 单条消息有删除按钮。
+ok(/data-action="delete-message"/.test(source), '单条消息有删除按钮');
+// 舆图行踪/地点有删除按钮。
+ok(/data-action="delete-track"/.test(source), '舆图行踪有删除按钮');
+ok(/data-action="delete-place"/.test(source), '舆图地点有删除按钮');
 // 回归保护：自己刚发的消息不计为角色域未读（refreshPlayerContact 排除 ownIds）。
 ok(/var ownIds = \{\};\s*var player = playerCurrent\(\);/.test(source) && /!ownIds\[String\(message\.id\)\]\) unread \+= 1;/.test(source), 'refreshPlayerContact 排除自己发过的消息（不计角色域未读）');
 // 回归保护：卦名允许两行换行（en 长卦名小屏不截断）。

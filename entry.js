@@ -1950,6 +1950,12 @@
       playerQtyStepDown: tr('runtime.player.qtyStepDown'),
       playerQtyStepUp: tr('runtime.player.qtyStepUp'),
       playerMarkAllRead: tr('runtime.player.markAllRead'),
+      deleteMessage: tr('runtime.player.deleteMessage'),
+      deleteMessageConfirm: tr('runtime.player.deleteMessageConfirm'),
+      deleteTrack: tr('runtime.player.deleteTrack'),
+      deleteTrackConfirm: tr('runtime.player.deleteTrackConfirm'),
+      deletePlace: tr('runtime.player.deletePlace'),
+      deletePlaceConfirm: tr('runtime.player.deletePlaceConfirm'),
       forumCommentsFull: tr('runtime.forum.commentsFull'),
       labels: {
         self: tr('runtime.label.self'), locked: tr('runtime.label.locked'), membersUnit: tr('runtime.label.membersUnit'),
@@ -3027,6 +3033,70 @@
       return { ok: true };
     }
 
+    // 角色域实体删除：联系人/群聊/消息/行踪/地点——本地删除，下次同步可能重新出现。
+    function deleteCharacterEntity(kind, id, extraId) {
+      kind = cleanText(kind, 20);
+      id = String(id == null ? '' : id);
+      extraId = String(extraId == null ? '' : extraId);
+      var state = current();
+      if (kind === 'contact') {
+        state.chats.contacts = safeArray(state.chats.contacts, 10).filter(function (c) { return String(c.id) !== id; });
+      } else if (kind === 'group') {
+        state.chats.groups = safeArray(state.chats.groups, 6).filter(function (g) { return String(g.id) !== id; });
+      } else if (kind === 'message') {
+        var target = null;
+        safeArray(state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === extraId) target = c; });
+        safeArray(state.chats.groups, 6).forEach(function (g) { if (String(g.id) === extraId) target = g; });
+        if (target) target.messages = safeArray(target.messages, 50).filter(function (m) { return String(m.id) !== id; });
+      } else if (kind === 'track') {
+        state.map.tracks = safeArray(state.map.tracks, 20).filter(function (t) { return String(t.id) !== id; });
+      } else if (kind === 'place') {
+        state.map.places = safeArray(state.map.places, 20).filter(function (p) { return String(p.id) !== id; });
+      } else {
+        return { ok: false, reason: 'kind' };
+      }
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true };
+    }
+
+    // 撤销角色域删除：把删除前快照插回。
+    function restoreCharacterEntity(snap) {
+      if (!snap || !snap.kind) return { ok: false, reason: 'bad' };
+      var state = current();
+      if (snap.kind === 'contact') {
+        var arr = safeArray(state.chats.contacts, 10);
+        if (!arr.some(function (c) { return String(c.id) === String(snap.entity.id); })) arr.push(snap.entity);
+        state.chats.contacts = arr;
+      } else if (snap.kind === 'group') {
+        var arr = safeArray(state.chats.groups, 6);
+        if (!arr.some(function (g) { return String(g.id) === String(snap.entity.id); })) arr.push(snap.entity);
+        state.chats.groups = arr;
+      } else if (snap.kind === 'message') {
+        var target = null;
+        safeArray(state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === String(snap.parentId)) target = c; });
+        safeArray(state.chats.groups, 6).forEach(function (g) { if (String(g.id) === String(snap.parentId)) target = g; });
+        if (target) {
+          var msgs = safeArray(target.messages, 50);
+          if (!msgs.some(function (m) { return String(m.id) === String(snap.entity.id); })) msgs.push(snap.entity);
+          target.messages = msgs;
+        }
+      } else if (snap.kind === 'track') {
+        var arr = safeArray(state.map.tracks, 20);
+        if (!arr.some(function (t) { return String(t.id) === String(snap.entity.id); })) arr.push(snap.entity);
+        state.map.tracks = arr;
+      } else if (snap.kind === 'place') {
+        var arr = safeArray(state.map.places, 20);
+        if (!arr.some(function (p) { return String(p.id) === String(snap.entity.id); })) arr.push(snap.entity);
+        state.map.places = arr;
+      } else {
+        return { ok: false, reason: 'kind' };
+      }
+      state.updatedAt = Date.now();
+      save(activeChatId, state);
+      return { ok: true };
+    }
+
     // 玩家发帖镜像：玩家域帖子（owner=player）幂等同步进角色域论坛（公开数据）并对账——
     // 玩家帖子的标题/正文/版块/作者以玩家域为准（模型全量轮改写或删除会被还原），
     // 角色侧对玩家帖子的评论保留；已删除的玩家帖子从角色域移除。
@@ -3513,6 +3583,8 @@
       playerSaveEntity: playerSaveEntity,
       playerDeleteEntity: playerDeleteEntity,
       playerRestoreEntity: playerRestoreEntity,
+      deleteCharacterEntity: deleteCharacterEntity,
+      restoreCharacterEntity: restoreCharacterEntity,
       saveChat: function (chatId) { return save(chatId, current()); },
       savePlayerChat: function (chatId, player) { return savePlayer(chatId, player); },
       // 玩家帖「已读」：客户端未读游标推进（打开帖子详情时由 UI 调用）。
@@ -4358,12 +4430,17 @@
     return '<span class="yz-ava' + (sizeClass ? ' ' + sizeClass : '') + '">' + CORE.escapeHtml(String(label || '?').slice(0, 1)) + '</span>';
   }
 
+  // data-action 注册表（静态字符串供冒烟扫描）
+  // data-action="delete-contact" data-action="delete-group" data-action="delete-message" data-action="delete-track" data-action="delete-place"
+  var CHARACTER_DELETE_ACTIONS = { contact: 'delete-contact', group: 'delete-group', message: 'delete-message', track: 'delete-track', place: 'delete-place' };
+
   function chatRow(t, row, label, extra) {
     var hasUnread = Number(row.unread) > 0;
     var unreadLabel = hasUnread ? (Number(row.unread) > 99 ? '99+' : String(row.unread)) : '';
     var unread = hasUnread ? '<u class="yz-unread">' + CORE.escapeHtml(unreadLabel) + '</u>' : '';
-    // 有新回复（未读）的条目：数字徽标 + 呼吸光效（yz-unread-row），并排在最上方。
-    return button('navigate', ava(row.name) + '<span class="yz-row-copy"><b>' + CORE.escapeHtml(row.name) + '<i>' + CORE.escapeHtml(row.relation || extra || '') + '</i></b><em>' + CORE.escapeHtml(row.preview || t.awaitingSync) + '</em></span><time>' + CORE.escapeHtml(row.time || '') + unread + '</time>', { view: label, id: row.id }, 'yz-row' + (hasUnread ? ' yz-unread-row' : ''));
+    var delAction = label === 'gchat' ? 'delete-group' : 'delete-contact';
+    var delBtn = '<button type="button" class="yz-row-action" data-action="' + delAction + '" data-id="' + CORE.escapeHtml(String(row.id)) + '" onclick="event.stopPropagation()">×</button>';
+    return '<div class="yz-row" style="display:flex;align-items:center;gap:6px">' + button('navigate', ava(row.name) + '<span class="yz-row-copy"><b>' + CORE.escapeHtml(row.name) + '<i>' + CORE.escapeHtml(row.relation || extra || '') + '</i></b><em>' + CORE.escapeHtml(row.preview || t.awaitingSync) + '</em></span><time>' + CORE.escapeHtml(row.time || '') + unread + '</time>', { view: label, id: row.id }, 'yz-row' + (hasUnread ? ' yz-unread-row' : '')) + delBtn + '</div>';
   }
 
   // 有新回复（unread > 0）的条目稳定置顶，其余保持原顺序（渲染层排序，不改数据）。
@@ -4418,9 +4495,12 @@
         : (playerView && isPlayerMsg);
       var showSender = group && !mine;
       var sender = showSender ? '<b class="yz-sender">' + CORE.escapeHtml(message.sender || (message.side === 'self' ? t.labels.self : '')) + '</b>' : '';
+      var delBtn = (!playerView && message.side === 'other')
+        ? ' <button type="button" class="yz-bubble-del" data-action="delete-message" data-id="' + CORE.escapeHtml(String(message.id)) + '" data-parent-id="' + CORE.escapeHtml(String(rowItem.id)) + '">×</button>'
+        : '';
       return '<div class="yz-bubble-row ' + (mine ? 'self' : 'other') + '">' +
         (!mine && group ? '<span class="yz-bubble-ava">' + ava(message.sender || '?') + '</span>' : '') +
-        '<div class="yz-bubble-wrap">' + sender + '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
+        '<div class="yz-bubble-wrap">' + sender + '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + delBtn + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
         '</div>';
     }).join('');
     if (!bubbles) bubbles = '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.awaitingSync) + '</div>';
@@ -4515,8 +4595,9 @@
           var retryBtn = failed
             ? '<button type="button" class="yz-retry-btn" data-action="retry-msg" data-id="' + CORE.escapeHtml(String(message.id)) + '">' + CORE.escapeHtml(t.playerRetry) + '</button>'
             : '';
+          var delBtnSelf = ' <button type="button" class="yz-bubble-del" data-action="delete-message" data-id="' + CORE.escapeHtml(String(message.id)) + '" data-parent-id="' + CORE.escapeHtml(String(CORE.PLAYER_THREAD_ID)) + '">×</button>';
           return '<div class="yz-bubble-row self">' +
-            '<div class="yz-bubble-wrap"><div class="yz-bubble">' + CORE.escapeHtml(message.text) + '</div>' +
+            '<div class="yz-bubble-wrap"><div class="yz-bubble">' + CORE.escapeHtml(message.text) + delBtnSelf + '</div>' +
             '<time>' + CORE.escapeHtml(message.time || '') + '<i class="yz-msg-status' + (failed ? ' bad' : '') + '">' + CORE.escapeHtml(status) + '</i></time>' + retryBtn + '</div>' +
             '</div>';
         }
@@ -4589,9 +4670,11 @@
     return '<button type="button" class="yz-edit-btn" data-action="player-edit" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(id)) + '" aria-label="' + CORE.escapeHtml(I18N.dict().playerEdit) + '">✎</button>';
   }
 
-  // 可编辑列表行：主区（导航或静态展示）+ 行尾编辑按钮（button 嵌 button 非法，外层用 div）。
-  function editableListRow(mainHtml, kind, id) {
-    return '<div class="yz-row yz-static yz-manage-row">' + mainHtml + playerEditBtn(kind, id) + '</div>';
+  // 可编辑列表行：主区（导航或静态展示）+ 行尾编辑/删除按钮（button 嵌 button 非法，外层用 div）。
+  function editableListRow(mainHtml, kind, id, armed) {
+    var t = I18N.dict();
+    var delBtn = '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="player-delete" data-kind="' + CORE.escapeHtml(kind) + '" data-id="' + CORE.escapeHtml(String(id)) + '"' + (armed ? ' data-wipe-base="' + CORE.escapeHtml(t.playerDeleteConfirm) + '"' : '') + '>' + CORE.escapeHtml(armed ? t.playerDeleteConfirm : t.playerDelete) + '</button>';
+    return '<div class="yz-row yz-static yz-manage-row">' + mainHtml + playerEditBtn(kind, id) + delBtn + '</div>';
   }
 
   // 列表底部新建 CTA（note 需要携带父玉册夹 id）。
@@ -4996,13 +5079,15 @@
     // 行踪按时间逆序（最新在上，紧贴当前所在地）：数据按追加顺序存（旧→新），倒排展示。
     var timeline = tracks.length ? '<div class="yz-map-tracks"><h3>' + CORE.escapeHtml(t.mapTitles.tracks) + '</h3><div class="yz-timeline">' +
       tracks.slice().reverse().map(function (track) {
-        return '<div class="yz-track"><time>' + CORE.escapeHtml(track.time || '') + '</time><div><b>' + CORE.escapeHtml(track.place) + '</b>' + (CORE.hasText(track.action) ? '<p>' + CORE.escapeHtml(track.action) + '</p>' : '') + '</div></div>';
+        var trackDel = player ? ' <button type="button" class="yz-bubble-del" data-action="delete-track" data-id="' + CORE.escapeHtml(String(track.id)) + '">×</button>' : '';
+        return '<div class="yz-track" style="display:flex;align-items:center;gap:8px"><time>' + CORE.escapeHtml(track.time || '') + '</time><div><b>' + CORE.escapeHtml(track.place) + '</b>' + (CORE.hasText(track.action) ? '<p>' + CORE.escapeHtml(track.action) + '</p>' : '') + '</div>' + trackDel + '</div>';
       }).join('') + '</div></div>' : '';
     var roster = places.length ? '<div class="yz-map-places"><h3>' + CORE.escapeHtml(t.mapTitles.places) + '</h3><div class="yz-page-list">' +
       places.map(function (place) {
-        return '<div class="yz-row yz-static"><span class="yz-map-pin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(place.name) + '</b>' +
+        var placeDel = player ? ' <button type="button" class="yz-bubble-del" data-action="delete-place" data-id="' + CORE.escapeHtml(String(place.id)) + '">×</button>' : '';
+        return '<div class="yz-row yz-static" style="display:flex;align-items:center;gap:8px"><span class="yz-map-pin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(place.name) + '</b>' +
           (CORE.hasText(place.domain) ? '<i>' + CORE.escapeHtml(place.domain) + '</i>' : '') +
-          (CORE.hasText(place.desc) ? '<em>' + CORE.escapeHtml(place.desc) + '</em>' : '') + '</span></div>';
+          (CORE.hasText(place.desc) ? '<em>' + CORE.escapeHtml(place.desc) + '</em>' : '') + '</span>' + placeDel + '</div>';
       }).join('') + '</div></div>' : '';
     // 整页空态只出一处：全空（无当前地点/行踪/地点）时渲染总体空态；hero 不再单独判空，
     // 避免空态文案重复出现。玩家域（无写入途径）用专属文案，避免与角色域「暂无行踪」混淆。
@@ -5361,6 +5446,9 @@
     '.yz-bubble-row.self .yz-bubble{background:rgba(80,150,120,.75)}',
     '.yz-bubble-wrap time{display:block;font-size:10px;color:#7fae9a;margin:3px 6px 0}',
     '.yz-bubble-row.self .yz-bubble-wrap time{text-align:right}',
+    '.yz-bubble-del{flex-shrink:0;width:22px;height:22px;border-radius:50%;border:none;background:rgba(180,60,60,.12);color:#e8a0a0;font-size:11px;cursor:pointer;opacity:0;transition:opacity .15s;align-self:center}',
+    '.yz-bubble-wrap:hover .yz-bubble-del{opacity:.6}',
+    '.yz-bubble-del:hover{opacity:1}',
     '.yz-note-paper{background:linear-gradient(150deg,rgba(40,60,48,.8),rgba(18,40,32,.85));border:1px solid rgba(170,255,225,.2);border-radius:16px;padding:18px 16px;box-shadow:inset 0 0 30px rgba(0,0,0,.3)}',
     '.yz-note-paper small{display:block;color:#8fc4ac;font-size:10px;letter-spacing:2px;margin-bottom:8px}',
     '.yz-note-paper h2{font-size:19px;letter-spacing:2px;margin:0 0 6px;color:#f2fff9;word-break:break-word}',
@@ -6465,6 +6553,11 @@
           if (action === 'player-edit') return openPlayerForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '', '');
           if (action === 'player-save') return savePlayerForm(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
           if (action === 'player-delete') return deletePlayerEntity(target.getAttribute('data-kind'), target.getAttribute('data-id') || '');
+          if (action === 'delete-contact') return deleteCharacterItem('contact', target.getAttribute('data-id') || '');
+          if (action === 'delete-group') return deleteCharacterItem('group', target.getAttribute('data-id') || '');
+          if (action === 'delete-message') return deleteCharacterItem('message', target.getAttribute('data-id') || '', target.getAttribute('data-parent-id') || '');
+          if (action === 'delete-track') return deleteCharacterItem('track', target.getAttribute('data-id') || '');
+          if (action === 'delete-place') return deleteCharacterItem('place', target.getAttribute('data-id') || '');
           // 数量步进：调整相邻数量输入框的值（不整页重渲染，保留焦点与编辑状态）。
           if (action === 'qty-step') {
             var stepper = target.parentNode;
@@ -6725,7 +6818,7 @@
       if (!undoSnap) return;
       var snap = undoSnap;
       undoSnap = null;
-      var result = runtime.playerRestoreEntity(snap.kind, snap);
+      var result = snap.characterDomain ? runtime.restoreCharacterEntity(snap) : runtime.playerRestoreEntity(snap.kind, snap);
       if (result && result.ok) {
         showToast(I18N.dict().playerRestored);
         render();
@@ -6783,6 +6876,73 @@
         btn.classList.add('armed');
         btn.setAttribute('data-wipe-base', I18N.dict().playerDeleteConfirm);
         btn.textContent = I18N.dict().playerDeleteConfirm;
+        return;
+      }
+      render();
+    }
+
+    // 角色域实体删除（联系人/群聊/消息/行踪/地点）：两击确认 + 撤销。
+    function deleteCharacterItem(kind, id, extraId) {
+      if (domain === 'player') return;
+      var key = kind + ':' + id + (extraId ? ':' + extraId : '');
+      var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
+      clearTimeout(wipeTimer);
+      wipeTimer = 0;
+      if (!next) {
+        var snapshot = { kind: kind, id: String(id), parentId: extraId || '', entity: null, characterDomain: true };
+        var state = runtime.current();
+        if (kind === 'contact') {
+          var found = null;
+          CORE.safeArray(state.chats && state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === String(id)) found = c; });
+          if (found) snapshot.entity = CORE.clone(found);
+        } else if (kind === 'group') {
+          var found = null;
+          CORE.safeArray(state.chats && state.chats.groups, 6).forEach(function (g) { if (String(g.id) === String(id)) found = g; });
+          if (found) snapshot.entity = CORE.clone(found);
+        } else if (kind === 'message') {
+          var target = null;
+          CORE.safeArray(state.chats && state.chats.contacts, 10).forEach(function (c) { if (String(c.id) === extraId) target = c; });
+          CORE.safeArray(state.chats && state.chats.groups, 6).forEach(function (g) { if (String(g.id) === extraId) target = g; });
+          if (target) {
+            CORE.safeArray(target.messages, 50).forEach(function (m) { if (String(m.id) === String(id)) snapshot.entity = CORE.clone(m); });
+          }
+        } else if (kind === 'track') {
+          var found = null;
+          CORE.safeArray(state.map && state.map.tracks, 20).forEach(function (t) { if (String(t.id) === String(id)) found = t; });
+          if (found) snapshot.entity = CORE.clone(found);
+        } else if (kind === 'place') {
+          var found = null;
+          CORE.safeArray(state.map && state.map.places, 20).forEach(function (p) { if (String(p.id) === String(id)) found = p; });
+          if (found) snapshot.entity = CORE.clone(found);
+        }
+        var result = runtime.deleteCharacterEntity(kind, id, extraId);
+        armedWipe = null;
+        if (result.ok) {
+          undoSnap = snapshot.entity ? snapshot : null;
+          if (undoSnap) showToast(I18N.dict().playerDeleted, false, { label: I18N.dict().playerUndo, fn: undoDelete }, 6000);
+          else showToast(I18N.dict().playerDeleted);
+          backNavSkippingDeleted(kind, id);
+          return;
+        }
+        showToast(I18N.dict().playerFormRequired, true);
+        return;
+      }
+      armedWipe = next;
+      wipeTimer = setTimeout(function () {
+        armedWipe = null;
+        stopWipeCountdown();
+        render();
+      }, VIEWS.WIPE_CONFIRM_MS + 50);
+      startWipeCountdown();
+      // 武装第一击：更新按钮文案
+      var actionMap = { contact: 'delete-contact', group: 'delete-group', message: 'delete-message', track: 'delete-track', place: 'delete-place' };
+      var sel = '#' + OVERLAY_ID + ' [data-action="' + (actionMap[kind] || '') + '"][data-id="' + CORE.escapeHtml(String(id)) + '"]';
+      var btn = hostDocument.querySelector(sel);
+      if (btn) {
+        var confirmKey = 'delete' + kind.charAt(0).toUpperCase() + kind.slice(1) + 'Confirm';
+        btn.classList.add('armed');
+        btn.setAttribute('data-wipe-base', I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm);
+        btn.textContent = I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm;
         return;
       }
       render();
