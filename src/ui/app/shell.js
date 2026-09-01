@@ -5,6 +5,7 @@
       if (typeof Observer !== 'function') return;
       try {
         uiObserver = new Observer(function () {
+          if (disposed) return;
           if (!hostDocument.getElementById(OVERLAY_ID) || !hostDocument.getElementById(FAB_ID) ||
               !hostDocument.getElementById('yz1-toast') || !hostDocument.getElementById('yz1-confirm')) return;
           uiObserver.disconnect();
@@ -12,6 +13,10 @@
           render();
         });
         uiObserver.observe(hostDocument.documentElement, { childList: true, subtree: true });
+        onCleanup(function () {
+          try { observer.disconnect(); } catch (_) {}
+          if (uiObserver === observer) uiObserver = null;
+        });
       } catch (_) { uiObserver = null; }
     }
 
@@ -32,14 +37,15 @@
       var toastHost = hostDocument.getElementById('yz1-toast');
       if (toastHost && !toastHost.__yzBound) {
         toastHost.__yzBound = true;
+        markBound(toastHost);
         // 内嵌操作按钮（撤销等）：点击先收起 toast 再执行注册的 handler（放微任务，避开清空竞态）。
-        toastHost.addEventListener('click', function (event) {
+        listen(toastHost, 'click', function (event) {
           var btn = event.target && event.target.closest ? event.target.closest('.yz-toast-action') : null;
           if (!btn || !toastAction) return;
           var fn = toastAction;
           toastAction = null;
           clearToast();
-          setTimeout(fn, 0);
+          setAppTimeout(fn, 0);
         });
       }
       // 全局确认对话框宿主：body 级居中 modal，独立于 overlay 与 toast——宿主侧边栏
@@ -48,9 +54,10 @@
       if (!toastHost || !confirmHost) { watchUi(); return null; }
       if (confirmHost && !confirmHost.__yzBound) {
         confirmHost.__yzBound = true;
+        markBound(confirmHost);
         // 点「确认」执行 fn；点「取消」、遮罩或 Esc 只关闭（取消操作不触发 fn）。
         // 遮罩点击：event.target 是 .yz-confirm-backdrop（或确认框自身），均非按钮 → 走取消分支。
-        confirmHost.addEventListener('click', function (event) {
+        listen(confirmHost, 'click', function (event) {
           var target = event.target;
           var btn = target && target.closest ? target.closest('.yz-confirm-actions button') : null;
           // 点在按钮之外（遮罩/空白）等同取消。
@@ -64,12 +71,12 @@
             // 否则收起并丢弃——绝不能拿「确认清除」误清新聊天的数据。
             if (lockedChat !== null && lockedChat !== runtime.activeChatId) return;
             // 放微任务：先收起确认框再执行清除（与 toast 操作按钮同一防竞态约定）。
-            setTimeout(fn, 0);
+             setAppTimeout(fn, 0);
          } else {
            cancelConfirm();
          }
         });
-        confirmHost.addEventListener('keydown', function (event) {
+        listen(confirmHost, 'keydown', function (event) {
           if (event.key !== 'Tab') return;
           var focusables = Array.prototype.filter.call(confirmHost.querySelectorAll('button'), function (el) {
             return !el.disabled && el.offsetParent !== null;
@@ -87,7 +94,7 @@
           }
         });
         // Esc 关闭确认框：挂在 document 上（确认框本身常无焦点），确认框开着时优先收它。
-        hostDocument.addEventListener('keydown', function (event) {
+        listen(hostDocument, 'keydown', function (event) {
           if (event.key !== 'Escape') return;
           var host = hostDocument.getElementById('yz1-confirm');
           if (host && host.classList.contains('show')) {
@@ -164,7 +171,9 @@
     }
 
     function clearToast() {
-      clearTimeout(toastTimer);
+      clearAppTimeout(toastTimer);
+      toastTimer = 0;
+      toastAction = null;
       var toast = hostDocument.getElementById('yz1-toast');
       if (toast) { toast.classList.remove('show', 'bad', 'has-action'); toast.innerHTML = ''; }
     }
@@ -172,6 +181,7 @@
     // 可选内嵌操作按钮（撤销/确认等）：text 用文本节点（防注入），按钮走委托。
     // duration：默认 2.4s；确认类（如清除玉兆数据）需要更长的阅读/决策窗口。
     function showToast(text, bad, action, duration) {
+      if (disposed) return;
       var toast = hostDocument.getElementById('yz1-toast');
       if (!toast) return;
       // 先清空上一条：2.4s 内连续两条 toast 不拼接、旧内嵌按钮（撤销等）不残留——
@@ -189,7 +199,7 @@
       toast.classList.toggle('bad', !!bad);
       toast.classList.toggle('has-action', !!(action && action.label));
       toast.classList.add('show');
-      toastTimer = setTimeout(clearToast, duration || 2400);
+      toastTimer = setAppTimeout(clearToast, duration || 2400);
     }
 
     // shell DOM 只在首次创建，语言切换不会重建：顶栏品牌与各 aria-label 属于静态节点，
@@ -239,10 +249,11 @@
 
     // {{user}} 解析（chat.persona.name）：聊天切换时刷新，供用户发言署名。
     function refreshOwnerName() {
-      runtime.resolveOwnerName().then(function () { render(); }).catch(function () {});
+      runtime.resolveOwnerName().then(function () { if (!disposed) render(); }).catch(function () {});
     }
 
     function render() {
+      if (disposed) return;
       var overlay = ensureShell();
       if (!overlay) return;
       renderShellStatic(overlay);
@@ -296,6 +307,7 @@
         var threadFocused = !!(focused && focused.getAttribute && focused.getAttribute('data-thread-input') !== null);
         var commentFocused = !!(focused && focused.getAttribute && focused.getAttribute('data-comment-input') !== null);
          pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, space: space, spaceName: spaceName, tabletOpenGroups: tabletOpenGroups });
+         syncBusyUi(pageNode);
         // 首页无导航历史时隐藏返回按钮：nav.stack 为空且当前是入口页时隐藏。
         var backBtn = pageNode.querySelector('.yz-back');
         if (backBtn) backBtn.hidden = nav.app === 'home' && nav.stack.length === 0;

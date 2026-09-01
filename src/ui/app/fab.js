@@ -20,6 +20,7 @@
       if (!value) {
         try { value = hostWindow.localStorage.getItem('yz:fab_position'); } catch (_) {}
       }
+      if (disposed) return;
       if (value) {
         try { placeFab(fab, typeof value === 'string' ? JSON.parse(value) : value); } catch (_) {}
       }
@@ -47,19 +48,22 @@
     function bindFab(fab) {
       if (fab.__yzBound) return;
       fab.__yzBound = true;
+      markBound(fab);
+      onCleanup(function () { delete fab.__yzPositionRestored; });
       var holdTimer = 0;
-      function cancelHold() { if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; } }
-      fab.addEventListener('click', function (event) {
+      function cancelHold() { if (holdTimer) { clearAppTimeout(holdTimer); holdTimer = 0; } }
+      onCleanup(cancelHold);
+      listen(fab, 'click', function (event) {
         if (Date.now() < suppressClickUntil) { event.preventDefault(); event.stopPropagation(); return; }
         open();
       });
-      fab.addEventListener('pointerdown', function (event) {
+      listen(fab, 'pointerdown', function (event) {
         if (event.button != null && event.button !== 0) return;
         var rect = fab.getBoundingClientRect();
         drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, left: rect.left, top: rect.top, moved: false };
         try { fab.setPointerCapture(event.pointerId); } catch (_) {}
         cancelHold();
-        holdTimer = setTimeout(function () {
+        holdTimer = setAppTimeout(function () {
           holdTimer = 0;
           if (!drag || drag.moved) return;
           drag = null;
@@ -67,7 +71,7 @@
           resetFabPosition();
         }, 900);
       });
-      hostDocument.addEventListener('pointermove', function (event) {
+      listen(hostDocument, 'pointermove', function (event) {
         if (!drag || (drag.pointerId != null && event.pointerId !== drag.pointerId)) return;
         var dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
         // 拖拽判定阈值：触屏点按时手指的轻微位移（>4px 很常见）不应被当成拖拽，
@@ -90,9 +94,9 @@
           persistFab({ x: Math.round(rect.left), y: Math.round(rect.top) });
         }
       }
-      hostDocument.addEventListener('pointerup', finish, true);
-      hostDocument.addEventListener('pointercancel', finish, true);
-      hostWindow.addEventListener('resize', function () {
+      listen(hostDocument, 'pointerup', finish, true);
+      listen(hostDocument, 'pointercancel', finish, true);
+      listen(hostWindow, 'resize', function () {
         var rect = fab.getBoundingClientRect();
         placeFab(fab, { x: rect.left, y: rect.top });
       });

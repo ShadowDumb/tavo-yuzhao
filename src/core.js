@@ -140,6 +140,7 @@
       schemaVersion: 1,
       chatId: cleanText(chatId || 'unknown', 160),
       revision: 0,
+      clearEpoch: 0,
       tablet: blankTablet(),
       chats: { contacts: [], groups: [] },
       notes: { folders: [], notes: [] },
@@ -331,7 +332,15 @@
 
   function normalizeChats(raw) {
     raw = safeObject(raw);
-    var contacts = safeArray(raw.contacts, 10).map(function (contact) {
+    function inputRows(value, limit, protectedRow) {
+      var rows = Array.isArray(value) ? value.slice(0, 100) : [];
+      return rows.filter(protectedRow).concat(rows.filter(function (row) { return !protectedRow(row); })).slice(0, limit);
+    }
+    var contacts = inputRows(raw.contacts, 10, function (contact) {
+      return /^c-/.test(String(contact && contact.id) || '') || safeArray(contact && contact.messages, 100).some(function (message) {
+        return /^pm-/.test(String(message && message.id) || '');
+      });
+    }).map(function (contact) {
       contact = safeObject(contact);
       var rawMessages = safeArray(contact.messages, 100);
       var contactCounters = threadCounters(rawMessages, contact, /^pm-\d+$/);
@@ -364,7 +373,11 @@
         }).filter(function (message) { return message.id && hasText(message.text); })
       };
     }).filter(function (contact) { return contact.id && hasText(contact.name); });
-    var groups = safeArray(raw.groups, 6).map(function (group) {
+    var groups = inputRows(raw.groups, 6, function (group) {
+      return safeArray(group && group.messages, 100).some(function (message) {
+        return /^pmg-/.test(String(message && message.id) || '');
+      });
+    }).map(function (group) {
       group = safeObject(group);
       var rawGMessages = safeArray(group.messages, 100);
       var groupCounters = threadCounters(rawGMessages, group, /^pmg-\d+$/);
@@ -610,6 +623,7 @@
         pluginVersion: cleanText(raw.pluginVersion, 40),
         storageRevision: Number(raw.storageRevision) || 0,
         storageWriter: cleanText(raw.storageWriter, 80),
+        clearEpoch: Number(raw.clearEpoch) || 0,
         pendingFull: !!raw.pendingFull,
       activeSpaceId: cleanText(raw.activeSpaceId, 40),
       migratedPlayer: !!raw.migratedPlayer,
@@ -740,7 +754,7 @@
   // 但这些变化必须进入权威快照，不能只留在本地缓存。
   function stateHasPersistableData(state) {
     if (!state) return false;
-    if (Number(state.updatedAt) > 0 || stateRevision(state) > 0 || stateDataUpdatedAt(state) > 0) return true;
+    if (Number(state.updatedAt) > 0 || Number(state.clearEpoch) > 0 || stateRevision(state) > 0 || stateDataUpdatedAt(state) > 0) return true;
     return safeArray(state.spaces, MAX_SPACES).some(function (sp) {
       return Number(sp && sp.createdAt) > 0 || Number(sp && sp.updatedAt) > 0;
     });
@@ -1123,45 +1137,50 @@
     oldChats.contacts.forEach(function (contact) { oldContacts[contact.id] = contact; });
     oldChats.groups.forEach(function (group) { oldGroups[group.id] = group; });
 
-    var contacts = [];
+    var protectedContacts = [];
+    var normalContacts = [];
     next.contacts.forEach(function (contact) {
       var previous = oldContacts[contact.id];
       if (/^c-/.test(contact.id)) return;
-      contact.messages = mergeProtectedMessages(previous && previous.messages, contact.messages, /^pm-\d+$/, 20);
+      contact.messages = mergeProtectedMessages(previous && previous.messages, contact.messages, /^pm-/, 20);
       if (previous && previous.anchorId) {
         contact.anchorId = previous.anchorId;
         contact.replyCount = previous.replyCount;
         contact.seenReplies = previous.seenReplies;
       }
-      contacts.push(contact);
+      if (safeArray(contact.messages, 20).some(function (message) { return /^pm-/.test(String(message && message.id) || ''); })) protectedContacts.push(contact);
+      else normalContacts.push(contact);
     });
     oldChats.contacts.forEach(function (contact) {
-      if (/^c-/.test(contact.id)) contacts.push(clone(contact));
+      if (/^c-/.test(contact.id)) protectedContacts.push(clone(contact));
       else if (!next.contacts.some(function (item) { return item.id === contact.id; })) {
-        var messages = mergeProtectedMessages(contact.messages, [], /^pm-\d+$/, 20);
-        if (messages.length) contacts.push(Object.assign(clone(contact), { messages: messages }));
+        var messages = mergeProtectedMessages(contact.messages, [], /^pm-/, 20);
+        if (messages.length) protectedContacts.push(Object.assign(clone(contact), { messages: messages }));
       }
     });
 
-    var groups = [];
+    var protectedGroups = [];
+    var normalGroups = [];
     next.groups.forEach(function (group) {
       var previous = oldGroups[group.id];
-      group.messages = mergeProtectedMessages(previous && previous.messages, group.messages, /^pmg-\d+$/, 24);
+      group.messages = mergeProtectedMessages(previous && previous.messages, group.messages, /^pmg-/, 24);
       if (previous && previous.anchorId) {
         group.anchorId = previous.anchorId;
         group.replyCount = previous.replyCount;
         group.seenReplies = previous.seenReplies;
       }
-      groups.push(group);
+      if (safeArray(group.messages, 24).some(function (message) { return /^pmg-/.test(String(message && message.id) || ''); })) protectedGroups.push(group);
+      else normalGroups.push(group);
     });
     oldChats.groups.forEach(function (group) {
       if (next.groups.some(function (item) { return item.id === group.id; })) return;
-      var messages = mergeProtectedMessages(group.messages, [], /^pmg-\d+$/, 24);
-      if (messages.length) groups.push(Object.assign(clone(group), { messages: messages }));
+      var messages = mergeProtectedMessages(group.messages, [], /^pmg-/, 24);
+      if (messages.length) protectedGroups.push(Object.assign(clone(group), { messages: messages }));
     });
     return normalizeChats({
-      contacts: contacts.slice(0, 10),
-      groups: groups.slice(0, 6)
+      // Protected rows consume capacity first; only ordinary AI rows may be evicted.
+      contacts: protectedContacts.concat(normalContacts.slice(0, Math.max(0, 10 - protectedContacts.length))),
+      groups: protectedGroups.concat(normalGroups.slice(0, Math.max(0, 6 - protectedGroups.length)))
     });
   }
 
@@ -1174,7 +1193,7 @@
     next.posts.forEach(function (post) {
       var previous = oldById[post.id];
       if (post.owner === 'player' || (previous && previous.owner === 'player')) return;
-      post.comments = mergeProtectedMessages(previous && previous.comments, post.comments, /^pmc-\d+$/, 20);
+      post.comments = mergeProtectedMessages(previous && previous.comments, post.comments, /^pmc-/, 20);
       posts.push(post);
     });
     oldForum.posts.forEach(function (post) {
@@ -1188,7 +1207,7 @@
         return;
       }
       if (incoming) return;
-      var comments = mergeProtectedMessages(post.comments, [], /^pmc-\d+$/, 20);
+      var comments = mergeProtectedMessages(post.comments, [], /^pmc-/, 20);
       if (comments.length) posts.push(Object.assign(clone(post), { comments: comments }));
     });
     var userPosts = posts.filter(function (post) { return post.owner === 'player'; });
@@ -1353,20 +1372,23 @@
     return { path: feature + '.' + cleanText(id, 160), code: code || 'diff.unknown' };
   }
 
-  function visibleEntity(set, id) {
-    if (!set || set.__all) return true;
-    return set[String(id)] === true;
+  function visibleEntity(set, id, allowAll) {
+    if (allowAll) return true;
+    return !!(set && set[String(id)] === true);
   }
 
-  function visibleChild(set, parentId, id) {
-    if (!set || set.__all) return true;
+  function visibleChild(set, parentId, id, allowAll) {
+    if (allowAll) return true;
     return !!(set && set[String(parentId)] && set[String(parentId)][String(id)] === true);
   }
 
   // 先于具体 diff 应用器拒绝未知/不可见目标。+ 行仍可创建新顶层实体，
   // 但子实体必须有可见父实体；- 行和已有 id 的 + 行必须命中本轮基线。
-  function validateDiffOps(space, feature, ops, visibility) {
-    visibility = visibility || { __all: true };
+  function validateDiffOps(space, feature, ops, visibility, realtime) {
+    visibility = visibility || {};
+    // Direct Core callers are the historical/explicit path. Runtime realtime
+    // calls must provide the prepare visibility and can never use __all.
+    var allowAll = !realtime && visibility.__all === true;
     var issues = [];
     var accepted = [];
     var chats = safeObject(space && space.chats);
@@ -1388,12 +1410,16 @@
         return String(item.author) === String(values[1] || '') && String(item.time) === String(values[2] || '') && String(item.text) === String(values[3] || '');
       });
     }
+    if (realtime && visibility.__realtime === true) {
+      ops.forEach(function (op) { reject(op, safeArray(op && op.values, 10)[0] || 'unknown', 'diff.hidden'); });
+      return { ops: accepted, issues: issues };
+    }
     function top(op, list, visibleSet, detail) {
       var id = op.values[0];
       var existing = entity(list, id);
       if (!op.add || existing) {
         if (!existing) { reject(op, detail || id, 'diff.unknown'); return false; }
-        if (!visibleEntity(visibleSet, id)) { reject(op, detail || id, 'diff.hidden'); return false; }
+        if (!visibleEntity(visibleSet, id, allowAll)) { reject(op, detail || id, 'diff.hidden'); return false; }
       }
       return true;
     }
@@ -1402,14 +1428,14 @@
       var ok = true;
       if (feature === 'tablet') {
         var gid = groupId(v[0]);
-        ok = !!gid && (!visibility.tablet || !visibility.tablet.groups || visibility.tablet.groups[gid] === true);
+        ok = !!gid && (allowAll || !!(visibility.tablet && visibility.tablet.groups && visibility.tablet.groups[gid] === true));
         var group = safeArray(space && space.tablet && space.tablet.groups, 10).filter(function (item) { return item && item.id === gid; })[0];
         var field = group && safeArray(group.fields, 30).some(function (item) {
           return keyId(item.key) === keyId(v[1]) || item.key === cleanText(v[1], 60);
         });
-        var fieldVisible = !group || !field || !visibility.tablet || !visibility.tablet.fields || !visibility.tablet.fields[gid] ||
-          visibility.tablet.fields[gid][String(v[1])] === true ||
-          (keyId(v[1]) && visibility.tablet.fields[gid][keyId(v[1])] === true);
+        var visibleFields = visibility.tablet && visibility.tablet.fields && visibility.tablet.fields[gid];
+        var fieldVisible = !field || allowAll || !!(visibleFields &&
+          (visibleFields[String(v[1])] === true || (keyId(v[1]) && visibleFields[keyId(v[1])] === true)));
         if (field && !fieldVisible) ok = false;
         if (!op.add && (!group || !field)) ok = false;
         if (!ok) reject(op, v[0]);
@@ -1422,27 +1448,29 @@
         else if (op.type === 'group') ok = top(op, chats.groups, visibility.groups);
         else if (op.type === 'msg' || op.type === 'gmsg') {
           var msg = entity(thread && thread.messages, v[1]);
-          ok = !!thread && visibleEntity(target, parent) && (!msg || visibleChild(visibility.messages, parent, v[1]));
-          if (!op.add) ok = ok && !!msg && visibleChild(visibility.messages, parent, v[1]);
-          if (!ok) reject(op, parent + '.' + v[1]);
+          var parentVisible = visibleEntity(target, parent, allowAll);
+          var childVisible = visibleChild(visibility.messages, parent, v[1], allowAll);
+          ok = !!thread && parentVisible && (!msg || childVisible);
+          if (!op.add) ok = ok && !!msg && childVisible;
+          if (!ok) reject(op, parent + '.' + v[1], thread && (!parentVisible || (msg && !childVisible)) ? 'diff.hidden' : 'diff.unknown');
         }
       } else if (feature === 'forum') {
         if (op.type === 'post') ok = top(op, forum.posts, visibility.posts);
         else if (op.type === 'comment') {
           var p = post(v[0]);
           var exists = comment(v[0], v);
-          ok = !!p && visibleEntity(visibility.posts, v[0]) && (!exists || visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3]));
-          if (!op.add) ok = ok && exists && visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3]);
+          ok = !!p && visibleEntity(visibility.posts, v[0], allowAll) && (!exists || visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3], allowAll));
+          if (!op.add) ok = ok && exists && visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3], allowAll);
           if (op.add && p && !exists && safeArray(p.comments, 100).length >= 20) { ok = false; reject(op, v[0], 'forum.comments.full'); }
-          else if (!ok) reject(op, v[0], p && !visibleEntity(visibility.posts, v[0]) ? 'diff.hidden' : 'diff.unknown');
+          else if (!ok) reject(op, v[0], p && !visibleEntity(visibility.posts, v[0], allowAll) ? 'diff.hidden' : 'diff.unknown');
         }
       } else if (feature === 'notes') {
         if (op.type === 'folder') ok = top(op, notes.folders, visibility.folders);
         else if (op.type === 'note') {
           var folder = entity(notes.folders, v[1]);
           var note = entity(notes.notes, v[0]);
-          ok = op.add ? !!folder && visibleEntity(visibility.folders, v[1]) && (!note || visibleEntity(visibility.notes, v[0]))
-            : !!note && visibleEntity(visibility.notes, v[0]);
+          ok = op.add ? !!folder && visibleEntity(visibility.folders, v[1], allowAll) && (!note || visibleEntity(visibility.notes, v[0], allowAll))
+            : !!note && visibleEntity(visibility.notes, v[0], allowAll);
           if (!ok) reject(op, v[0]);
         }
       } else if (feature === 'market') {
@@ -1452,7 +1480,7 @@
       } else if (feature === 'space') {
         if (op.type === 'currency') {
           var coin = currency(v[0]);
-          ok = (!coin && op.add) || (!!coin && visibleEntity(visibility.currencies, v[0]));
+          ok = (!coin && op.add) || (!!coin && visibleEntity(visibility.currencies, v[0], allowAll));
           if (!op.add) ok = ok && !!coin;
           if (!ok) reject(op, v[0]);
         } else if (op.type === 'item') ok = top(op, pocket.items, visibility.items);
@@ -1541,7 +1569,10 @@
   // 拒写情形记入目标空间（或默认空间）的 sync.issues：
   //  space.unknown（声明了不存在的空间）、space.denied（空间不允许 AI 修改）、
   //  space.full（非默认空间只接受 diff 轮，防止全量轮抹掉用户私有数据）。
-  function applySnapshot(rawState, rawSnapshot, flags, visibility) {
+  function applySnapshot(rawState, rawSnapshot, flags, visibility, options) {
+    options = options || {};
+    var realtime = options.realtime === true;
+    if (!visibility || (realtime && !Object.keys(visibility).length)) visibility = realtime ? { __realtime: true } : { __all: true };
     var state = normalizeState(rawState);
     // 封印的功能既不参与判定也不应用数据：提示词未请求，即使快照残留旧区块也忽略。
     function on(id) { return !flags || flags[id] !== false; }
@@ -1602,7 +1633,7 @@
       ASSESS_ORDER.forEach(function (id) {
         if (!on(id)) { diffPass[id] = false; diffApply[id] = false; return; }
         var rawOps = safeArray(diffOps[id], 60);
-        var checked = validateDiffOps(space, id, rawOps, spaceVisibility);
+        var checked = validateDiffOps(space, id, rawOps, spaceVisibility, realtime);
         var ops = checked.ops;
         checked.issues.forEach(function (issue) { if (diffIssues.length < 20) diffIssues.push(issue); });
         var data = space[FEATURE_FIELDS[id]];

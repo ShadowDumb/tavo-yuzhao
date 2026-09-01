@@ -9,12 +9,6 @@
       // 强制下一轮全量重建：单功能清空后 sync 状态/旧摘要/issue 回声仍指向旧数据，
       // 不清 pendingFull 的话 meta-only diff 轮提前返回，假「complete」绿点残留。
       runtime.current().pendingFull = true;
-      // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
-      clearPending = true;
-      discardedEnvelopeHashes = Object.create(null);
-      preClearGenerationKeys = activeGenerationKeys;
-      activeGenerationKeys = Object.create(null);
-      postClearGenerationKeys = Object.create(null);
       runtime.current().updatedAt = Date.now();
       var saved = runtime.saveChat(runtime.activeChatId, { forceSnapshot: true });
       var cutoffSaved = runtime.markHistoryCutoff(runtime.activeChatId);
@@ -37,12 +31,6 @@
       state.spaces = [CORE.blankUserSpace(chatId, { id: CORE.DEFAULT_SPACE_ID, isDefault: true })];
       state.activeSpaceId = CORE.DEFAULT_SPACE_ID;
       state.pendingFull = true;
-      // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
-      clearPending = true;
-      discardedEnvelopeHashes = Object.create(null);
-      preClearGenerationKeys = activeGenerationKeys;
-      activeGenerationKeys = Object.create(null);
-      postClearGenerationKeys = Object.create(null);
       state.updatedAt = Date.now();
       var saved = runtime.saveChat(chatId, { forceSnapshot: true });
       var cutoffSaved = runtime.markHistoryCutoff(chatId);
@@ -127,4 +115,3 @@
         showToast(result.reason === 'oversized' ? dict.manage.importOversized : dict.manage.importParse, true);
       }
     }
-

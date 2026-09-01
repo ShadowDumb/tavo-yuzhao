@@ -430,6 +430,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       schemaVersion: 1,
       chatId: cleanText(chatId || 'unknown', 160),
       revision: 0,
+      clearEpoch: 0,
       tablet: blankTablet(),
       chats: { contacts: [], groups: [] },
       notes: { folders: [], notes: [] },
@@ -621,7 +622,15 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
 
   function normalizeChats(raw) {
     raw = safeObject(raw);
-    var contacts = safeArray(raw.contacts, 10).map(function (contact) {
+    function inputRows(value, limit, protectedRow) {
+      var rows = Array.isArray(value) ? value.slice(0, 100) : [];
+      return rows.filter(protectedRow).concat(rows.filter(function (row) { return !protectedRow(row); })).slice(0, limit);
+    }
+    var contacts = inputRows(raw.contacts, 10, function (contact) {
+      return /^c-/.test(String(contact && contact.id) || '') || safeArray(contact && contact.messages, 100).some(function (message) {
+        return /^pm-/.test(String(message && message.id) || '');
+      });
+    }).map(function (contact) {
       contact = safeObject(contact);
       var rawMessages = safeArray(contact.messages, 100);
       var contactCounters = threadCounters(rawMessages, contact, /^pm-\d+$/);
@@ -654,7 +663,11 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         }).filter(function (message) { return message.id && hasText(message.text); })
       };
     }).filter(function (contact) { return contact.id && hasText(contact.name); });
-    var groups = safeArray(raw.groups, 6).map(function (group) {
+    var groups = inputRows(raw.groups, 6, function (group) {
+      return safeArray(group && group.messages, 100).some(function (message) {
+        return /^pmg-/.test(String(message && message.id) || '');
+      });
+    }).map(function (group) {
       group = safeObject(group);
       var rawGMessages = safeArray(group.messages, 100);
       var groupCounters = threadCounters(rawGMessages, group, /^pmg-\d+$/);
@@ -900,6 +913,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         pluginVersion: cleanText(raw.pluginVersion, 40),
         storageRevision: Number(raw.storageRevision) || 0,
         storageWriter: cleanText(raw.storageWriter, 80),
+        clearEpoch: Number(raw.clearEpoch) || 0,
         pendingFull: !!raw.pendingFull,
       activeSpaceId: cleanText(raw.activeSpaceId, 40),
       migratedPlayer: !!raw.migratedPlayer,
@@ -1030,7 +1044,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
   // 但这些变化必须进入权威快照，不能只留在本地缓存。
   function stateHasPersistableData(state) {
     if (!state) return false;
-    if (Number(state.updatedAt) > 0 || stateRevision(state) > 0 || stateDataUpdatedAt(state) > 0) return true;
+    if (Number(state.updatedAt) > 0 || Number(state.clearEpoch) > 0 || stateRevision(state) > 0 || stateDataUpdatedAt(state) > 0) return true;
     return safeArray(state.spaces, MAX_SPACES).some(function (sp) {
       return Number(sp && sp.createdAt) > 0 || Number(sp && sp.updatedAt) > 0;
     });
@@ -1413,45 +1427,50 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     oldChats.contacts.forEach(function (contact) { oldContacts[contact.id] = contact; });
     oldChats.groups.forEach(function (group) { oldGroups[group.id] = group; });
 
-    var contacts = [];
+    var protectedContacts = [];
+    var normalContacts = [];
     next.contacts.forEach(function (contact) {
       var previous = oldContacts[contact.id];
       if (/^c-/.test(contact.id)) return;
-      contact.messages = mergeProtectedMessages(previous && previous.messages, contact.messages, /^pm-\d+$/, 20);
+      contact.messages = mergeProtectedMessages(previous && previous.messages, contact.messages, /^pm-/, 20);
       if (previous && previous.anchorId) {
         contact.anchorId = previous.anchorId;
         contact.replyCount = previous.replyCount;
         contact.seenReplies = previous.seenReplies;
       }
-      contacts.push(contact);
+      if (safeArray(contact.messages, 20).some(function (message) { return /^pm-/.test(String(message && message.id) || ''); })) protectedContacts.push(contact);
+      else normalContacts.push(contact);
     });
     oldChats.contacts.forEach(function (contact) {
-      if (/^c-/.test(contact.id)) contacts.push(clone(contact));
+      if (/^c-/.test(contact.id)) protectedContacts.push(clone(contact));
       else if (!next.contacts.some(function (item) { return item.id === contact.id; })) {
-        var messages = mergeProtectedMessages(contact.messages, [], /^pm-\d+$/, 20);
-        if (messages.length) contacts.push(Object.assign(clone(contact), { messages: messages }));
+        var messages = mergeProtectedMessages(contact.messages, [], /^pm-/, 20);
+        if (messages.length) protectedContacts.push(Object.assign(clone(contact), { messages: messages }));
       }
     });
 
-    var groups = [];
+    var protectedGroups = [];
+    var normalGroups = [];
     next.groups.forEach(function (group) {
       var previous = oldGroups[group.id];
-      group.messages = mergeProtectedMessages(previous && previous.messages, group.messages, /^pmg-\d+$/, 24);
+      group.messages = mergeProtectedMessages(previous && previous.messages, group.messages, /^pmg-/, 24);
       if (previous && previous.anchorId) {
         group.anchorId = previous.anchorId;
         group.replyCount = previous.replyCount;
         group.seenReplies = previous.seenReplies;
       }
-      groups.push(group);
+      if (safeArray(group.messages, 24).some(function (message) { return /^pmg-/.test(String(message && message.id) || ''); })) protectedGroups.push(group);
+      else normalGroups.push(group);
     });
     oldChats.groups.forEach(function (group) {
       if (next.groups.some(function (item) { return item.id === group.id; })) return;
-      var messages = mergeProtectedMessages(group.messages, [], /^pmg-\d+$/, 24);
-      if (messages.length) groups.push(Object.assign(clone(group), { messages: messages }));
+      var messages = mergeProtectedMessages(group.messages, [], /^pmg-/, 24);
+      if (messages.length) protectedGroups.push(Object.assign(clone(group), { messages: messages }));
     });
     return normalizeChats({
-      contacts: contacts.slice(0, 10),
-      groups: groups.slice(0, 6)
+      // Protected rows consume capacity first; only ordinary AI rows may be evicted.
+      contacts: protectedContacts.concat(normalContacts.slice(0, Math.max(0, 10 - protectedContacts.length))),
+      groups: protectedGroups.concat(normalGroups.slice(0, Math.max(0, 6 - protectedGroups.length)))
     });
   }
 
@@ -1464,7 +1483,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     next.posts.forEach(function (post) {
       var previous = oldById[post.id];
       if (post.owner === 'player' || (previous && previous.owner === 'player')) return;
-      post.comments = mergeProtectedMessages(previous && previous.comments, post.comments, /^pmc-\d+$/, 20);
+      post.comments = mergeProtectedMessages(previous && previous.comments, post.comments, /^pmc-/, 20);
       posts.push(post);
     });
     oldForum.posts.forEach(function (post) {
@@ -1478,7 +1497,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         return;
       }
       if (incoming) return;
-      var comments = mergeProtectedMessages(post.comments, [], /^pmc-\d+$/, 20);
+      var comments = mergeProtectedMessages(post.comments, [], /^pmc-/, 20);
       if (comments.length) posts.push(Object.assign(clone(post), { comments: comments }));
     });
     var userPosts = posts.filter(function (post) { return post.owner === 'player'; });
@@ -1643,20 +1662,23 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     return { path: feature + '.' + cleanText(id, 160), code: code || 'diff.unknown' };
   }
 
-  function visibleEntity(set, id) {
-    if (!set || set.__all) return true;
-    return set[String(id)] === true;
+  function visibleEntity(set, id, allowAll) {
+    if (allowAll) return true;
+    return !!(set && set[String(id)] === true);
   }
 
-  function visibleChild(set, parentId, id) {
-    if (!set || set.__all) return true;
+  function visibleChild(set, parentId, id, allowAll) {
+    if (allowAll) return true;
     return !!(set && set[String(parentId)] && set[String(parentId)][String(id)] === true);
   }
 
   // 先于具体 diff 应用器拒绝未知/不可见目标。+ 行仍可创建新顶层实体，
   // 但子实体必须有可见父实体；- 行和已有 id 的 + 行必须命中本轮基线。
-  function validateDiffOps(space, feature, ops, visibility) {
-    visibility = visibility || { __all: true };
+  function validateDiffOps(space, feature, ops, visibility, realtime) {
+    visibility = visibility || {};
+    // Direct Core callers are the historical/explicit path. Runtime realtime
+    // calls must provide the prepare visibility and can never use __all.
+    var allowAll = !realtime && visibility.__all === true;
     var issues = [];
     var accepted = [];
     var chats = safeObject(space && space.chats);
@@ -1678,12 +1700,16 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         return String(item.author) === String(values[1] || '') && String(item.time) === String(values[2] || '') && String(item.text) === String(values[3] || '');
       });
     }
+    if (realtime && visibility.__realtime === true) {
+      ops.forEach(function (op) { reject(op, safeArray(op && op.values, 10)[0] || 'unknown', 'diff.hidden'); });
+      return { ops: accepted, issues: issues };
+    }
     function top(op, list, visibleSet, detail) {
       var id = op.values[0];
       var existing = entity(list, id);
       if (!op.add || existing) {
         if (!existing) { reject(op, detail || id, 'diff.unknown'); return false; }
-        if (!visibleEntity(visibleSet, id)) { reject(op, detail || id, 'diff.hidden'); return false; }
+        if (!visibleEntity(visibleSet, id, allowAll)) { reject(op, detail || id, 'diff.hidden'); return false; }
       }
       return true;
     }
@@ -1692,14 +1718,14 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       var ok = true;
       if (feature === 'tablet') {
         var gid = groupId(v[0]);
-        ok = !!gid && (!visibility.tablet || !visibility.tablet.groups || visibility.tablet.groups[gid] === true);
+        ok = !!gid && (allowAll || !!(visibility.tablet && visibility.tablet.groups && visibility.tablet.groups[gid] === true));
         var group = safeArray(space && space.tablet && space.tablet.groups, 10).filter(function (item) { return item && item.id === gid; })[0];
         var field = group && safeArray(group.fields, 30).some(function (item) {
           return keyId(item.key) === keyId(v[1]) || item.key === cleanText(v[1], 60);
         });
-        var fieldVisible = !group || !field || !visibility.tablet || !visibility.tablet.fields || !visibility.tablet.fields[gid] ||
-          visibility.tablet.fields[gid][String(v[1])] === true ||
-          (keyId(v[1]) && visibility.tablet.fields[gid][keyId(v[1])] === true);
+        var visibleFields = visibility.tablet && visibility.tablet.fields && visibility.tablet.fields[gid];
+        var fieldVisible = !field || allowAll || !!(visibleFields &&
+          (visibleFields[String(v[1])] === true || (keyId(v[1]) && visibleFields[keyId(v[1])] === true)));
         if (field && !fieldVisible) ok = false;
         if (!op.add && (!group || !field)) ok = false;
         if (!ok) reject(op, v[0]);
@@ -1712,27 +1738,29 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         else if (op.type === 'group') ok = top(op, chats.groups, visibility.groups);
         else if (op.type === 'msg' || op.type === 'gmsg') {
           var msg = entity(thread && thread.messages, v[1]);
-          ok = !!thread && visibleEntity(target, parent) && (!msg || visibleChild(visibility.messages, parent, v[1]));
-          if (!op.add) ok = ok && !!msg && visibleChild(visibility.messages, parent, v[1]);
-          if (!ok) reject(op, parent + '.' + v[1]);
+          var parentVisible = visibleEntity(target, parent, allowAll);
+          var childVisible = visibleChild(visibility.messages, parent, v[1], allowAll);
+          ok = !!thread && parentVisible && (!msg || childVisible);
+          if (!op.add) ok = ok && !!msg && childVisible;
+          if (!ok) reject(op, parent + '.' + v[1], thread && (!parentVisible || (msg && !childVisible)) ? 'diff.hidden' : 'diff.unknown');
         }
       } else if (feature === 'forum') {
         if (op.type === 'post') ok = top(op, forum.posts, visibility.posts);
         else if (op.type === 'comment') {
           var p = post(v[0]);
           var exists = comment(v[0], v);
-          ok = !!p && visibleEntity(visibility.posts, v[0]) && (!exists || visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3]));
-          if (!op.add) ok = ok && exists && visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3]);
+          ok = !!p && visibleEntity(visibility.posts, v[0], allowAll) && (!exists || visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3], allowAll));
+          if (!op.add) ok = ok && exists && visibleChild(visibility.comments, v[0], v[1] + '|' + v[2] + '|' + v[3], allowAll);
           if (op.add && p && !exists && safeArray(p.comments, 100).length >= 20) { ok = false; reject(op, v[0], 'forum.comments.full'); }
-          else if (!ok) reject(op, v[0], p && !visibleEntity(visibility.posts, v[0]) ? 'diff.hidden' : 'diff.unknown');
+          else if (!ok) reject(op, v[0], p && !visibleEntity(visibility.posts, v[0], allowAll) ? 'diff.hidden' : 'diff.unknown');
         }
       } else if (feature === 'notes') {
         if (op.type === 'folder') ok = top(op, notes.folders, visibility.folders);
         else if (op.type === 'note') {
           var folder = entity(notes.folders, v[1]);
           var note = entity(notes.notes, v[0]);
-          ok = op.add ? !!folder && visibleEntity(visibility.folders, v[1]) && (!note || visibleEntity(visibility.notes, v[0]))
-            : !!note && visibleEntity(visibility.notes, v[0]);
+          ok = op.add ? !!folder && visibleEntity(visibility.folders, v[1], allowAll) && (!note || visibleEntity(visibility.notes, v[0], allowAll))
+            : !!note && visibleEntity(visibility.notes, v[0], allowAll);
           if (!ok) reject(op, v[0]);
         }
       } else if (feature === 'market') {
@@ -1742,7 +1770,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       } else if (feature === 'space') {
         if (op.type === 'currency') {
           var coin = currency(v[0]);
-          ok = (!coin && op.add) || (!!coin && visibleEntity(visibility.currencies, v[0]));
+          ok = (!coin && op.add) || (!!coin && visibleEntity(visibility.currencies, v[0], allowAll));
           if (!op.add) ok = ok && !!coin;
           if (!ok) reject(op, v[0]);
         } else if (op.type === 'item') ok = top(op, pocket.items, visibility.items);
@@ -1831,7 +1859,10 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
   // 拒写情形记入目标空间（或默认空间）的 sync.issues：
   //  space.unknown（声明了不存在的空间）、space.denied（空间不允许 AI 修改）、
   //  space.full（非默认空间只接受 diff 轮，防止全量轮抹掉用户私有数据）。
-  function applySnapshot(rawState, rawSnapshot, flags, visibility) {
+  function applySnapshot(rawState, rawSnapshot, flags, visibility, options) {
+    options = options || {};
+    var realtime = options.realtime === true;
+    if (!visibility || (realtime && !Object.keys(visibility).length)) visibility = realtime ? { __realtime: true } : { __all: true };
     var state = normalizeState(rawState);
     // 封印的功能既不参与判定也不应用数据：提示词未请求，即使快照残留旧区块也忽略。
     function on(id) { return !flags || flags[id] !== false; }
@@ -1892,7 +1923,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       ASSESS_ORDER.forEach(function (id) {
         if (!on(id)) { diffPass[id] = false; diffApply[id] = false; return; }
         var rawOps = safeArray(diffOps[id], 60);
-        var checked = validateDiffOps(space, id, rawOps, spaceVisibility);
+        var checked = validateDiffOps(space, id, rawOps, spaceVisibility, realtime);
         var ops = checked.ops;
         checked.issues.forEach(function (issue) { if (diffIssues.length < 20) diffIssues.push(issue); });
         var data = space[FEATURE_FIELDS[id]];
@@ -2546,12 +2577,27 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
   }
 
   function extractSnapshots(text) {
-    var parsed = parse(text);
-    if (parsed) return [parsed];
+    var source = String(text || '');
+    var opens = [];
+    var openPattern = /<yz_jade\b[^>]*>/gi;
+    var open;
+    while ((open = openPattern.exec(source))) opens.push({ index: open.index, end: openPattern.lastIndex });
+    // Keep the bare-section path for history fragments and explicit callers.
+    if (!opens.length) {
+      var parsed = parse(source);
+      return parsed ? [parsed] : [];
+    }
     var out = [];
-    var bodies = parseEnvelope(text, 'yz_jade');
-    bodies.forEach(function (block) {
-      var parsedBlock = parse(block.body) || parse('<yz_jade>\n' + block.body + '\n</yz_jade>');
+    opens.forEach(function (opening, index) {
+      var nextOpen = index + 1 < opens.length ? opens[index + 1].index : -1;
+      var closePattern = /<\/yz_jade\s*>/gi;
+      closePattern.lastIndex = opening.end;
+      var close = closePattern.exec(source);
+      // A broken envelope must not swallow a later valid envelope. With no
+      // closing tag, parsing to the end preserves the existing loose behavior.
+      var end = close && (nextOpen < 0 || close.index < nextOpen) ? closePattern.lastIndex : (nextOpen >= 0 ? nextOpen : source.length);
+      var blockText = source.slice(opening.index, end);
+      var parsedBlock = parse(blockText) || parse(blockText.slice(opening.end));
       if (parsedBlock) out.push(parsedBlock);
     });
     return out;
@@ -2893,6 +2939,11 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     var activeChatId = 'unknown';
     var epoch = 0;
     var saveQueue = Promise.resolve();
+    // A CAS conflict is a write lock until this runtime has loaded shared state again.
+    var casBlocked = Object.create(null);
+    var committedStates = Object.create(null);
+    var clearEpochs = Object.create(null);
+    var clearGates = Object.create(null);
 
     function rememberChat(chatId) {
       var i = lru.indexOf(chatId);
@@ -2939,6 +2990,9 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       var currentState = chats[chatId];
       if (currentState && (Number(fresh.storageRevision) || 0) <= (Number(currentState.storageRevision) || 0)) return;
       chats[chatId] = CORE.normalizeState(fresh, chatId);
+      committedStates[chatId] = clone(chats[chatId]);
+      clearEpochs[chatId] = Math.max(Number(clearEpochs[chatId]) || 0, Number(chats[chatId].clearEpoch) || 0);
+      delete casBlocked[chatId];
       notice('stateChanged', chatId);
     }
     function setupSyncChannel() {
@@ -2963,37 +3017,126 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       try { return JSON.parse(String(raw)); } catch (_) { return null; }
     }
 
-    // 落盘走串行队列；写入前检查本地镜像的 revision，拒绝跨 tab 的旧状态覆盖新状态。
-    // 持久化语义：本地镜像（缓存，同步写穿）+ 世界书（权威，排队合并同步）。
-    // 一份状态承载全部用户空间：单存储键、单快照链。
+    function recordClearEpoch(chatId, state) {
+      var currentEpoch = Number(state && state.clearEpoch) || 0;
+      var knownEpoch = Number(clearEpochs[chatId]) || 0;
+      var gate = clearGates[chatId];
+      if (!gate || gate.epoch !== currentEpoch) {
+        currentEpoch = Math.max(currentEpoch, knownEpoch) + 1;
+        if (state) state.clearEpoch = currentEpoch;
+        clearEpochs[chatId] = currentEpoch;
+        clearGates[chatId] = { epoch: currentEpoch };
+      }
+      return currentEpoch;
+    }
+
+    // UI clear flows may call this before mutating the state. The epoch is
+    // persisted by the next save; capture generationToken() at prepare and
+    // pass it as applyText(..., { generationToken: token }) at success.
+    function beginClear(chatId) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (chatId !== activeChatId) return { ok: false, reason: 'stale' };
+      var state = chats[chatId] || current();
+      var currentEpoch = Math.max(Number(state.clearEpoch) || 0, Number(clearEpochs[chatId]) || 0) + 1;
+      state.clearEpoch = currentEpoch;
+      clearEpochs[chatId] = currentEpoch;
+      clearGates[chatId] = { epoch: currentEpoch };
+      return { ok: true, epoch: currentEpoch };
+    }
+
+    function generationToken(chatId) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      var state = chats[chatId];
+      var currentEpoch = Math.max(Number(state && state.clearEpoch) || 0, Number(clearEpochs[chatId]) || 0);
+      return { chatId: chatId, clearEpoch: currentEpoch };
+    }
+
+    function optionClearEpoch(options) {
+      options = options || {};
+      var token = options.generationToken;
+      var value = options.clearEpoch != null ? options.clearEpoch : options.generationEpoch;
+      if (value == null && token && typeof token === 'object') value = token.clearEpoch;
+      if (value == null || value === '') return null;
+      var number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function rememberCommitted(chatId, state) {
+      if (state) committedStates[chatId] = clone(state);
+    }
+
+    // Only roll back when no later mutation replaced the candidate. This keeps a
+    // failed older save from overwriting a newer in-memory operation.
+    function rollbackFailedCommit(chatId, state, serialized, key, localWritten) {
+      if (chats[chatId] !== state) return;
+      var currentSerialized;
+      try { currentSerialized = JSON.stringify(state); } catch (_) { return; }
+      if (currentSerialized !== serialized) return;
+      var committed = committedStates[chatId];
+      if (!committed) return;
+      var restored = clone(committed);
+      chats[chatId] = restored;
+      if (localWritten) {
+        var restoredRaw;
+        try { restoredRaw = JSON.stringify(restored); } catch (_) { restoredRaw = null; }
+        if (restoredRaw != null && !localSet(key, restoredRaw)) notify('persistenceFailed', { reason: 'local' });
+      }
+    }
+
+    // Local mirror and lorebook commits share one queue. A save promise therefore
+    // means both stores have settled, not merely that the cache was written.
     function save(chatId, state, options) {
       options = options || {};
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (casBlocked[chatId]) {
+        if (state && chats[chatId] === state && committedStates[chatId]) chats[chatId] = clone(committedStates[chatId]);
+        notify('syncConflict', { chatId: chatId });
+        return Promise.resolve({ ok: false, localOk: false, worldOk: false, reason: 'conflict' });
+      }
+      if (options.forceSnapshot) recordClearEpoch(chatId, state);
       var previousRevision = Number(state && state.storageRevision) || 0;
+      var previousWriter = String(state && state.storageWriter || '');
       state.storageRevision = previousRevision + 1;
       state.storageWriter = writerId;
+      var proposedRevision = state.storageRevision;
       var serialized;
       try { serialized = JSON.stringify(state); } catch (error) {
         dbg('state serialize failed', error);
         notify('persistenceFailed', { reason: 'serialize' });
+        if (state.storageRevision === proposedRevision && state.storageWriter === writerId) {
+          state.storageRevision = previousRevision;
+          state.storageWriter = previousWriter;
+        }
         return Promise.resolve({ ok: false, localOk: false, worldOk: false, reason: 'serialize' });
       }
       var stateSnapshot = clone(state);
       if (serialized.length > MAX_SNAPSHOT_BYTES) dbg('serialized state exceeds snapshot limit: ' + serialized.length);
       var key = LOCAL_PREFIX + chatId;
+      function restoreRevision() {
+        if (state.storageRevision !== proposedRevision || state.storageWriter !== writerId) return;
+        state.storageRevision = previousRevision;
+        state.storageWriter = previousWriter;
+      }
+      function conflict() {
+        casBlocked[chatId] = true;
+        rollbackFailedCommit(chatId, state, serialized, key, false);
+        restoreRevision();
+        notify('syncConflict', { chatId: chatId });
+        return { ok: false, localOk: false, worldOk: false, reason: 'conflict' };
+      }
       var localTask = saveQueue.then(function () {
+        if (casBlocked[chatId]) return conflict();
         var latest = parseStored(localGet(key));
         var latestRevision = Number(latest && latest.storageRevision) || 0;
         var latestWriter = String(latest && latest.storageWriter || '');
-        if (latest && latestRevision > previousRevision && latestWriter !== writerId) {
-          notify('syncConflict', { chatId: chatId });
-          return { ok: false, localOk: false, worldOk: false, reason: 'conflict' };
-        }
+        if (latest && (latestRevision > previousRevision ||
+            (latestRevision === previousRevision && latestWriter !== previousWriter))) return conflict();
         if (!localSet(key, serialized)) {
           notify('persistenceFailed', { reason: 'local' });
           return { ok: false, localOk: false, worldOk: false, reason: 'local' };
         }
         if (syncChannel) {
-          try { syncChannel.postMessage({ type: 'yz-storage-changed', key: key, revision: state.storageRevision, writer: writerId }); } catch (_) {}
+          try { syncChannel.postMessage({ type: 'yz-storage-changed', key: key, revision: proposedRevision, writer: writerId }); } catch (_) {}
         }
         return { ok: true, localOk: true, worldOk: true };
       }).catch(function (error) {
@@ -3001,21 +3144,33 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         notify('persistenceFailed', { reason: 'local' });
         return { ok: false, localOk: false, worldOk: false, reason: 'local' };
       });
-      saveQueue = localTask.then(function () {}, function () {});
-      return localTask.then(function (localResult) {
+      var commitTask = localTask.then(function (localResult) {
         // 本地镜像只是缓存；本地写失败时仍尝试写权威世界书，但整体结果保持失败，
         // 让 UI 不会把“只保存到世界书”的降级状态误报为完整成功。
         if (!localResult.ok && localResult.reason !== 'local') return localResult;
-         var touched = CORE.stateHasPersistableData(state);
-        if (!touched && !options.forceSnapshot) return localResult;
-        return syncArchive(chatId, { forceSnapshot: !!options.forceSnapshot, stateSnapshot: stateSnapshot }).then(function (worldResult) {
+        var touched = CORE.stateHasPersistableData(stateSnapshot);
+        if (!touched && !options.forceSnapshot) {
+          if (localResult.ok) rememberCommitted(chatId, stateSnapshot);
+          else rollbackFailedCommit(chatId, state, serialized, key, false);
+          return localResult;
+        }
+        return writeArchive(chatId, { forceSnapshot: !!options.forceSnapshot, stateSnapshot: stateSnapshot }).then(function (worldResult) {
           if (!worldResult || !worldResult.ok) {
             notify('persistenceFailed', { reason: worldResult && worldResult.reason || 'world' });
+            rollbackFailedCommit(chatId, state, serialized, key, localResult.localOk === true);
             return { ok: false, localOk: localResult.localOk, worldOk: false, reason: worldResult && worldResult.reason || 'world' };
           }
+          rememberCommitted(chatId, stateSnapshot);
           return { ok: localResult.localOk === true, localOk: localResult.localOk, worldOk: true, reason: localResult.localOk ? '' : 'local' };
+        }).catch(function (error) {
+          dbg('world save failed: ' + chatId, error);
+          notify('persistenceFailed', { reason: 'world' });
+          rollbackFailedCommit(chatId, state, serialized, key, localResult.localOk === true);
+          return { ok: false, localOk: localResult.localOk, worldOk: false, reason: 'world' };
         });
       });
+      saveQueue = commitTask.then(function () {}, function () {});
+      return commitTask;
     }
 
     function attachSaved(result, promise) {
@@ -3093,13 +3248,16 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       }
       if (parsed) {
         if (worldResult.status === 'corrupt') notify('snapshotCorrupted', { chatId: chatId });
-        if (!localSet(LOCAL_PREFIX + chatId, JSON.stringify(parsed))) notify('persistenceFailed', { reason: 'local' });
-        if (!fromWorld && chatId === activeChatId) syncArchive(chatId);
       } else if (mirrorCorrupted || worldResult.status === 'corrupt' || ((mirrorRev > 0 || worldRev > 0) && !parsed)) {
         // 数据损坏：明确提示，不能把损坏来源当成“没有数据”。
          notify(worldResult.status === 'corrupt' ? 'snapshotCorrupted' : 'storageCorrupted', { chatId: chatId });
       }
-      return CORE.normalizeState(parsed, chatId);
+      if (parsed && !fromWorld && chatId === activeChatId) await syncArchive(chatId, { stateSnapshot: parsed });
+      if (parsed && !localSet(LOCAL_PREFIX + chatId, JSON.stringify(parsed))) notify('persistenceFailed', { reason: 'local' });
+      var normalized = CORE.normalizeState(parsed, chatId);
+      clearEpochs[chatId] = Math.max(Number(clearEpochs[chatId]) || 0, Number(normalized.clearEpoch) || 0);
+      try { Object.defineProperty(normalized, '__loadedSource', { value: parsed ? (fromWorld ? 'world' : 'mirror') : 'none', enumerable: false }); } catch (_) {}
+      return normalized;
     }
 
     async function findAssistantMessages() {
@@ -3110,7 +3268,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       } catch (error) { dbg('message find failed', error); return null; }
     }
 
-    function applySnapshotsToState(state, snapshots, source, visibility) {
+    function applySnapshotsToState(state, snapshots, source, visibility, coreOptions) {
       var changed = false;
       var persist = false;
       var oversized = false;
@@ -3119,7 +3277,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       snapshots.forEach(function (snapshot) {
         var before = CORE.stateRevision(state);
         var targetVisibility = visibility && visibility[CORE.decodeSpaceRoute(snapshot.turn && snapshot.turn.space) || CORE.DEFAULT_SPACE_ID];
-        var result = CORE.applySnapshot(state, snapshot, getFlags(), targetVisibility || visibility);
+        var result = CORE.applySnapshot(state, snapshot, getFlags(), targetVisibility || visibility, coreOptions);
         state = result.state;
         assessment = result.assessment;
         if (result.persist) persist = true;
@@ -3214,8 +3372,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       activeChatId = chatId;
       rememberChat(chatId);
       evictChats();
-      // 读存储前等落盘队列排空：上一聊天未写完的 save 会在队列里落镜像缓存，
-      // 直接读会读到陈旧/空白数据（rev-0 聊天首条玩家消息曾因此丢失）。
+      // 读存储前等本地镜像与世界书提交队列排空，避免读取陈旧/空白数据。
       await saveQueue;
       var loaded = await load(chatId);
       if (token !== epoch || chatId !== activeChatId) return current();
@@ -3224,7 +3381,16 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       // 否则持久化状态会被空白态顶掉，随后水化标记签名还会把空白态回写覆盖存储（丢数据）。
       var existing = chats[chatId];
       var touched = !!existing && (CORE.stateRevision(existing) > 0 || CORE.stateDataUpdatedAt(existing) > 0);
-      if (!touched) chats[chatId] = loaded;
+      if (casBlocked[chatId] && loaded.__loadedSource !== 'none') {
+        chats[chatId] = loaded;
+        rememberCommitted(chatId, loaded);
+        delete casBlocked[chatId];
+      } else if (!touched) {
+        chats[chatId] = loaded;
+        rememberCommitted(chatId, loaded);
+      } else if (!committedStates[chatId]) {
+        rememberCommitted(chatId, loaded);
+      }
       var state = chats[chatId];
       // 版本变化（插件更新/卸载重装恢复）→ 持久化强制全量标记：下一轮生成按新提示词
       // 全量重写数据（旧格式行全部刷新，不再粘滞）；重启不丢标记。
@@ -3251,15 +3417,19 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (chatId !== activeChatId) return { stale: true, restored: false };
       epoch += 1;
       var token = epoch;
-      // 读存储前等落盘队列排空：上一聊天未写完的 save 会在队列里落镜像缓存，
-      // 直接读会读到陈旧/空白数据。
+      // 读存储前等本地镜像与世界书提交队列排空，避免读取陈旧/空白数据。
       await saveQueue;
       // 重建 = 从权威存储恢复：世界书快照（yz-snap/yz-psnap 分片）→ 本地镜像。
       // 历史消息正文经正文剥离后不含协议块，旧「从历史重建」数据源已随持久化改造
       // 移除；世界书快照才是当前唯一权威来源。
       var loaded = await load(chatId);
       if (token !== epoch || chatId !== activeChatId) return { stale: true, restored: false };
-       var restoredData = CORE.stateHasPersistableData(loaded);
+      if (casBlocked[chatId] && loaded.__loadedSource !== 'none') {
+        chats[chatId] = loaded;
+        rememberCommitted(chatId, loaded);
+        delete casBlocked[chatId];
+      }
+      var restoredData = CORE.stateHasPersistableData(loaded);
       if (!restoredData) {
         // 权威存储中没有玉兆数据（从未同步或已清空）：保留现有数据，不用空白覆盖。
         return { stale: false, restored: false };
@@ -3280,6 +3450,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (!chats[activeChatId]) {
         // normalizeState(null) → v2 空白（spaces 里只有一个默认空间）。
         chats[activeChatId] = CORE.normalizeState(null, activeChatId);
+        rememberCommitted(activeChatId, chats[activeChatId]);
         rememberChat(activeChatId);
         evictChats();
       }
@@ -3539,6 +3710,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         // 校验通过后才变更对象：失败路径不得留下已改坏/空必填的实体，
         // 否则下一次 normalize 会整行丢弃并级联其下数据。
         var folder = CORE.playerFindEntity(space, 'folder', existingId);
+        if (!folder && safeArray(space.notes.folders, 10).length >= 10) return { ok: false, reason: 'full' };
         if (folder) folder.name = name;
         // safeArray 返回副本：新建必须把拼接结果写回状态，否则 push 在副本上丢失。
         else space.notes.folders = safeArray(space.notes.folders, 10).concat([{ id: CORE.playerNextId(space.notes.folders, 'pf-'), name: name, count: 0 }]);
@@ -3552,6 +3724,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         if (!folderOk) reason = 'folder';
         if (reason) return fail();
         var note = CORE.playerFindEntity(space, 'note', existingId);
+        if (!note && safeArray(space.notes.notes, 30).length >= 30) return { ok: false, reason: 'full' };
         if (note) {
           note.title = title;
           note.body = body;
@@ -3566,6 +3739,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         if (!hasText(iname)) reason = 'name';
         if (reason) return fail();
         var item = CORE.playerFindEntity(space, 'item', existingId);
+        if (!item && safeArray(space.space.items, 30).length >= 30) return { ok: false, reason: 'full' };
         if (item) {
           item.name = iname;
           item.qty = Math.max(0, Number(raw.qty) || 0);
@@ -3581,13 +3755,16 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           if (clash) reason = 'kindClash';
         }
         if (reason) return fail();
-        space.space.currencies = safeArray(space.space.currencies, 10).filter(function (c) { return String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
+        var currency = CORE.playerFindEntity(space, 'currency', existingId);
+        if (!currency && safeArray(space.space.currencies, 10).length >= 10) return { ok: false, reason: 'full' };
+        space.space.currencies = safeArray(space.space.currencies, 10).filter(function (c) { return !currency || String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
         space.space = CORE.normalizeSpace(space.space);
       } else if (kind === 'order') {
         var oname = cleanText(raw.name, 120);
         if (!hasText(oname)) reason = 'name';
         if (reason) return fail();
         var order = CORE.playerFindEntity(space, 'order', existingId);
+        if (!order && safeArray(space.market.orders, 12).length >= 12) return { ok: false, reason: 'full' };
         var side = /^(sell|卖|售)/i.test(String(raw.side)) ? 'sell' : 'buy';
         if (order) {
           order.name = oname;
@@ -3603,6 +3780,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         if (!hasText(ptitle)) reason = 'title';
         if (reason) return fail();
         var post = CORE.playerFindEntity(space, 'post', existingId);
+        if (!post && safeArray(space.forum.posts, 20).length >= 20) return { ok: false, reason: 'full' };
         if (post) {
           post.title = ptitle;
           post.section = cleanText(raw.section, 60);
@@ -3814,6 +3992,16 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       chatId = CORE.cleanText(chatId || activeChatId, 160);
       if (chatId !== activeChatId) return { changed: false, stale: true, applied: false };
       var state = current();
+      var generation = options && options.generationToken;
+      if (generation && typeof generation === 'object' && generation.chatId != null &&
+          CORE.cleanText(generation.chatId, 160) !== chatId) {
+        return { changed: false, stale: true, discarded: true, reason: 'generation-chat', applied: false };
+      }
+      var tokenEpoch = optionClearEpoch(options);
+      var stateEpoch = Math.max(Number(state.clearEpoch) || 0, Number(clearEpochs[chatId]) || 0);
+      if (tokenEpoch != null && tokenEpoch !== stateEpoch) {
+        return { changed: false, stale: false, discarded: true, reason: 'clear-epoch', clearEpoch: stateEpoch, applied: false };
+      }
       var snapshots = PROTOCOL.extractSnapshots(text);
       if (!snapshots.length) {
         if (/<yz_[a-z0-9_]+\b/i.test(String(text || ''))) {
@@ -3825,8 +4013,10 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         var perr = (function () { var d = CORE.defaultSpaceState(state); return !!d && d.sync.lastError === 'parse-error'; })();
         return { changed: false, stale: false, applied: false, parseError: perr };
       }
-      var applied = applySnapshotsToState(state, snapshots, source, options && options.visibility);
+      var realtime = !!(options && options.realtime) || /^(generation(?::|$)|message(?::|$))/.test(String(source || ''));
+      var applied = applySnapshotsToState(state, snapshots, source, options && options.visibility, { realtime: realtime });
       chats[chatId] = applied.state;
+      if (tokenEpoch != null && clearGates[chatId] && tokenEpoch === clearGates[chatId].epoch) delete clearGates[chatId];
       // 重复投递的轮次不重复落盘；解析失败标记需持久化，重开后仍可见。
       var dflt = CORE.defaultSpaceState(applied.state);
       if (applied.changed || applied.persist || (dflt && dflt.sync.lastError === 'parse-error')) save(chatId, applied.state);
@@ -3895,7 +4085,6 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     var ARCHIVE_NAME_PREFIX = '玉兆档案·';
     var ARCHIVE_ENTRY_CHARS = 6000;
     var ARCHIVE_FOOTER = '\n（只读归档：仅供回忆参考，不要把这些消息重新写入 <yz_jade> 数据块。）';
-    var archiveQueue = Promise.resolve();
 
     function archiveWindow(messages) {
       var rows = safeArray(messages, 100);
@@ -4051,8 +4240,8 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     // 挂接需读当前世界书列表后合并（chat.update 整体替换，不能覆盖用户自己的世界书）。
     function syncArchive(chatId, options) {
       options = options || {};
-      var task = archiveQueue.then(function () { return writeArchive(chatId, options); }, function () { return writeArchive(chatId, options); });
-      archiveQueue = task.then(function () {}, function () {});
+      var task = saveQueue.then(function () { return writeArchive(chatId, options); }, function () { return writeArchive(chatId, options); });
+      saveQueue = task.then(function () {}, function () {});
       return task;
     }
 
@@ -4119,6 +4308,8 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       LOCAL_PREFIX: LOCAL_PREFIX,
       switchChat: switchChat,
       settle: settle,
+      beginClear: beginClear,
+      generationToken: generationToken,
       rebuildFromHistory: rebuildFromHistory,
       markHistoryCutoff: markHistoryCutoff,
       current: current,
@@ -5946,23 +6137,112 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       hostDocument = localDocument;
     }
 
+    var disposed = false;
+    var appOwner = {};
+    var appCleanups = [];
+    var appTimeouts = [];
+    var appIntervals = [];
+    var busyActions = Object.create(null);
+    function listen(target, type, handler, options) {
+      if (disposed || !target || typeof target.addEventListener !== 'function') return function () {};
+      target.addEventListener(type, handler, options);
+      var active = true;
+      var remove = function () {
+        if (!active) return;
+        active = false;
+        try { target.removeEventListener(type, handler, options); } catch (_) {}
+      };
+      appCleanups.push(remove);
+      return remove;
+    }
+    function onCleanup(fn) {
+      if (typeof fn === 'function') appCleanups.push(fn);
+      return fn;
+    }
+    function setAppTimeout(fn, delay) {
+      var timer = setTimeout(function () {
+        var index = appTimeouts.indexOf(timer);
+        if (index >= 0) appTimeouts.splice(index, 1);
+        if (!disposed) fn();
+      }, delay);
+      appTimeouts.push(timer);
+      return timer;
+    }
+    function setAppInterval(fn, delay) {
+      var timer = setInterval(function () { if (!disposed) fn(); }, delay);
+      appIntervals.push(timer);
+      return timer;
+    }
+    function clearAppTimeout(timer) {
+      if (timer == null) return;
+      clearTimeout(timer);
+      var index = appTimeouts.indexOf(timer);
+      if (index >= 0) appTimeouts.splice(index, 1);
+    }
+    function clearAppInterval(timer) {
+      if (timer == null) return;
+      clearInterval(timer);
+      var index = appIntervals.indexOf(timer);
+      if (index >= 0) appIntervals.splice(index, 1);
+    }
+    function markBound(node) {
+      if (!node) return;
+      onCleanup(function () { if (node.__yzBound) delete node.__yzBound; });
+    }
+    function clearAppTimers() {
+      appTimeouts.slice().forEach(clearAppTimeout);
+      appIntervals.slice().forEach(clearAppInterval);
+      appTimeouts = [];
+      appIntervals = [];
+    }
+    function clearAppCleanups() {
+      var cleanups = appCleanups.slice().reverse();
+      appCleanups = [];
+      cleanups.forEach(function (fn) { try { fn(); } catch (_) {} });
+    }
     var runtime = options.runtime || RUNTIME.createRuntime(tavoApi, hostWindow && hostWindow.localStorage, function () { return featureFlags; }, {
       window: hostWindow,
       notice: function (reason) {
-        if (reason === 'stateChanged') return setTimeout(render, 0);
+        if (disposed) return;
+        if (reason === 'stateChanged') return setAppTimeout(render, 0);
          if (reason === 'snapshotCorrupted') return showToast(I18N.dict().toast.snapshotCorrupted, true);
          if (reason === 'storageCorrupted') return showToast(I18N.dict().toast.storageCorrupted, true);
         if (reason === 'syncConflict') return showToast(I18N.dict().toast.syncConflict, true);
         if (reason === 'persistenceFailed') return showToast(I18N.dict().toast.persistenceFailed, true);
         }
       });
-    var disposed = false;
     function dispose() {
       if (disposed) return;
       disposed = true;
-       runtime.dispose();
-       if (uiObserver) { try { uiObserver.disconnect(); } catch (_) {} uiObserver = null; }
-      if (hostWindow && typeof hostWindow.removeEventListener === 'function') hostWindow.removeEventListener('pagehide', dispose);
+      ++openEpoch;
+      clearAppTimeout(wipeTimer);
+      wipeTimer = 0;
+      if (typeof stopWipeCountdown === 'function') stopWipeCountdown();
+      if (typeof clearToast === 'function') clearToast();
+      if (typeof hideConfirm === 'function') hideConfirm();
+      toastAction = null;
+      drag = null;
+      if (featureChannel) {
+        try { featureChannel.onmessage = null; } catch (_) {}
+        try { featureChannel.close(); } catch (_) {}
+        featureChannel = null;
+      }
+      if (runtime && typeof runtime.dispose === 'function') { try { runtime.dispose(); } catch (_) {} }
+      if (uiObserver) { try { uiObserver.disconnect(); } catch (_) {} uiObserver = null; }
+      clearAppTimers();
+      clearAppCleanups();
+      var overlay = hostDocument && hostDocument.getElementById ? hostDocument.getElementById(OVERLAY_ID) : null;
+      if (overlay && overlay.__yzLoadingOwner === appOwner) {
+        overlay.classList.remove('loading');
+        overlay.setAttribute('aria-busy', 'false');
+        var jade = overlay.querySelector('#' + JADE_ID);
+        if (jade) jade.inert = false;
+        delete overlay.__yzLoadingOwner;
+      }
+      Object.keys(busyActions).forEach(function (key) {
+        busyActions[key].nodes.forEach(function (node) { setBusyNode(node, false); });
+      });
+      busyActions = Object.create(null);
     }
     I18N.setTranslator(makeTranslator(tavoApi));
     var started = false;
@@ -5975,16 +6255,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     // 是否处于聊天会话中：chat:opened 置真、chat:closed 置假。
     // 宿主没有「当前路由是否为聊天页」的查询 API，这是控制 FAB 只在聊天内显示的唯一信号。
     var chatActive = false;
-    // 清除标记：clearAllData/clearFeatureData 执行时置真，generation:success 时检查并丢弃
-    // protocol block——防止生成中清除后数据复活（清空 → 旧 protocol 写回 = 数据复活）。
-    var clearPending = false;
     var discardedEnvelopeHashes = Object.create(null);
-    var activeGenerationKeys = Object.create(null);
-    var preClearGenerationKeys = Object.create(null);
-    var postClearGenerationKeys = Object.create(null);
-    // generation:prepare 与 success 之间保存本轮实际注入的可见实体集，
-    // 让采样窗口外的旧 ID 即使被模型猜中也不能修改。
-    var preparedBaselines = Object.create(null);
     // overlay 开关 epoch：open() 是异步的，用户快速关闭后异步完成会重新 addClass('open')。
     // 递增 epoch 后 async 完成时校验未变则 abort，防止 overlay 意外重开。
     var openEpoch = 0;
@@ -6016,6 +6287,170 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     // 关闭玉兆时记录离开位置（本会话内再打开恢复；chat:opened 换聊天后清空回主页）。
     // 空间选择持久化在 state.activeSpaceId（每聊天独立），不再需要会话内域记忆。
     var savedNav = null;
+
+    // 每轮生成只接受 prepare 时捕获的清除 epoch。匿名请求也单独保存聊天级上下文，
+    // 但清除发生后没有稳定请求 ID 的 success 永远保守丢弃，不能绕过清除保护。
+    var generationContexts = Object.create(null);
+    var anonymousGenerationCounts = Object.create(null);
+    var clearEpochByChat = Object.create(null);
+
+    function generationContextKey(chatId, generationId) {
+      return String(chatId || '') + '|' + String(generationId || '');
+    }
+
+    function clearGenerationContexts(chatId) {
+      var prefix = String(chatId || '') + '|';
+      Object.keys(generationContexts).forEach(function (key) {
+        if (key.indexOf(prefix) === 0) delete generationContexts[key];
+      });
+      delete anonymousGenerationCounts[String(chatId || '')];
+      discardedEnvelopeHashes = Object.create(null);
+    }
+
+    function saveGenerationContext(chatId, generationId, token, visibility) {
+      var context = { chatId: String(chatId || ''), generationId: String(generationId || ''), token: token, visibility: visibility };
+      generationContexts[generationContextKey(chatId, generationId)] = context;
+      if (!generationId) {
+        var id = String(chatId || '');
+        anonymousGenerationCounts[id] = (anonymousGenerationCounts[id] || 0) + 1;
+        // An anonymous success is safe only while exactly one anonymous prepare is pending.
+        if (anonymousGenerationCounts[id] === 1) generationContexts[generationContextKey(chatId, '')] = context;
+        else delete generationContexts[generationContextKey(chatId, '')];
+      }
+      return context;
+    }
+
+    function getGenerationContext(chatId, generationId) {
+      return generationContexts[generationContextKey(chatId, generationId)] || null;
+    }
+
+    function consumeGenerationContext(context, anonymousOnly) {
+      if (!context) return;
+      var exact = generationContextKey(context.chatId, context.generationId);
+      var anonymous = generationContextKey(context.chatId, '');
+      if (!anonymousOnly && generationContexts[exact] === context) delete generationContexts[exact];
+      if (generationContexts[anonymous] === context) delete generationContexts[anonymous];
+      if (!context.generationId) {
+        var id = String(context.chatId || '');
+        delete anonymousGenerationCounts[id];
+      }
+    }
+
+    function captureGenerationToken(chatId) {
+      if (!runtime || typeof runtime.generationToken !== 'function') return null;
+      try { return runtime.generationToken(chatId); } catch (_) { return null; }
+    }
+
+    function beginClearProtection(chatId) {
+      if (!runtime || typeof runtime.beginClear !== 'function') return { ok: false, reason: 'unsupported' };
+      var result;
+      try { result = runtime.beginClear(chatId); } catch (error) { dbg('begin clear failed', error); return { ok: false, reason: 'failed' }; }
+      if (!result || result.ok === false) return result || { ok: false, reason: 'failed' };
+      var id = String(chatId || runtime.activeChatId || '');
+      clearEpochByChat[id] = Number(result.epoch) || 0;
+      clearGenerationContexts(id);
+      discardedEnvelopeHashes = Object.create(null);
+      return result;
+    }
+
+    // data-actions.js 是独立拼接段，清除函数本身不能依赖另一个模块的调用顺序；
+    // 在 App 创建时包装它们，确保任何实际状态变更前都先推进 Runtime 清除 epoch。
+    function installClearProtection() {
+      if (typeof clearFeatureData === 'function') {
+        var clearFeature = clearFeatureData;
+        clearFeatureData = function (featureId) {
+          if (!CORE.blankFeatureField(featureId)) return;
+          var result = beginClearProtection(runtime.activeChatId);
+          if (!result || result.ok === false) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
+          return clearFeature(featureId);
+        };
+      }
+      if (typeof clearAllData === 'function') {
+        var clearAll = clearAllData;
+        clearAllData = function () {
+          var result = beginClearProtection(runtime.activeChatId);
+          if (!result || result.ok === false) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
+          return clearAll();
+        };
+      }
+    }
+
+    function captureUiContext() {
+      var params = nav.params || {};
+      var space = runtime && typeof runtime.activeSpace === 'function' ? runtime.activeSpace() : null;
+      return {
+        chatId: String(runtime.activeChatId || ''),
+        spaceId: String(space && space.id || ''),
+        app: String(nav.app || ''),
+        view: String(nav.view || ''),
+        id: String(params.id || '')
+      };
+    }
+
+    function uiContextMatches(context) {
+      if (disposed || !context || String(runtime.activeChatId || '') !== context.chatId) return false;
+      var current = captureUiContext();
+      return current.spaceId === context.spaceId && current.app === context.app && current.view === context.view && current.id === context.id;
+    }
+
+    function setBusyNode(node, busy) {
+      if (!node) return;
+      if (busy) node.setAttribute('data-busy', 'true');
+      else node.removeAttribute('data-busy');
+      if ('disabled' in node) node.disabled = !!busy;
+    }
+
+    function beginBusy(key, nodes) {
+      if (!key || busyActions[key]) return null;
+      var item = { key: key, nodes: nodes || [] };
+      busyActions[key] = item;
+      item.nodes.forEach(function (node) { setBusyNode(node, true); });
+      return item;
+    }
+
+    function endBusy(item) {
+      if (!item || busyActions[item.key] !== item) return;
+      delete busyActions[item.key];
+      item.nodes.forEach(function (node) { setBusyNode(node, false); });
+      syncBusyUi();
+    }
+
+    function busyKey(kind, id) {
+      var space = runtime && typeof runtime.activeSpace === 'function' ? runtime.activeSpace() : null;
+      return kind + '|' + String(runtime.activeChatId || '') + '|' + String(space && space.id || '') + '|' + String(id || '');
+    }
+
+    function busyKeyForNode(node) {
+      if (!node || !node.getAttribute) return '';
+      var action = node.getAttribute('data-action');
+      if (node.getAttribute('data-thread-input') !== null) return busyKey('thread', node.getAttribute('data-thread-id') || '');
+      if (node.getAttribute('data-comment-input') !== null) return busyKey('comment', node.getAttribute('data-post-id') || '');
+      if (node.getAttribute('data-space-input') !== null) return busyKey('space-create', '');
+      if (action === 'entity-save') return busyKey('form', (node.getAttribute('data-kind') || '') + ':' + (node.getAttribute('data-id') || ''));
+      return '';
+    }
+
+    function syncBusyUi(root) {
+      if (disposed) return;
+      root = root || hostDocument.getElementById(OVERLAY_ID);
+      if (!root || !root.querySelectorAll) return;
+      Array.prototype.forEach.call(root.querySelectorAll('[data-thread-input], [data-comment-input], [data-space-input], [data-action="entity-save"]'), function (node) {
+        var key = busyKeyForNode(node);
+        var item = key && busyActions[key];
+        var nodes = [node];
+        if (node.getAttribute('data-thread-input') !== null || node.getAttribute('data-comment-input') !== null || node.getAttribute('data-space-input') !== null) {
+          var parent = node.parentNode;
+          var button = parent && parent.querySelector ? parent.querySelector('button[data-action]') : null;
+          if (button) nodes.push(button);
+        } else {
+          var page = node.closest ? node.closest('[data-page]') : null;
+          if (page) nodes = nodes.concat(Array.prototype.slice.call(page.querySelectorAll('[data-form-field]')));
+        }
+        nodes.forEach(function (control) { setBusyNode(control, !!item); });
+      });
+    }
+
+    installClearProtection();
 
     // 界面语言唯一真值源是宿主 locale（tavo.plugin.i18n）；
     // lang 设置仅决定注入提示词的语言（生成内容语言策略，见 settings.info）。
@@ -6052,7 +6487,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     }
 
     function acceptFeatureRecord(record) {
-      if (!record || compareFeatureRecord(record, { revision: featureRevision, writer: featureLastWriter }) <= 0) return false;
+      if (disposed || !record || compareFeatureRecord(record, { revision: featureRevision, writer: featureLastWriter }) <= 0) return false;
       applyFeatureRecord(record);
       runtime.current().pendingFull = true;
       runtime.saveChat(runtime.activeChatId);
@@ -6070,13 +6505,14 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       } catch (_) { featureChannel = null; }
       if (featureChannel) {
         featureChannel.onmessage = function (event) {
+          if (disposed) return;
           var data = event && event.data;
           if (!data || data.type !== 'yz-features-changed') return;
           acceptFeatureRecord(data.record);
         };
       }
       if (hostWindow && typeof hostWindow.addEventListener === 'function') {
-        hostWindow.addEventListener('storage', function (event) {
+        listen(hostWindow, 'storage', function (event) {
           if (!event || event.key !== FEATURES_KEY) return;
           acceptFeatureRecord(parseFeatureRecord(event.newValue));
         });
@@ -6102,6 +6538,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       };
       featureRevision = record.revision;
       featureSaveQueue = featureSaveQueue.then(async function () {
+        if (disposed) return null;
         var latest = null;
         try { latest = parseFeatureRecord(await Promise.resolve(tavoApi.get(FEATURES_KEY, 'global'))); } catch (_) {}
         if (latest && compareFeatureRecord(latest, record) > 0) {
@@ -6111,7 +6548,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         var raw = JSON.stringify(record);
         try { await Promise.resolve(tavoApi.set(FEATURES_KEY, raw, 'global')); } catch (_) {}
         try { hostWindow.localStorage.setItem('yz:features', raw); } catch (_) {}
-        if (featureChannel) {
+        if (featureChannel && !disposed) {
           try { featureChannel.postMessage({ type: 'yz-features-changed', record: record }); } catch (_) {}
         }
         return record;
@@ -6167,6 +6604,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (typeof Observer !== 'function') return;
       try {
         uiObserver = new Observer(function () {
+          if (disposed) return;
           if (!hostDocument.getElementById(OVERLAY_ID) || !hostDocument.getElementById(FAB_ID) ||
               !hostDocument.getElementById('yz1-toast') || !hostDocument.getElementById('yz1-confirm')) return;
           uiObserver.disconnect();
@@ -6174,6 +6612,10 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           render();
         });
         uiObserver.observe(hostDocument.documentElement, { childList: true, subtree: true });
+        onCleanup(function () {
+          try { observer.disconnect(); } catch (_) {}
+          if (uiObserver === observer) uiObserver = null;
+        });
       } catch (_) { uiObserver = null; }
     }
 
@@ -6194,14 +6636,15 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       var toastHost = hostDocument.getElementById('yz1-toast');
       if (toastHost && !toastHost.__yzBound) {
         toastHost.__yzBound = true;
+        markBound(toastHost);
         // 内嵌操作按钮（撤销等）：点击先收起 toast 再执行注册的 handler（放微任务，避开清空竞态）。
-        toastHost.addEventListener('click', function (event) {
+        listen(toastHost, 'click', function (event) {
           var btn = event.target && event.target.closest ? event.target.closest('.yz-toast-action') : null;
           if (!btn || !toastAction) return;
           var fn = toastAction;
           toastAction = null;
           clearToast();
-          setTimeout(fn, 0);
+          setAppTimeout(fn, 0);
         });
       }
       // 全局确认对话框宿主：body 级居中 modal，独立于 overlay 与 toast——宿主侧边栏
@@ -6210,9 +6653,10 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (!toastHost || !confirmHost) { watchUi(); return null; }
       if (confirmHost && !confirmHost.__yzBound) {
         confirmHost.__yzBound = true;
+        markBound(confirmHost);
         // 点「确认」执行 fn；点「取消」、遮罩或 Esc 只关闭（取消操作不触发 fn）。
         // 遮罩点击：event.target 是 .yz-confirm-backdrop（或确认框自身），均非按钮 → 走取消分支。
-        confirmHost.addEventListener('click', function (event) {
+        listen(confirmHost, 'click', function (event) {
           var target = event.target;
           var btn = target && target.closest ? target.closest('.yz-confirm-actions button') : null;
           // 点在按钮之外（遮罩/空白）等同取消。
@@ -6226,12 +6670,12 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
             // 否则收起并丢弃——绝不能拿「确认清除」误清新聊天的数据。
             if (lockedChat !== null && lockedChat !== runtime.activeChatId) return;
             // 放微任务：先收起确认框再执行清除（与 toast 操作按钮同一防竞态约定）。
-            setTimeout(fn, 0);
+             setAppTimeout(fn, 0);
          } else {
            cancelConfirm();
          }
         });
-        confirmHost.addEventListener('keydown', function (event) {
+        listen(confirmHost, 'keydown', function (event) {
           if (event.key !== 'Tab') return;
           var focusables = Array.prototype.filter.call(confirmHost.querySelectorAll('button'), function (el) {
             return !el.disabled && el.offsetParent !== null;
@@ -6249,7 +6693,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           }
         });
         // Esc 关闭确认框：挂在 document 上（确认框本身常无焦点），确认框开着时优先收它。
-        hostDocument.addEventListener('keydown', function (event) {
+        listen(hostDocument, 'keydown', function (event) {
           if (event.key !== 'Escape') return;
           var host = hostDocument.getElementById('yz1-confirm');
           if (host && host.classList.contains('show')) {
@@ -6326,7 +6770,9 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     }
 
     function clearToast() {
-      clearTimeout(toastTimer);
+      clearAppTimeout(toastTimer);
+      toastTimer = 0;
+      toastAction = null;
       var toast = hostDocument.getElementById('yz1-toast');
       if (toast) { toast.classList.remove('show', 'bad', 'has-action'); toast.innerHTML = ''; }
     }
@@ -6334,6 +6780,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     // 可选内嵌操作按钮（撤销/确认等）：text 用文本节点（防注入），按钮走委托。
     // duration：默认 2.4s；确认类（如清除玉兆数据）需要更长的阅读/决策窗口。
     function showToast(text, bad, action, duration) {
+      if (disposed) return;
       var toast = hostDocument.getElementById('yz1-toast');
       if (!toast) return;
       // 先清空上一条：2.4s 内连续两条 toast 不拼接、旧内嵌按钮（撤销等）不残留——
@@ -6351,7 +6798,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       toast.classList.toggle('bad', !!bad);
       toast.classList.toggle('has-action', !!(action && action.label));
       toast.classList.add('show');
-      toastTimer = setTimeout(clearToast, duration || 2400);
+      toastTimer = setAppTimeout(clearToast, duration || 2400);
     }
 
     // shell DOM 只在首次创建，语言切换不会重建：顶栏品牌与各 aria-label 属于静态节点，
@@ -6401,10 +6848,11 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
 
     // {{user}} 解析（chat.persona.name）：聊天切换时刷新，供用户发言署名。
     function refreshOwnerName() {
-      runtime.resolveOwnerName().then(function () { render(); }).catch(function () {});
+      runtime.resolveOwnerName().then(function () { if (!disposed) render(); }).catch(function () {});
     }
 
     function render() {
+      if (disposed) return;
       var overlay = ensureShell();
       if (!overlay) return;
       renderShellStatic(overlay);
@@ -6458,6 +6906,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         var threadFocused = !!(focused && focused.getAttribute && focused.getAttribute('data-thread-input') !== null);
         var commentFocused = !!(focused && focused.getAttribute && focused.getAttribute('data-comment-input') !== null);
          pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, space: space, spaceName: spaceName, tabletOpenGroups: tabletOpenGroups });
+         syncBusyUi(pageNode);
         // 首页无导航历史时隐藏返回按钮：nav.stack 为空且当前是入口页时隐藏。
         var backBtn = pageNode.querySelector('.yz-back');
         if (backBtn) backBtn.hidden = nav.app === 'home' && nav.stack.length === 0;
@@ -6512,7 +6961,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       diagOpen = false;
       dataPanel = null;
       armedWipe = null;
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
     }
 
@@ -6568,7 +7017,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     var wipeTick = null;
     function startWipeCountdown() {
       stopWipeCountdown();
-      wipeTick = setInterval(function () {
+      wipeTick = setAppInterval(function () {
         if (!armedWipe) { stopWipeCountdown(); return; }
         var remain = Math.max(0, Math.ceil((armedWipe.expiresAt - Date.now()) / 1000));
         var nodes = hostDocument.querySelectorAll('#' + OVERLAY_ID + ' .armed');
@@ -6579,7 +7028,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       }, 500);
     }
     function stopWipeCountdown() {
-      if (wipeTick) { clearInterval(wipeTick); wipeTick = null; }
+      if (wipeTick) { clearAppInterval(wipeTick); wipeTick = null; }
     }
 
     /* ---------- UI app / data actions ---------- */
@@ -6594,12 +7043,6 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       // 强制下一轮全量重建：单功能清空后 sync 状态/旧摘要/issue 回声仍指向旧数据，
       // 不清 pendingFull 的话 meta-only diff 轮提前返回，假「complete」绿点残留。
       runtime.current().pendingFull = true;
-      // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
-      clearPending = true;
-      discardedEnvelopeHashes = Object.create(null);
-      preClearGenerationKeys = activeGenerationKeys;
-      activeGenerationKeys = Object.create(null);
-      postClearGenerationKeys = Object.create(null);
       runtime.current().updatedAt = Date.now();
       var saved = runtime.saveChat(runtime.activeChatId, { forceSnapshot: true });
       var cutoffSaved = runtime.markHistoryCutoff(runtime.activeChatId);
@@ -6622,12 +7065,6 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       state.spaces = [CORE.blankUserSpace(chatId, { id: CORE.DEFAULT_SPACE_ID, isDefault: true })];
       state.activeSpaceId = CORE.DEFAULT_SPACE_ID;
       state.pendingFull = true;
-      // 标记清除进行中：若此时有 generation 在飞，success 时丢弃 protocol block，防数据复活。
-      clearPending = true;
-      discardedEnvelopeHashes = Object.create(null);
-      preClearGenerationKeys = activeGenerationKeys;
-      activeGenerationKeys = Object.create(null);
-      postClearGenerationKeys = Object.create(null);
       state.updatedAt = Date.now();
       var saved = runtime.saveChat(chatId, { forceSnapshot: true });
       var cutoffSaved = runtime.markHistoryCutoff(chatId);
@@ -6757,7 +7194,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       // 离开页面时清理武装态与倒计时定时器：否则武装后返回，3 秒后定时器仍会触发
       // 一次多余的整页 render（且 armed 按钮已不在页面上）。
       stopWipeCountdown();
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
       if (nav.stack.length) {
         var previous = nav.stack.pop();
@@ -6795,6 +7232,17 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       render();
     }
 
+    function clearOpenLoading(overlay, epoch) {
+      if (!overlay || overlay.__yzLoadingOwner !== appOwner) return;
+      if (epoch != null && overlay.__yzLoadingEpoch !== epoch) return;
+      overlay.classList.remove('loading');
+      overlay.setAttribute('aria-busy', 'false');
+      var jade = overlay.querySelector('#' + JADE_ID);
+      if (jade) jade.inert = false;
+      delete overlay.__yzLoadingEpoch;
+      delete overlay.__yzLoadingOwner;
+    }
+
     async function open() {
       // 禁用时也要给反馈（与侧边栏 resync/clear 一致的 disabled toast）：
       // 静默返回会让用户以为点了没反应，尤其经宿主侧边栏「打开玉兆」触发时。
@@ -6804,44 +7252,52 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (!chatActive) { showToast(I18N.dict().toast.noChat, true); return; }
       ensureShell();
       var overlay = hostDocument.getElementById(OVERLAY_ID);
-      // 异步加载（切聊水化/从存储读快照）期间先显示 loading 态，避免「点了没反应」。
-      if (overlay) {
-        overlay.classList.add('loading');
-        overlay.setAttribute('aria-busy', 'true');
-        var loadingJade = overlay.querySelector('#' + JADE_ID);
-        if (loadingJade) loadingJade.inert = true;
-      }
+      if (!overlay) return;
       var epoch = ++openEpoch;
-      var id = await runtime.resolveCurrentChatId();
-      if (id !== runtime.activeChatId) await runtime.switchChat(id);
-      // async 期间用户可能已关闭 overlay：epoch 变了则 abort，防止意外重开。
-      if (epoch !== openEpoch || !overlay) return;
-      overlay.classList.remove('loading');
-      overlay.setAttribute('aria-busy', 'false');
-      var readyJade = overlay.querySelector('#' + JADE_ID);
-      if (readyJade) readyJade.inert = false;
-      overlay.classList.add('open');
-      overlay.setAttribute('aria-hidden', 'false');
-      clearToast();
-      // 确认框若还挂着（弹框期间切了聊天）其锁定聊天已失效：先收起再恢复导航，
-      // 避免重新打开后残留一个会误操作的新聊天的确认框。
-      hideConfirm();
-      resetManagePanels();
-      // 回到上次位置：若本会话内曾关闭玉兆，恢复离开时的页面与域（翻一半回来不重头找）；
-      // 首开/换聊天后回到主页（savedNav 在 close 时记录、chat:opened 时清空）。
-      if (savedNav) {
-        nav = savedNav;
-        savedNav = null;
-      } else {
-        nav = { app: 'home', view: 'root', params: {}, stack: [] };
+      // 异步加载（切聊水化/从存储读快照）期间先显示 loading 态，避免「点了没反应」。
+      overlay.__yzLoadingOwner = appOwner;
+      overlay.__yzLoadingEpoch = epoch;
+      overlay.classList.add('loading');
+      overlay.setAttribute('aria-busy', 'true');
+      var loadingJade = overlay.querySelector('#' + JADE_ID);
+      if (loadingJade) loadingJade.inert = true;
+      try {
+        var id = await runtime.resolveCurrentChatId();
+        if (id !== runtime.activeChatId) {
+          clearGenerationContexts(runtime.activeChatId);
+          await runtime.switchChat(id);
+        }
+        // async 期间用户可能已关闭 overlay：epoch 变了则 abort，防止意外重开。
+        if (disposed || epoch !== openEpoch || !overlay) return;
+        clearOpenLoading(overlay, epoch);
+        overlay.classList.add('open');
+        overlay.setAttribute('aria-hidden', 'false');
+        clearToast();
+        // 确认框若还挂着（弹框期间切了聊天）其锁定聊天已失效：先收起再恢复导航，
+        // 避免重新打开后残留一个会误操作的新聊天的确认框。
+        hideConfirm();
+        resetManagePanels();
+        // 回到上次位置：若本会话内曾关闭玉兆，恢复离开时的页面与域（翻一半回来不重头找）；
+        // 首开/换聊天后回到主页（savedNav 在 close 时记录、chat:opened 时清空）。
+        if (savedNav) {
+          nav = savedNav;
+          savedNav = null;
+        } else {
+          nav = { app: 'home', view: 'root', params: {}, stack: [] };
+        }
+        resetSearch();
+        render();
+        // 打开时按当前视觉视口收敛玉兆高度（覆盖 iOS 底部工具栏等 vv < 100vh 的场景）。
+        if (typeof overlay.__yzFit === 'function') overlay.__yzFit();
+        // 打开时把焦点移入对话框。
+        var dialog = overlay.querySelector('#' + JADE_ID) || overlay;
+        if (typeof dialog.focus === 'function') dialog.focus();
+      } catch (error) {
+        dbg('open failed', error);
+        if (!disposed && epoch === openEpoch) showToast(I18N.dict().toast.persistenceFailed, true);
+      } finally {
+        clearOpenLoading(overlay, epoch);
       }
-      resetSearch();
-      render();
-      // 打开时按当前视觉视口收敛玉兆高度（覆盖 iOS 底部工具栏等 vv < 100vh 的场景）。
-      if (typeof overlay.__yzFit === 'function') overlay.__yzFit();
-      // 打开时把焦点移入对话框。
-      var dialog = overlay.querySelector('#' + JADE_ID) || overlay;
-      if (typeof dialog.focus === 'function') dialog.focus();
     }
 
     function close() {
@@ -6852,6 +7308,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       // 关闭法器时一并收起确认对话框（弹框期间切聊天/关闭后继续确认会误操作）。
       hideConfirm();
       resetManagePanels();
+      clearOpenLoading(overlay);
       // 记录离开位置（同一聊天内再打开时恢复），管理页瞬态不保存。
       savedNav = { app: nav.app, view: nav.view, params: nav.params, stack: [] };
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
@@ -6873,7 +7330,8 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     function bindOverlay(overlay) {
       if (overlay.__yzBound) return;
       overlay.__yzBound = true;
-      overlay.addEventListener('click', function (event) {
+      markBound(overlay);
+      listen(overlay, 'click', function (event) {
         if (overlay.classList.contains('loading')) {
           event.preventDefault();
           event.stopPropagation();
@@ -6946,7 +7404,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       });
       // 检索框输入走 input 事件委托：每次键入只更新内存关键词并重渲染，
       // 纯前端过滤，不触碰任何持久化数据（交互基座第一层的只读约束）。
-      overlay.addEventListener('input', function (event) {
+      listen(overlay, 'input', function (event) {
         if (overlay.classList.contains('loading')) return;
         var box = event.target.closest ? event.target.closest('[data-search-input]') : null;
         if (!box) return;
@@ -6956,7 +7414,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         search = String(box.value || '');
         render();
       });
-      overlay.addEventListener('compositionend', function (event) {
+      listen(overlay, 'compositionend', function (event) {
         if (overlay.classList.contains('loading')) return;
         var box = event.target && event.target.closest ? event.target.closest('[data-search-input]') : null;
         if (!box) return;
@@ -6964,7 +7422,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         render();
       });
       // 模态焦点陷阱：Tab / Shift+Tab 在对话框内的可见按钮间循环，避免焦点移出到背后页面。
-      overlay.addEventListener('keydown', function (event) {
+      listen(overlay, 'keydown', function (event) {
         if (overlay.classList.contains('loading')) {
           event.preventDefault();
           return;
@@ -7002,20 +7460,21 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
          var normal = room >= 560;
          jade.style.minHeight = normal ? '' : '0px';
          jade.style.height = normal ? '' : Math.max(320, room) + 'px';
-       };
-       overlay.__yzFit = fitViewport;
-       if (vv && typeof vv.addEventListener === 'function') vv.addEventListener('resize', fitViewport);
-       if (hostWindow && typeof hostWindow.addEventListener === 'function') hostWindow.addEventListener('resize', fitViewport);
+        };
+        overlay.__yzFit = fitViewport;
+        onCleanup(function () { if (overlay.__yzFit === fitViewport) overlay.__yzFit = null; });
+        if (vv && typeof vv.addEventListener === 'function') listen(vv, 'resize', fitViewport);
+        if (hostWindow && typeof hostWindow.addEventListener === 'function') listen(hostWindow, 'resize', fitViewport);
       // 输入框聚焦时把玉兆内的输入框滚动进可视区（Android WebView 键盘行为差异兜底）。
-      overlay.addEventListener('focusin', function (event) {
+       listen(overlay, 'focusin', function (event) {
         var target = event.target;
         if (!target || !target.getAttribute) return;
          if (target.getAttribute('data-thread-input') === null &&
              target.getAttribute('data-comment-input') === null && target.getAttribute('data-search-input') === null &&
              target.getAttribute('data-space-input') === null) return;
-         setTimeout(function () {
-           if (hostDocument.documentElement.contains(target) && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
-         }, 300);
+          setAppTimeout(function () {
+            if (hostDocument.documentElement.contains(target) && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
+          }, 300);
       });
     }
 
@@ -7034,13 +7493,31 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (!CORE.hasText(text.trim())) { showToast(I18N.dict().emptyInput, true); return; }
       var space = runtime.activeSpace();
       if (!space) return;
-      var sent = runtime.sendSpaceMessage(space.id, id, text);
-      if (!sent) { showToast(I18N.dict().spaceMissingEntity, true); return; }
-      var persisted = await Promise.resolve(sent.saved);
-      if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); render(); return; }
-      box.value = '';
-      showToast(I18N.dict().msgSentToast);
-      render();
+      var button = box.parentNode && box.parentNode.querySelector ? box.parentNode.querySelector('[data-action="send-thread-msg"]') : null;
+      var busy = beginBusy(busyKey('thread', id), [box, button]);
+      if (!busy) return;
+      var context = captureUiContext();
+      try {
+        var sent = runtime.sendSpaceMessage(space.id, id, text);
+        if (!sent) { showToast(I18N.dict().spaceMissingEntity, true); return; }
+        var persisted = await Promise.resolve(sent.saved);
+        if (!persisted || !persisted.ok) {
+          showToast(I18N.dict().toast.persistenceFailed, true);
+          return;
+        }
+        var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
+        var currentBox = currentOverlay && currentOverlay.querySelector('[data-thread-input]');
+        if (uiContextMatches(context) && currentBox === box) {
+          box.value = '';
+          showToast(I18N.dict().msgSentToast);
+          render();
+        }
+      } catch (error) {
+        dbg('thread message failed', error);
+        showToast(I18N.dict().toast.persistenceFailed, true);
+      } finally {
+        endBusy(busy);
+      }
     }
 
     // 论坛评论（当前空间内的帖子）：同样本机直写。
@@ -7055,14 +7532,32 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (!CORE.hasText(text.trim())) { showToast(I18N.dict().emptyInput, true); return; }
       var space = runtime.activeSpace();
       if (!space) return;
-      var sent = runtime.sendSpaceComment(space.id, postId, text);
-      if (sent && sent.ok === false && sent.reason === 'full') { showToast(I18N.dict().forumCommentsFull, true); return; }
-      if (!sent) { showToast(I18N.dict().spaceMissingEntity, true); return; }
-      var persisted = await Promise.resolve(sent.saved);
-      if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); render(); return; }
-      box.value = '';
-      showToast(I18N.dict().commentSentToast);
-      render();
+      var button = box.parentNode && box.parentNode.querySelector ? box.parentNode.querySelector('[data-action="send-comment"]') : null;
+      var busy = beginBusy(busyKey('comment', postId), [box, button]);
+      if (!busy) return;
+      var context = captureUiContext();
+      try {
+        var sent = runtime.sendSpaceComment(space.id, postId, text);
+        if (sent && sent.ok === false && sent.reason === 'full') { showToast(I18N.dict().forumCommentsFull, true); return; }
+        if (!sent) { showToast(I18N.dict().spaceMissingEntity, true); return; }
+        var persisted = await Promise.resolve(sent.saved);
+        if (!persisted || !persisted.ok) {
+          showToast(I18N.dict().toast.persistenceFailed, true);
+          return;
+        }
+        var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
+        var currentBox = currentOverlay && currentOverlay.querySelector('[data-comment-input]');
+        if (uiContextMatches(context) && currentBox === box) {
+          box.value = '';
+          showToast(I18N.dict().commentSentToast);
+          render();
+        }
+      } catch (error) {
+        dbg('post comment failed', error);
+        showToast(I18N.dict().toast.persistenceFailed, true);
+      } finally {
+        endBusy(busy);
+      }
     }
 
     // ---------- 空间实体 CRUD UI 动作 ----------
@@ -7129,32 +7624,47 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       // reason → 字段名（playerFormFields 的 key 与运行时校验点一致）。
       var REASON_FIELD = { name: 'name', title: 'title', kind: 'kind', kindClash: 'kind' };
       var space = runtime.activeSpace();
-      var result = space ? runtime.spaceSaveEntity(space.id, kind, raw, id) : { ok: false, reason: 'space' };
-      if (!result || !result.ok) {
-        var reason = (result && result.reason) || '';
-        if (reason === 'folder') {
-          clearFormErrors();
-          showToast(dict.playerFormNeedFolder, true);
+      var saveButton = scope.querySelector('[data-action="entity-save"]');
+      var busy = beginBusy(busyKey('form', kind + ':' + id), [saveButton].concat(Array.prototype.slice.call(fields)));
+      if (!busy) return;
+      var context = captureUiContext();
+      try {
+        var result = space ? runtime.spaceSaveEntity(space.id, kind, raw, id) : { ok: false, reason: 'space' };
+        if (!result || !result.ok) {
+          var reason = (result && result.reason) || '';
+          if (reason === 'folder') {
+            clearFormErrors();
+            showToast(dict.playerFormNeedFolder, true);
+            return;
+          }
+          if (reason === 'missing') { showToast(dict.spaceMissingEntity, true); return; }
+          if (reason === 'full') { showToast(dict.spaceEntityFull, true); return; }
+          var fieldKey = REASON_FIELD[reason];
+          if (fieldKey) {
+            var label = '';
+            playerFormFields(kind, null, dict).forEach(function (f) { if (f.key === fieldKey) label = f.label; });
+            var message = reason === 'kindClash' ? dict.playerFormKindClash : tr('runtime.player.formFieldError', { field: label || dict.playerFieldName });
+            flagFormError(fieldKey, message);
+            showToast(message, true);
+            return;
+          }
+          showToast(dict.spaceMissingEntity, true);
           return;
         }
-        if (reason === 'missing') { showToast(dict.spaceMissingEntity, true); return; }
-        if (reason === 'full') { showToast(dict.spaceEntityFull, true); return; }
-        var fieldKey = REASON_FIELD[reason];
-        if (fieldKey) {
-          var label = '';
-          playerFormFields(kind, null, dict).forEach(function (f) { if (f.key === fieldKey) label = f.label; });
-          var message = reason === 'kindClash' ? dict.playerFormKindClash : tr('runtime.player.formFieldError', { field: label || dict.playerFieldName });
-          flagFormError(fieldKey, message);
-          showToast(message, true);
-          return;
+        var persisted = await Promise.resolve(result.saved);
+        if (!persisted || !persisted.ok) { showToast(dict.toast.persistenceFailed, true); return; }
+        var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
+        var currentSave = currentOverlay && currentOverlay.querySelector('[data-action="entity-save"]');
+        if (uiContextMatches(context) && currentSave === saveButton) {
+          backNav();
+          showToast(I18N.dict().playerSaved);
         }
-        showToast(dict.spaceMissingEntity, true);
-        return;
+      } catch (error) {
+        dbg('space form save failed', error);
+        showToast(dict.toast.persistenceFailed, true);
+      } finally {
+        endBusy(busy);
       }
-      var persisted = await Promise.resolve(result.saved);
-      if (!persisted || !persisted.ok) { showToast(dict.toast.persistenceFailed, true); return; }
-      showToast(I18N.dict().playerSaved);
-      backNav();
     }
 
     // 删除：两击确认（复用管理页武装状态机，key = kind:id），确认后直写当前空间。
@@ -7182,7 +7692,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     async function deleteSpaceItem(kind, id, extraId) {
       var key = kind + ':' + id + (extraId ? ':' + extraId : '');
       var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
       var space = runtime.activeSpace();
       if (!next) {
@@ -7202,7 +7712,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         return;
       }
       armedWipe = next;
-      wipeTimer = setTimeout(function () {
+      wipeTimer = setAppTimeout(function () {
         armedWipe = null;
         stopWipeCountdown();
         // 武装超时（未确认）：只复位按钮文案，不整页重渲染——表单里未保存的编辑不能被
@@ -7235,16 +7745,31 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       var box = overlay && overlay.querySelector('[data-space-input]');
       var name = box ? String(box.value || '') : '';
       if (!CORE.hasText(name.trim())) { showToast(I18N.dict().spaceNameRequired, true); return; }
-      var result = runtime.createSpace(name.trim());
-      if (!result.ok) {
-        showToast(result.reason === 'full' ? I18N.dict().spaceLimitReached : result.reason === 'clash' ? I18N.dict().spaceNameClash : I18N.dict().spaceNameRequired, true);
-        return;
+      var button = box && box.parentNode && box.parentNode.querySelector ? box.parentNode.querySelector('[data-action="space-create"]') : null;
+      var busy = beginBusy(busyKey('space-create', ''), [box, button]);
+      if (!busy) return;
+      var context = captureUiContext();
+      try {
+        var result = runtime.createSpace(name.trim());
+        if (!result.ok) {
+          showToast(result.reason === 'full' ? I18N.dict().spaceLimitReached : result.reason === 'clash' ? I18N.dict().spaceNameClash : I18N.dict().spaceNameRequired, true);
+          return;
+        }
+        var persisted = await Promise.resolve(result.saved);
+        if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
+        var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
+        var currentBox = currentOverlay && currentOverlay.querySelector('[data-space-input]');
+        if (uiContextMatches(context) && currentBox === box) {
+          box.value = '';
+          showToast(I18N.dict().spaceCreated);
+          render();
+        }
+      } catch (error) {
+        dbg('space create failed', error);
+        showToast(I18N.dict().toast.persistenceFailed, true);
+      } finally {
+        endBusy(busy);
       }
-      var persisted = await Promise.resolve(result.saved);
-      if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); render(); return; }
-      if (box) box.value = '';
-      showToast(I18N.dict().spaceCreated);
-      render();
     }
 
     async function toggleSpaceFlag(id, flag) {
@@ -7262,7 +7787,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     async function deleteSpaceRow(id) {
       var key = 'space:' + id;
       var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
       if (!next) {
         var result = runtime.deleteSpace(id);
@@ -7280,7 +7805,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         return;
       }
       armedWipe = next;
-      wipeTimer = setTimeout(function () {
+      wipeTimer = setAppTimeout(function () {
         armedWipe = null;
         stopWipeCountdown();
         render();
@@ -7334,6 +7859,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (!value) {
         try { value = hostWindow.localStorage.getItem('yz:fab_position'); } catch (_) {}
       }
+      if (disposed) return;
       if (value) {
         try { placeFab(fab, typeof value === 'string' ? JSON.parse(value) : value); } catch (_) {}
       }
@@ -7361,19 +7887,22 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     function bindFab(fab) {
       if (fab.__yzBound) return;
       fab.__yzBound = true;
+      markBound(fab);
+      onCleanup(function () { delete fab.__yzPositionRestored; });
       var holdTimer = 0;
-      function cancelHold() { if (holdTimer) { clearTimeout(holdTimer); holdTimer = 0; } }
-      fab.addEventListener('click', function (event) {
+      function cancelHold() { if (holdTimer) { clearAppTimeout(holdTimer); holdTimer = 0; } }
+      onCleanup(cancelHold);
+      listen(fab, 'click', function (event) {
         if (Date.now() < suppressClickUntil) { event.preventDefault(); event.stopPropagation(); return; }
         open();
       });
-      fab.addEventListener('pointerdown', function (event) {
+      listen(fab, 'pointerdown', function (event) {
         if (event.button != null && event.button !== 0) return;
         var rect = fab.getBoundingClientRect();
         drag = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, left: rect.left, top: rect.top, moved: false };
         try { fab.setPointerCapture(event.pointerId); } catch (_) {}
         cancelHold();
-        holdTimer = setTimeout(function () {
+        holdTimer = setAppTimeout(function () {
           holdTimer = 0;
           if (!drag || drag.moved) return;
           drag = null;
@@ -7381,7 +7910,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           resetFabPosition();
         }, 900);
       });
-      hostDocument.addEventListener('pointermove', function (event) {
+      listen(hostDocument, 'pointermove', function (event) {
         if (!drag || (drag.pointerId != null && event.pointerId !== drag.pointerId)) return;
         var dx = event.clientX - drag.startX, dy = event.clientY - drag.startY;
         // 拖拽判定阈值：触屏点按时手指的轻微位移（>4px 很常见）不应被当成拖拽，
@@ -7404,9 +7933,9 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           persistFab({ x: Math.round(rect.left), y: Math.round(rect.top) });
         }
       }
-      hostDocument.addEventListener('pointerup', finish, true);
-      hostDocument.addEventListener('pointercancel', finish, true);
-      hostWindow.addEventListener('resize', function () {
+      listen(hostDocument, 'pointerup', finish, true);
+      listen(hostDocument, 'pointercancel', finish, true);
+      listen(hostWindow, 'resize', function () {
         var rect = fab.getBoundingClientRect();
         placeFab(fab, { x: rect.left, y: rect.top });
       });
@@ -7487,18 +8016,20 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           // 防重入：异步恢复进行中再点直接忽略（避免误导性的「聊天已切换」红 toast）。
           if (restoreBusy) { showToast(I18N.dict().toast.restoreBusy); return; }
           restoreBusy = true;
-          var result = null;
-          try {
-            result = await runtime.rebuildFromHistory(runtime.activeChatId);
-          } catch (error) {
+         var result = null;
+         var chatId = runtime.activeChatId;
+         try {
+             result = await runtime.rebuildFromHistory(chatId);
+         } catch (error) {
             dbg('snapshot restore failed', error);
             restoreBusy = false;
             showToast(I18N.dict().toast.restoreFailed, true);
             return;
           }
-          restoreBusy = false;
-          runtime.syncArchive(runtime.activeChatId);
-          render();
+           restoreBusy = false;
+           if (disposed || chatId !== runtime.activeChatId) return;
+           runtime.syncArchive(chatId);
+           render();
           // stale：异步窗口内切了聊天（结果不属于当前会话），不误报「无快照」。
           if (result && result.stale) { showToast(I18N.dict().toast.stale, true); return; }
           showToast(result && result.restored ? I18N.dict().toast.rebuilt : I18N.dict().toast.noSnapshot);
@@ -7508,18 +8039,21 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       // 恢复一次，让法器数据与权威存储保持一致（数据源是世界书，编辑正文不影响它）。
       function scheduleRebuild() {
         if (rebuildTimer) return;
-        rebuildTimer = setTimeout(async function () {
-          rebuildTimer = 0;
-          try {
-            await runtime.rebuildFromHistory(runtime.activeChatId);
-            runtime.syncArchive(runtime.activeChatId);
-            render();
+         rebuildTimer = setAppTimeout(async function () {
+           rebuildTimer = 0;
+           if (disposed) return;
+           var chatId = runtime.activeChatId;
+           try {
+             await runtime.rebuildFromHistory(chatId);
+             if (disposed || chatId !== runtime.activeChatId) return;
+             runtime.syncArchive(chatId);
+             render();
           } catch (error) { dbg('snapshot restore failed', error); }
         }, 600);
       }
 
       async function onMessage(event) {
-        if (!enabled()) return;
+        if (disposed || !enabled()) return;
         var message = event && event.message || {};
         if (message.role !== 'assistant') return;
         var payload = pickEnvelopePayload(message);
@@ -7527,25 +8061,43 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           if ((event.type || '') === 'message:updated') scheduleRebuild();
           return;
         }
-        var chatId = await runtime.resolveCurrentChatId(event);
+         var chatId = await runtime.resolveCurrentChatId(event);
+         if (disposed) return;
         if (discardedEnvelopeHashes[stableHash(payload)]) {
           if (autoStrip()) stripEventFields(message);
           delete discardedEnvelopeHashes[stableHash(payload)];
           return;
-        }
-        var messageKey = generationKey(event);
-        var visibility = preparedBaselines[chatId + '|' + messageKey] || preparedBaselines[chatId + '|'];
-        var result = await runtime.applyText(payload, chatId, event.type || 'message', { visibility: visibility });
-        if (result.parseError) showToast(I18N.dict().toast.parseError, true, { label: I18N.dict().diag.title, fn: function () { openSyncDetail(); } });
-        if (result.oversized) showToast(I18N.dict().toast.oversized, true);
-        if (result.changed) runtime.syncArchive(chatId);
-        render();
-        setTimeout(stripVisibleBlocks, 0);
+         }
+         var messageKey = generationKey(event);
+         var context = getGenerationContext(chatId, messageKey);
+         if (!context || !context.token) {
+           if (autoStrip()) stripEventFields(message);
+           discardedEnvelopeHashes[stableHash(payload)] = Date.now();
+           return;
+         }
+         var result = await runtime.applyText(payload, chatId, event.type || 'message', {
+           visibility: context.visibility,
+           generationToken: context.token,
+           realtime: true
+         });
+         if (result.parseError) showToast(I18N.dict().toast.parseError, true, { label: I18N.dict().diag.title, fn: function () { openSyncDetail(); } });
+         if (result.oversized) showToast(I18N.dict().toast.oversized, true);
+         if (result.discarded && containsEnvelope(payload)) discardedEnvelopeHashes[stableHash(payload)] = Date.now();
+         if (!disposed && result.changed && chatId === runtime.activeChatId) runtime.syncArchive(chatId);
+         if (!disposed && chatId === runtime.activeChatId) {
+           render();
+           setAppTimeout(stripVisibleBlocks, 0);
+         }
       }
       async function onChatOpened(event){
+        if (disposed) return;
         chatActive = true;
         undoSnap = null;
-        await runtime.switchChat(await runtime.resolveCurrentChatId(event));
+        var chatId = await runtime.resolveCurrentChatId(event);
+        if (disposed) return;
+        if (chatId !== runtime.activeChatId) clearGenerationContexts(runtime.activeChatId);
+        await runtime.switchChat(chatId);
+        if (disposed) return;
         nav = { app: 'home', view: 'root', params: {}, stack: [] };
         // 换聊天后放弃上一聊天的离开位置：新会话从主页开始。
         savedNav = null;
@@ -7556,16 +8108,21 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
 
       async function onChatUpdated(event){
         var hostId = await runtime.resolveCurrentChatId();
+        if (disposed) return;
         var eventId = runtime.eventChatId(event);
         if (eventId && eventId !== hostId) return;
-        if (hostId !== runtime.activeChatId) await runtime.switchChat(hostId);
-        render();
+        if (hostId !== runtime.activeChatId) {
+          clearGenerationContexts(runtime.activeChatId);
+          await runtime.switchChat(hostId);
+        }
+        if (!disposed) render();
       }
 
       function onChatClosed(){
         // 离开聊天（含切到宿主设置等非聊天页）时收起 overlay 并隐藏 FAB：
         // 避免继续显示上一个聊天的数据，也避免悬浮入口压在非聊天页面上。
         chatActive = false;
+        clearGenerationContexts(runtime.activeChatId);
         // 收起可能弹起的确认对话框（其锁定的聊天已失效，继续挂着会误清新聊天）。
         hideConfirm();
         close();
@@ -7573,26 +8130,33 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       }
 
       async function onGenerationPrepare(event){
-        if (!enabled()) return event;
+        if (disposed || !enabled()) return event;
         // 七个功能全部封印时提示词只剩空壳，模型也不会输出协议块：直接跳过注入省 token。
         if (!anyFeatureEnabled()) return event;
-        // 有稳定请求 id 时，仅放行清除之后开始的新一轮；清除前已在飞的请求仍丢弃。
-        // 宿主没有请求 id 时，保守地保留 clearPending，直到收到一轮结果后解除。
         var prepareKey = generationKey(event);
-        if (clearPending) {
-          if (prepareKey) postClearGenerationKeys[prepareKey] = true;
-        } else {
-          if (prepareKey) activeGenerationKeys[prepareKey] = true;
-          discardedEnvelopeHashes = Object.create(null);
-        }
+        var prepareStartChat = runtime.eventChatId(event) || runtime.activeChatId;
+        var prepareStartToken = captureGenerationToken(prepareStartChat);
+        discardedEnvelopeHashes = Object.create(null);
         // 重新生成/继续同样经过这里：注入基线前先确保目标聊天的持久化状态已加载完毕
         // （插件重载后 switchChat 的加载/水化是异步的，直接读内存会拿到空白态 → 空基线）。
         var chatId = await runtime.resolveCurrentChatId(event);
-        if (chatId !== runtime.activeChatId) await runtime.switchChat(chatId);
+        if (disposed) return event;
+        if (chatId !== runtime.activeChatId) {
+          clearGenerationContexts(runtime.activeChatId);
+          await runtime.switchChat(chatId);
+        }
         await runtime.settle();
+        if (disposed) return event;
         var liveChatId = await runtime.resolveCurrentChatId();
         var eventChatId = runtime.eventChatId(event);
         if (chatId !== runtime.activeChatId || liveChatId !== chatId || (eventChatId && eventChatId !== chatId)) return event;
+        var token = captureGenerationToken(chatId);
+        if (!token) return event;
+        // prepare 自身也可能在清除期间挂起；不能把清除前开始的请求重新登记为新请求。
+        var startEpoch = prepareStartToken && Number(prepareStartToken.clearEpoch);
+        var currentEpoch = Number(token.clearEpoch);
+        if (String(prepareStartChat || '') === String(chatId || '') && Number.isFinite(startEpoch) &&
+            Number.isFinite(currentEpoch) && startEpoch !== currentEpoch) return event;
         var state = runtime.current();
         var defaultSpace = CORE.defaultSpaceState(state);
         var spaceInfos = state.spaces.map(function (sp) {
@@ -7608,8 +8172,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
           CORE.safeArray(sp.sync && sp.sync.issues, 20).forEach(function (issue) { if (allIssues.length < 6) allIssues.push(issue); });
         });
         var currentRows = PROMPT.buildCurrent(state, featureFlags);
-        preparedBaselines[chatId + '|'] = currentRows.visibility;
-        if (prepareKey) preparedBaselines[chatId + '|' + prepareKey] = currentRows.visibility;
+        var generationContext = saveGenerationContext(chatId, prepareKey, token, currentRows.visibility);
         var ctx = {
           // 强制全量轮：默认空间从未同步、封印切换/版本更新后的持久化标记，或本轮内存标记；
           // 其余轮次一律 diff 增量（非默认空间恒 diff，见提示词空间规则）。
@@ -7624,46 +8187,40 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       }
 
       async function onGenerationSuccess(event){
-        if (!enabled()) return event;
+        if (disposed || !enabled()) return event;
         var raw = pickEnvelopePayload(event);
         var successKey = generationKey(event);
-        var allowedAfterClear = !!(successKey && postClearGenerationKeys[successKey]);
-        var wasInFlightBeforeClear = !!(successKey && preClearGenerationKeys[successKey]);
-        if (wasInFlightBeforeClear) {
-          if (autoStrip()) stripEventFields(event);
-          if (containsEnvelope(raw)) discardedEnvelopeHashes[stableHash(raw)] = Date.now();
-          delete preClearGenerationKeys[successKey];
-          return event;
-        }
-        // 清除进行中时丢弃本轮 protocol block：用户在生成期间清了数据，旧协议写回会复活已清除的数据。
-        if (clearPending && !allowedAfterClear) {
-          if (autoStrip()) stripEventFields(event);
-          if (containsEnvelope(raw)) discardedEnvelopeHashes[stableHash(raw)] = Date.now();
-          if (!successKey) clearPending = false;
-          render();
-          return event;
-        }
-        if (allowedAfterClear) {
-          delete postClearGenerationKeys[successKey];
-          clearPending = false;
-          preClearGenerationKeys = Object.create(null);
-        } else if (successKey) {
-          delete activeGenerationKeys[successKey];
-        }
         // 该 Hook 每个 handler 只有约 5 秒预算且超时整体丢弃：先同步完成纯字符串的正文剥离
         // （阻止协议块进入已保存消息的关键动作），快照应用走异步、持久化已在 runtime 后台化。
+        var chatId;
+        try { chatId = await runtime.resolveCurrentChatId(event); } catch (_) { chatId = runtime.activeChatId; }
+        if (disposed) return event;
+        // 带 ID 的结果只能取同 ID 的 prepare；没有 ID 时只取聊天匿名上下文，且清除后永不放行。
+        var generationContext = getGenerationContext(chatId, successKey);
+        var tokenEpoch = generationContext && generationContext.token && Number(generationContext.token.clearEpoch) || 0;
+        if (!successKey && (clearEpochByChat[String(chatId || '')] > 0 || tokenEpoch > 0)) {
+          consumeGenerationContext(generationContext, !successKey);
+          generationContext = null;
+        }
+        if (!generationContext || !generationContext.token || String(chatId) !== String(runtime.activeChatId || '')) {
+          if (autoStrip()) stripEventFields(event);
+          if (containsEnvelope(raw)) discardedEnvelopeHashes[stableHash(raw)] = Date.now();
+          if (generationContext) consumeGenerationContext(generationContext, !successKey);
+          return event;
+        }
         if (autoStrip()) stripEventFields(event);
         if (containsEnvelope(raw)) {
           try {
-            var chatId = await runtime.resolveCurrentChatId(event);
-            var visibility = preparedBaselines[chatId + '|' + successKey] || preparedBaselines[chatId + '|'];
-            var result = await runtime.applyText(raw, chatId, 'generation:success', { visibility: visibility });
-            delete preparedBaselines[chatId + '|' + successKey];
-            delete preparedBaselines[chatId + '|'];
+            var result = await runtime.applyText(raw, chatId, 'generation:success', {
+              visibility: generationContext.visibility,
+              generationToken: generationContext.token,
+              realtime: true
+            });
+            if (result && result.discarded) discardedEnvelopeHashes[stableHash(raw)] = Date.now();
             if (result.parseError) showToast(I18N.dict().toast.parseError, true, { label: I18N.dict().diag.title, fn: function () { openSyncDetail(); } });
             if (result.oversized) showToast(I18N.dict().toast.oversized, true);
             // 成功落过一轮全量后清除强制全量标记（内存 + 持久化）。
-            if (result.full && result.changed) {
+            if (!disposed && chatId === runtime.activeChatId && result.full && result.changed) {
               flagsDirty = false;
               var st = runtime.current();
               if (st && st.pendingFull) {
@@ -7672,30 +8229,29 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
               }
             }
             // 数据有变化时后台刷新世界书（消息归档条目 + 全状态快照；不占用本 Hook 的 5 秒预算等待）。
-            if (result.changed) runtime.syncArchive(chatId);
+            if (!disposed && result.changed && chatId === runtime.activeChatId) runtime.syncArchive(chatId);
           } catch (error) { dbg('generation:success apply failed', error); }
         }
-        render();
+        consumeGenerationContext(generationContext, !successKey);
+        if (!disposed && chatId === runtime.activeChatId) render();
         return event;
       }
 
-      function onGenerationError(){
-        if (!enabled()) return;
-        clearPending = false;
+      function onGenerationError(event){
+        if (disposed || !enabled()) return;
+        var chatId = runtime.eventChatId(event) || runtime.activeChatId;
+        var errorKey = generationKey(event);
+        consumeGenerationContext(getGenerationContext(chatId, errorKey), !errorKey);
         discardedEnvelopeHashes = Object.create(null);
-        activeGenerationKeys = Object.create(null);
-        preClearGenerationKeys = Object.create(null);
-        postClearGenerationKeys = Object.create(null);
         showToast(I18N.dict().toast.generationError, true);
       }
 
-      function onGenerationCancelled(){
-        if (!enabled()) return;
-        clearPending = false;
+      function onGenerationCancelled(event){
+        if (disposed || !enabled()) return;
+        var chatId = runtime.eventChatId(event) || runtime.activeChatId;
+        var cancelKey = generationKey(event);
+        consumeGenerationContext(getGenerationContext(chatId, cancelKey), !cancelKey);
         discardedEnvelopeHashes = Object.create(null);
-        activeGenerationKeys = Object.create(null);
-        preClearGenerationKeys = Object.create(null);
-        postClearGenerationKeys = Object.create(null);
         showToast(I18N.dict().toast.cancelled, true);
       }
       return {
@@ -7710,11 +8266,12 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         messageAdded: onMessage,
         messageUpdated: onMessage,
         messageDeleted: async function (event) {
-          var id = await runtime.resolveCurrentChatId(event);
-          if (id !== runtime.activeChatId) return;
-          await runtime.rebuildFromHistory(id);
-          runtime.syncArchive(id);
-          render();
+           var id = await runtime.resolveCurrentChatId(event);
+           if (disposed || id !== runtime.activeChatId) return;
+           await runtime.rebuildFromHistory(id);
+           if (disposed || id !== runtime.activeChatId) return;
+           runtime.syncArchive(id);
+           render();
         },
         generationError: onGenerationError,
         generationCancelled: onGenerationCancelled
@@ -7723,16 +8280,23 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     async function start() {
       if (started || disposed) return;
       started = true;
-      if (hostWindow && typeof hostWindow.addEventListener === 'function') hostWindow.addEventListener('pagehide', dispose);
+      if (hostWindow && typeof hostWindow.addEventListener === 'function') listen(hostWindow, 'pagehide', dispose);
       setupFeatureSync();
       try {
         var i18nApi = tavoApi.plugin && tavoApi.plugin.i18n;
-        if (i18nApi && typeof i18nApi.onChange === 'function') i18nApi.onChange(function () { I18N.invalidate(); refreshConfirmText(); render(); });
+        if (i18nApi && typeof i18nApi.onChange === 'function') {
+          var onI18nChange = function () { if (!disposed) { I18N.invalidate(); refreshConfirmText(); render(); } };
+          var unsubscribe = i18nApi.onChange(onI18nChange);
+          if (typeof unsubscribe === 'function') onCleanup(unsubscribe);
+          else if (unsubscribe && typeof unsubscribe.unsubscribe === 'function') onCleanup(function () { unsubscribe.unsubscribe(); });
+        }
       } catch (_) {}
       await loadFeatureFlags();
+      if (disposed) return;
       ensureShell();
       var id = await runtime.resolveCurrentChatId();
       await runtime.switchChat(id);
+      if (disposed) return;
       refreshOwnerName();
       // FAB chatActive 启动兜底：宿主可能已停在聊天页而不重发 chat:opened（插件重载等），
       // 此时 FAB 会永久隐藏。启动时主动探测一次：宿主 API 能返回当前聊天即视为在聊天中
@@ -7742,7 +8306,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         if (startChat && startChat.id != null && CORE.hasText(startChat.id)) chatActive = true;
       } catch (_) {}
       render();
-       hostDocument.addEventListener('keydown', function (event) {
+       listen(hostDocument, 'keydown', function (event) {
          if (event.key !== 'Escape') return;
          var confirm = hostDocument.getElementById('yz1-confirm');
          if (confirm && confirm.classList.contains('show')) {
@@ -7755,18 +8319,19 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
        }, true);
       // 从设置页等返回聊天页时刷新 FAB 显隐与 overlay 状态（配置变化无 Hook 可订阅；
       // 部分环境返回时不翻转 visibilitychange，补充 window focus 兜底）。
-      hostDocument.addEventListener('visibilitychange', function () { if (!hostDocument.hidden) render(); });
-      hostWindow.addEventListener('focus', function () { render(); });
+       listen(hostDocument, 'visibilitychange', function () { if (!hostDocument.hidden && !disposed) render(); });
+       listen(hostWindow, 'focus', function () { if (!disposed) render(); });
       // 增量剥离通道：变更记录排队 + 220ms 防抖，只扫描新增/变化的文本节点，
       // 避免流式生成期间的高频变更触发全文档扫描。队列设上限防内存膨胀。
       var stripTimer = 0;
       var pendingMutations = [];
 
-      function scheduleStrip(batch) {
-        pendingMutations = pendingMutations.concat(batch);
+       function scheduleStrip(batch) {
+         if (disposed) return;
+         pendingMutations = pendingMutations.concat(batch);
         if (pendingMutations.length > 2000) pendingMutations = pendingMutations.slice(-2000);
         if (stripTimer) return;
-        stripTimer = setTimeout(function () {
+         stripTimer = setAppTimeout(function () {
           stripTimer = 0;
           var queued = pendingMutations;
           pendingMutations = [];
@@ -7777,11 +8342,12 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         }, 220);
       }
 
-      try {
-        var observer = new hostWindow.MutationObserver(scheduleStrip);
-        observer.observe(hostDocument.documentElement, { childList: true, subtree: true, characterData: true });
-      } catch (error) { dbg('MutationObserver unavailable', error); }
-      stripVisibleBlocks();
+       try {
+         var observer = new hostWindow.MutationObserver(scheduleStrip);
+         observer.observe(hostDocument.documentElement, { childList: true, subtree: true, characterData: true });
+         onCleanup(function () { try { observer.disconnect(); } catch (_) {} });
+       } catch (error) { dbg('MutationObserver unavailable', error); }
+       if (!disposed) stripVisibleBlocks();
     }
 
     // 宿主只消费 start；open/close/render 均由闭包内的绑定函数直接引用。

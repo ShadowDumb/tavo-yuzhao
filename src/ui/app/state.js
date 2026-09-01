@@ -2,7 +2,7 @@
       diagOpen = false;
       dataPanel = null;
       armedWipe = null;
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
     }
 
@@ -58,7 +58,7 @@
     var wipeTick = null;
     function startWipeCountdown() {
       stopWipeCountdown();
-      wipeTick = setInterval(function () {
+      wipeTick = setAppInterval(function () {
         if (!armedWipe) { stopWipeCountdown(); return; }
         var remain = Math.max(0, Math.ceil((armedWipe.expiresAt - Date.now()) / 1000));
         var nodes = hostDocument.querySelectorAll('#' + OVERLAY_ID + ' .armed');
@@ -69,5 +69,5 @@
       }, 500);
     }
     function stopWipeCountdown() {
-      if (wipeTick) { clearInterval(wipeTick); wipeTick = null; }
+      if (wipeTick) { clearAppInterval(wipeTick); wipeTick = null; }
     }

@@ -56,32 +56,47 @@
       // reason → 字段名（playerFormFields 的 key 与运行时校验点一致）。
       var REASON_FIELD = { name: 'name', title: 'title', kind: 'kind', kindClash: 'kind' };
       var space = runtime.activeSpace();
-      var result = space ? runtime.spaceSaveEntity(space.id, kind, raw, id) : { ok: false, reason: 'space' };
-      if (!result || !result.ok) {
-        var reason = (result && result.reason) || '';
-        if (reason === 'folder') {
-          clearFormErrors();
-          showToast(dict.playerFormNeedFolder, true);
+      var saveButton = scope.querySelector('[data-action="entity-save"]');
+      var busy = beginBusy(busyKey('form', kind + ':' + id), [saveButton].concat(Array.prototype.slice.call(fields)));
+      if (!busy) return;
+      var context = captureUiContext();
+      try {
+        var result = space ? runtime.spaceSaveEntity(space.id, kind, raw, id) : { ok: false, reason: 'space' };
+        if (!result || !result.ok) {
+          var reason = (result && result.reason) || '';
+          if (reason === 'folder') {
+            clearFormErrors();
+            showToast(dict.playerFormNeedFolder, true);
+            return;
+          }
+          if (reason === 'missing') { showToast(dict.spaceMissingEntity, true); return; }
+          if (reason === 'full') { showToast(dict.spaceEntityFull, true); return; }
+          var fieldKey = REASON_FIELD[reason];
+          if (fieldKey) {
+            var label = '';
+            playerFormFields(kind, null, dict).forEach(function (f) { if (f.key === fieldKey) label = f.label; });
+            var message = reason === 'kindClash' ? dict.playerFormKindClash : tr('runtime.player.formFieldError', { field: label || dict.playerFieldName });
+            flagFormError(fieldKey, message);
+            showToast(message, true);
+            return;
+          }
+          showToast(dict.spaceMissingEntity, true);
           return;
         }
-        if (reason === 'missing') { showToast(dict.spaceMissingEntity, true); return; }
-        if (reason === 'full') { showToast(dict.spaceEntityFull, true); return; }
-        var fieldKey = REASON_FIELD[reason];
-        if (fieldKey) {
-          var label = '';
-          playerFormFields(kind, null, dict).forEach(function (f) { if (f.key === fieldKey) label = f.label; });
-          var message = reason === 'kindClash' ? dict.playerFormKindClash : tr('runtime.player.formFieldError', { field: label || dict.playerFieldName });
-          flagFormError(fieldKey, message);
-          showToast(message, true);
-          return;
+        var persisted = await Promise.resolve(result.saved);
+        if (!persisted || !persisted.ok) { showToast(dict.toast.persistenceFailed, true); return; }
+        var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
+        var currentSave = currentOverlay && currentOverlay.querySelector('[data-action="entity-save"]');
+        if (uiContextMatches(context) && currentSave === saveButton) {
+          backNav();
+          showToast(I18N.dict().playerSaved);
         }
-        showToast(dict.spaceMissingEntity, true);
-        return;
+      } catch (error) {
+        dbg('space form save failed', error);
+        showToast(dict.toast.persistenceFailed, true);
+      } finally {
+        endBusy(busy);
       }
-      var persisted = await Promise.resolve(result.saved);
-      if (!persisted || !persisted.ok) { showToast(dict.toast.persistenceFailed, true); return; }
-      showToast(I18N.dict().playerSaved);
-      backNav();
     }
 
     // 删除：两击确认（复用管理页武装状态机，key = kind:id），确认后直写当前空间。
@@ -109,7 +124,7 @@
     async function deleteSpaceItem(kind, id, extraId) {
       var key = kind + ':' + id + (extraId ? ':' + extraId : '');
       var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
       var space = runtime.activeSpace();
       if (!next) {
@@ -129,7 +144,7 @@
         return;
       }
       armedWipe = next;
-      wipeTimer = setTimeout(function () {
+      wipeTimer = setAppTimeout(function () {
         armedWipe = null;
         stopWipeCountdown();
         // 武装超时（未确认）：只复位按钮文案，不整页重渲染——表单里未保存的编辑不能被
@@ -162,16 +177,31 @@
       var box = overlay && overlay.querySelector('[data-space-input]');
       var name = box ? String(box.value || '') : '';
       if (!CORE.hasText(name.trim())) { showToast(I18N.dict().spaceNameRequired, true); return; }
-      var result = runtime.createSpace(name.trim());
-      if (!result.ok) {
-        showToast(result.reason === 'full' ? I18N.dict().spaceLimitReached : result.reason === 'clash' ? I18N.dict().spaceNameClash : I18N.dict().spaceNameRequired, true);
-        return;
+      var button = box && box.parentNode && box.parentNode.querySelector ? box.parentNode.querySelector('[data-action="space-create"]') : null;
+      var busy = beginBusy(busyKey('space-create', ''), [box, button]);
+      if (!busy) return;
+      var context = captureUiContext();
+      try {
+        var result = runtime.createSpace(name.trim());
+        if (!result.ok) {
+          showToast(result.reason === 'full' ? I18N.dict().spaceLimitReached : result.reason === 'clash' ? I18N.dict().spaceNameClash : I18N.dict().spaceNameRequired, true);
+          return;
+        }
+        var persisted = await Promise.resolve(result.saved);
+        if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
+        var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
+        var currentBox = currentOverlay && currentOverlay.querySelector('[data-space-input]');
+        if (uiContextMatches(context) && currentBox === box) {
+          box.value = '';
+          showToast(I18N.dict().spaceCreated);
+          render();
+        }
+      } catch (error) {
+        dbg('space create failed', error);
+        showToast(I18N.dict().toast.persistenceFailed, true);
+      } finally {
+        endBusy(busy);
       }
-      var persisted = await Promise.resolve(result.saved);
-      if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); render(); return; }
-      if (box) box.value = '';
-      showToast(I18N.dict().spaceCreated);
-      render();
     }
 
     async function toggleSpaceFlag(id, flag) {
@@ -189,7 +219,7 @@
     async function deleteSpaceRow(id) {
       var key = 'space:' + id;
       var next = VIEWS.nextWipeState(armedWipe, key, Date.now());
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
       if (!next) {
         var result = runtime.deleteSpace(id);
@@ -207,7 +237,7 @@
         return;
       }
       armedWipe = next;
-      wipeTimer = setTimeout(function () {
+      wipeTimer = setAppTimeout(function () {
         armedWipe = null;
         stopWipeCountdown();
         render();
@@ -237,4 +267,3 @@
       showToast(I18N.dict().spaceRenamed);
       render();
     }
-

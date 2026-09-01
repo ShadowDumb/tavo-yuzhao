@@ -1,6 +1,6 @@
 # 玉兆 开发待办（TODO）
 
-> 当前基线：v3.0.0（冒烟 904 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
+> 当前基线：v3.0.0（冒烟 926 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
 > 本文件只记录未完成工作。已完成的工作与全部变更记录见 CHANGELOG.md。
 
 ---
@@ -22,7 +22,7 @@ buildCurrent 窗口化、条目级注入采样（sampleEntries 强制集/活跃�
 模型改写）、未读 seen 游标（recomputeThreadUnread）、空间路由（turn 行第 6 字段，
 unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
-- 冒烟门禁：`node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs`（当前 904 项全绿）
+- 冒烟门禁：`node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs`（当前 926 项全绿）
 - 发布门禁：MCP `tavo_plugin_validate` → `tavo_plugin_audit` → `tavo_plugin_package`，
   产物随版本号更新出包
 
@@ -202,7 +202,7 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
       补 lockedHint；空间管理页 CSS；死 CSS（retry/status/start-thread/mark-all/locked 徽标）移除
 - [x] **测试**：双域契约整体替换为用户空间契约（生命周期/路由/门禁/拒写 issue/迁移/
       未读生命周期/注入分组/提示词规则/当前 v3 导入/空间管理视图渲染）；微任务排干修复；
-      `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 904 项全绿
+      `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 926 项全绿
 - [x] **文档**：CHANGELOG v3.0.0、DESIGN.md 第六节重写 + 持久化/重建段落更新、README 特性/协议/安装更新
 - [x] **版本**：PLUGIN_VERSION/manifest = 3.0.0，releaseNotes.3_0_0 双语
 
@@ -296,12 +296,12 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 - [x] 增加容量和撤销测试：消息/评论窗口、实体满额、父实体消失、空间 ID 重用、基线最终字符数（现有回归覆盖）。
 - [ ] 增加浏览器回归：320/360/375px、iOS 安全区与键盘、Android WebView、触屏 hover、键盘 Tab/Esc、VoiceOver/TalkBack、减少动态效果。
 - [x] 修正测试进程退出问题：`runtime.dispose()` 幂等关闭 runtime 创建的 `BroadcastChannel` 并移除 `storage` 监听。
-- [x] 统一文档测试数量为实际 904 项，删除 README/TODO 中 814、815、841、842、872、880、890、891、892、895、898、900 等过时数字。
+- [x] 统一文档测试数量为实际 926 项，删除 README/TODO 中 814、815、841、842、872、880、890、891、892、895、898、900、904 等过时数字。
 
 ### v3.0.0 用户视角复审新增问题（2026-09-01）
 
 > 本节来自多 subagent 的源码/UI/运行时交叉评审。已合并重复报告，仅记录当前源码可定位的问题；
-> P0/P1 需在下一次发布前处理。904 项 smoke 主要覆盖纯函数、渲染字符串和运行时数据，不能证明真实 DOM、
+> P0/P1 已完成代码修复。926 项 smoke 主要覆盖纯函数、渲染字符串和运行时数据，不能证明真实 DOM、
 > Tavo fragment 生命周期、浏览器触控或屏幕阅读器行为正常。
 
 #### P0：启动阻断
@@ -317,39 +317,50 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
 #### P1：数据完整性与高风险操作
 
-- [ ] **R1-01 清除数据后的生成结果仍可能复活**：`src/ui/app/data-actions.js:12-20,40-48` 使用内存中的
+- [x] **R1-01 清除数据后的生成结果仍可能复活**：已接入 Runtime clear epoch 和 prepare/success generation token，
+      清除后旧请求或无可靠上下文的结果 fail-closed。原问题：`src/ui/app/data-actions.js:12-20,40-48` 使用内存中的
       `clearPending/preClearGenerationKeys/postClearGenerationKeys`；`src/ui/app/hooks.js:150-176` 在
       清除后新生成先成功时会清空旧请求保护，旧请求晚到即可再次应用协议。无 generation ID 或插件重载后，
       清除保护也无法可靠跨越异步窗口。应持久化按聊天/空间划分的清除 epoch，并按请求开始 epoch 丢弃旧结果。
-- [ ] **R1-02 多个 `<yz_jade>` 信封只应用第一块**：`src/protocol.js:405-444,506-515` 的 `parse()`
+- [x] **R1-02 多个 `<yz_jade>` 信封只应用第一块**：`extractSnapshots()` 已逐个切分并解析所有信封。原问题：
+      `src/protocol.js:405-444,506-515` 的 `parse()`
       对整段文本成功后立即返回单个结果，`extractSnapshots()` 不会继续拆分后续信封；模型同轮输出多个空间时，
       后续空间更新会静默丢失。
-- [ ] **R1-03 full 同步可能截掉受保护的用户联系人/群聊**：`src/core.js:1126-1164` 先合并用户行，
+- [x] **R1-03 full 同步可能截掉受保护的用户联系人/群聊**：full merge 已将用户联系人/含用户发言的线程置于普通 AI 行之前。
+      原问题：`src/core.js:1126-1164` 先合并用户行，
       再对结果执行 `contacts.slice(0, 10)` 和 `groups.slice(0, 6)`；容量达到上限时，用户 `c-` 联系人或
       用户消息所属群聊可能被截掉并持久化。保护行应优先保留，普通 AI 行应拒绝或让位。
-- [ ] **R1-04 发送、评论、保存、新建缺少防重复提交**：`src/ui/app/messaging.js:1-40`、
+- [x] **R1-04 发送、评论、保存、新建缺少防重复提交**：UI 已增加按聊天/空间/动作维度的 busy 锁、控件禁用和 finally 释放。
+      原问题：`src/ui/app/messaging.js:1-40`、
       `src/ui/app/forms.js:44-85,160-175` 在 await 持久化期间没有 busy/idempotency 锁，也未立即禁用控件；
       快速双击或连续按 Enter 可生成重复消息、评论、实体或空间。
-- [ ] **R1-05 持久化失败不回滚内存状态**：`src/runtime.js:560-582,649-755,759-820` 先修改实体/消息，
+- [x] **R1-05 持久化失败不回滚内存状态**：Runtime 已维护最后确认快照，失败候选仍为当前状态时回滚内存并恢复本地镜像。
+      原问题：`src/runtime.js:560-582,649-755,759-820` 先修改实体/消息，
       再异步保存；失败时 `src/ui/app/messaging.js:14-18`、`forms.js:81-85,119-126` 只提示错误，
       内存仍保留失败修改，后续操作可能把它再次写入，重载前后用户看到的内容不一致。
-- [ ] **R1-06 fragment 重挂载后旧实例监听器泄漏**：`src/ui/app/entry.js:70-76` 的 `dispose()` 只清理
+- [x] **R1-06 fragment 重挂载后旧实例监听器泄漏**：App 已集中登记 listeners、timers、observers、feature channel 和绑定标记，
+      `dispose()` 统一清理。原问题：`src/ui/app/entry.js:70-76` 的 `dispose()` 只清理
       Runtime、待挂载 observer 和 pagehide；`hooks.js:270-309`、`entry.js:173-193`、`fab.js:70-99`
       注册的 document/window listener、MutationObserver、BroadcastChannel/storage 和 viewport 监听未完整移除。
       宿主重挂载后会出现旧实例幽灵事件、重复渲染和监听器累积。
-- [ ] **R1-07 跨 tab CAS 冲突后可通过重试绕过**：`src/runtime.js:105-140` 在冲突比较前先递增内存
+- [x] **R1-07 跨 tab CAS 冲突后可通过重试绕过**：冲突后已锁定当前 Runtime，恢复共享状态后才解除；重试回归已补充。
+      原问题：`src/runtime.js:105-140` 在冲突比较前先递增内存
       `storageRevision`；第一次拒绝后不回滚 revision 或强制刷新，第二次保存可因本地 revision 与远端相等而覆盖
       另一 tab 的新数据。冲突后应回滚/重载并锁定重试。
-- [ ] **R1-08 保存队列没有等待世界书归档完成**：`src/runtime.js:119-153,353-356,390-396` 的
+- [x] **R1-08 保存队列没有等待世界书归档完成**：本地镜像和世界书写入已共用可等待的提交队列，切聊/重建等待完整提交。
+      原问题：`src/runtime.js:119-153,353-356,390-396` 的
       `saveQueue` 只等待本地镜像任务，`syncArchive()` 走另一条 `archiveQueue`；切聊、重建或刷新可能在世界书
       仍写入旧快照时读取/覆盖，导致最新用户输入消失。
-- [ ] **R1-09 缺失 prepare 基线时 diff 默认放行全部数据**：`src/core.js:1366-1369` 和
+- [x] **R1-09 缺失 prepare 基线时 diff 默认放行全部数据**：实时路径已要求精确 generation context 和 visibility，缺失时拒写并记录 issue。
+      原问题：`src/core.js:1366-1369` 和
       `src/ui/app/hooks.js:61-62,183-184` 在没有匹配 visibility 时使用全量可见语义；插件重载、宿主漏发
       `generation:prepare` 或 request ID 不匹配时，模型可修改采样窗口外的旧数据。实时路径应 fail-closed。
-- [ ] **R1-10 满容量新建会提示成功但实体被截掉**：`src/runtime.js:677-750` 多个新建分支直接 concat 后依赖
+- [x] **R1-10 满容量新建会提示成功但实体被截掉**：六类玩家实体新建已在变更前检查上限并返回 `reason: full`，满容量回归已补充。
+      原问题：`src/runtime.js:677-750` 多个新建分支直接 concat 后依赖
       normalize 的容量截断，未像联系人一样先返回 `full`；达到文件夹、备忘、物品、钱财、订单或帖子上限时，
       表单保存可能显示成功但新实体不见。应在变更前返回容量错误并保留输入。
-- [ ] **R1-11 打开失败可能永久保留 loading 遮罩**：`src/ui/app/navigation.js:89-107` await
+- [x] **R1-11 打开失败可能永久保留 loading 遮罩**：`open()` 已用 try/finally 收口 loading、aria-busy 和 inert，失败时给出可重试提示。
+      原问题：`src/ui/app/navigation.js:89-107` await
       `resolveCurrentChatId/switchChat` 没有 `try/catch/finally`；异常时不会移除 `loading/aria-busy/inert`，
       用户无法操作底层 UI，也没有可见恢复提示。
 

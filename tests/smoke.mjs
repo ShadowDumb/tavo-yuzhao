@@ -208,7 +208,7 @@ ok(/plugin\.onSidebarAction\('resync-history'/.test(source) && /plugin\.onSideba
 ok(/#yz1-confirm\{position:fixed;left:0;top:0;width:100%;height:100%;z-index:2147483648/.test(uiSource), '确认框为 body 级全屏居中 modal 且 z-index 高于 toast（+2）');
 ok(/\.yz-confirm-backdrop\{[^}]*background:rgba\(0,0,0,\.55\)/.test(uiSource), '确认框带半透明遮罩（视觉聚焦，明确表达模态等待决策）');
 ok(/showConfirm\(title, message, okLabel, fn\)/.test(source) && /host\.classList\.add\('show'\)/.test(source), 'showConfirm 渲染标题/文案/确认按钮并显示 modal');
-ok(/if \(btn\.classList\.contains\('yz-confirm-ok'\)/.test(source) && /setTimeout\(fn, 0\)/.test(source), '确认按钮才执行 fn（微任务防竞态），点取消/遮罩只关闭');
+ok(/if \(btn\.classList\.contains\('yz-confirm-ok'\)/.test(source) && /(?:setTimeout|setAppTimeout)\(fn, 0\)/.test(source), '确认按钮才执行 fn（微任务防竞态），点取消/遮罩只关闭');
 // 回归保护：确认框必须锁定弹起时的聊天——确认时校验仍指向同一聊天才执行，
 // 否则收起并丢弃，杜绝弹框期间切换聊天后「确认清除」误清新聊天数据。
 ok(/var confirmChatId = null;/.test(source) && /confirmChatId = runtime\.activeChatId;/.test(source), 'showConfirm 捕获并锁定弹起时的聊天');
@@ -232,7 +232,7 @@ ok(/featureFlags\.forum === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedF
 ok(/var scrollNode = pageNode\.querySelector\('\.yz-page-inner'\) \|\| pageNode;/.test(source) && /freshScrollNode\.scrollTop = savedScroll;/.test(source), '重渲染前保存并恢复 .yz-page-inner 滚动位置');
 // 回归保护：确认框点遮罩/Esc 关闭（与文档承诺一致），点非按钮区域等同取消。
 ok(/if \(!btn\) \{ cancelConfirm\(\); return; \}/.test(source), '确认框点遮罩等同取消');
-ok(/hostDocument\.addEventListener\('keydown', function \(event\) \{\s*if \(event\.key !== 'Escape'\) return;/.test(source), '确认框支持 Esc 关闭');
+ok(/(?:hostDocument\.addEventListener\('keydown'|listen\(hostDocument, 'keydown', function \(event\) \{)\s*\s*if \(event\.key !== 'Escape'\) return;/.test(source), '确认框支持 Esc 关闭');
 // 回归保护：快照恢复 in-flight 锁——进行中再点不触发误导性「聊天已切换」红 toast。
 ok(/var restoreBusy = false;/.test(source) && /if \(restoreBusy\) \{ showToast\(I18N\.dict\(\)\.toast\.restoreBusy\); return; \}/.test(source), 'resync-history 有 in-flight 锁（防重入）');
 // 回归保护：非聊天页（宿主主页/设置等）侧边栏/输入动作不操作上一个聊天的残留数据。
@@ -244,8 +244,8 @@ ok(!/syncPlayerChannel|restorePlayerReadCursor|markPlayerRead|playerReadCursor/.
 ok(/function sendSpaceMessage\(spaceId, threadId, text\)/.test(source) && /function sendSpaceComment\(spaceId, postId, text\)/.test(source), '空间内发言/评论本机直写函数存在');
 // S2 回归：封印时发送区域显示封印横幅（非活跃输入框）。
 ok(/var sealed = flags && flags\.msg === false;/.test(source) && /yz-composer-sealed/.test(source), '封印时传讯区显示封印横幅');
-// S4 回归：清除标记——clearAllData/clearFeatureData 置 clearPending，generation:success 时丢弃。
-ok(/var clearPending = false;/.test(source) && /clearPending = true;/.test(source), '清除操作设置 clearPending 防数据复活');
+  // S4 回归：清除操作先推进 Runtime clear epoch，generation:success 按 token 丢弃旧结果。
+  ok(/function beginClearProtection\(chatId\)/.test(source) && /runtime\.beginClear\(chatId\)/.test(source), '清除操作推进 Runtime clear epoch 防数据复活');
 // S5 回归：overlay 开关 epoch——open()/close() 增减 epoch 防异步竞态。
 ok(/var openEpoch = 0;/.test(source) && /var epoch = \+\+openEpoch;/.test(source), 'overlay 开关有 epoch 计数器防异步竞态');
 // S6 回归：本地数据损坏警告——load() 检测 JSON 损坏并弹 toast。
@@ -424,6 +424,11 @@ const FULL_JADE = [
   const unclosed = '<yz_jade><yz_meta>\nturn｜turn-u1｜仙｜无闭合标签｜full\n';
   const unclosedSnap = M.PROTOCOL.extractSnapshots(unclosed);
   ok(unclosedSnap.length === 1 && unclosedSnap[0].turn.id === 'turn-u1', '未闭合协议块按宽松模式解析');
+
+  const multiEnvelope = '<yz_jade><yz_meta>\nturn｜turn-m1｜仙｜第一块｜full\n</yz_meta></yz_jade>\n' +
+    '<yz_jade><yz_meta>\nturn｜turn-m2｜仙｜第二块｜full\n</yz_meta></yz_jade>';
+  const multiSnapshots = M.PROTOCOL.extractSnapshots(multiEnvelope);
+  eq(multiSnapshots.map((item) => item.turn.id), ['turn-m1', 'turn-m2'], '多个协议块按顺序全部解析');
 
   ok(M.PROTOCOL.parse('普通剧情文本，没有协议。') === null, '无协议文本返回 null');
 
@@ -1767,7 +1772,7 @@ console.log('# P2 · v3 评审边界回归');
   ok(!dualEvent.text.includes('yz_jade') && !dualEvent.content.includes('yz_jade') && dualEvent.text.includes('正文 text') && dualEvent.content.includes('正文 content'), 'text/content 双字段均剥离协议');
 
   // P2-16/17/18/19/20/21/22/23/24/26/27/28：UI 语义、键盘、窄屏和触控契约。
-  ok(/confirmHost\.addEventListener\('keydown'/.test(source) && /event\.key !== 'Tab'/.test(source) && /event\.stopImmediatePropagation\(\);\s*hideConfirm\(\);/.test(source), '确认框独立处理 Tab 循环与 Esc，避免关闭底层玉兆');
+  ok(/(?:confirmHost\.addEventListener\('keydown'|listen\(confirmHost, 'keydown')/.test(source) && /event\.key !== 'Tab'/.test(source) && /event\.stopImmediatePropagation\(\);\s*hideConfirm\(\);/.test(source), '确认框独立处理 Tab 循环与 Esc，避免关闭底层玉兆');
   ok(/#yz1-overlay\.loading #yz1-jade\{visibility:hidden;pointer-events:none\}/.test(uiSource) && /overlay\.classList\.contains\('loading'\)/.test(source), 'loading 期间底层玉兆控件不可交互');
   ok(/var viewportHeight = vv && Number\(vv\.height\) > 0 \? Number\(vv\.height\) : Number\(hostWindow\.innerHeight\)/.test(source), '键盘适配兼容 visualViewport 缺失的 WebView');
   ok(/\.yz-map-delete\{[^}]*width:44px;height:44px/.test(uiSource) && /class="yz-map-delete"[^>]*aria-label=/.test(source), '地图删除按钮触屏可见且有可访问名称');
@@ -2914,6 +2919,11 @@ console.log('# P1 · v3 数据安全与持久化回归');
   const secondSaved = await secondSpace.saved;
   ok(secondSaved && secondSaved.ok === false && secondSaved.reason === 'conflict', '跨 tab 旧状态拒绝覆盖新状态');
   ok(!JSON.parse(shared.get(first.LOCAL_PREFIX + 'p1-conflict')).spaces.some((sp) => sp.name === '乙'), '冲突写入未静默覆盖本地数据');
+  const retrySpace = second.createSpace('丙');
+  const retrySaved = await retrySpace.saved;
+  ok(retrySaved && retrySaved.ok === false && retrySaved.reason === 'conflict', 'CAS 冲突后的立即重试仍被拒绝');
+  const remoteAfterRetry = JSON.parse(shared.get(first.LOCAL_PREFIX + 'p1-conflict'));
+  ok(!remoteAfterRetry.spaces.some((sp) => sp.name === '乙' || sp.name === '丙'), 'CAS 冲突重试不得覆盖远端状态');
 }
 {
   const failHost = fakeHost();
@@ -2955,6 +2965,85 @@ console.log('# P1 · v3 数据安全与持久化回归');
   ok(result && result.ok === false && result.worldOk === false, '世界书写入失败返回明确失败');
 }
 {
+  const queueHost = fakeHost();
+  const originalUpdate = queueHost.api.lorebook.update;
+  let releaseUpdate;
+  let updateStarted;
+  const updateReady = new Promise((resolve) => { updateStarted = resolve; });
+  const updateGate = new Promise((resolve) => { releaseUpdate = resolve; });
+  const queueApi = Object.assign({}, queueHost.api, { lorebook: Object.assign({}, queueHost.api.lorebook, {
+    update: async (book) => { updateStarted(); await updateGate; return originalUpdate(book); }
+  }) });
+  const queueRt = M.createRuntime(queueApi, null, () => ({}));
+  await queueRt.switchChat('p1-queue');
+  const queued = queueRt.createSpace('排队空间');
+  await updateReady;
+  let switched = false;
+  const switching = queueRt.switchChat('p1-queue-other').then(() => { switched = true; });
+  await Promise.resolve();
+  ok(switched === false, '切聊天等待世界书提交完成');
+  releaseUpdate();
+  await queued.saved;
+  await switching;
+}
+{
+  const rollbackHost = fakeHost();
+  const rollbackApi = Object.assign({}, rollbackHost.api, { lorebook: Object.assign({}, rollbackHost.api.lorebook, { update: async () => { throw new Error('rollback'); } }) });
+  const rollbackRt = M.createRuntime(rollbackApi, null, () => ({}));
+  await rollbackRt.switchChat('p1-rollback');
+  const operation = rollbackRt.spaceSaveEntity('sp0', 'contact', { name: '不应留下', relation: '' }, '');
+  const persisted = await operation.saved;
+  ok(persisted && persisted.ok === false && persisted.worldOk === false, '持久化失败返回失败结果');
+  ok(!M.CORE.defaultSpaceState(rollbackRt.current()).chats.contacts.some((contact) => contact.name === '不应留下'), '持久化失败回滚内存实体');
+}
+{
+  const epochHost = fakeHost();
+  const epochRt = M.createRuntime(epochHost.api, null, () => ({}));
+  await epochRt.switchChat('p1-epoch');
+  const beforeClear = epochRt.generationToken('p1-epoch');
+  const clear = epochRt.beginClear('p1-epoch');
+  const stale = await epochRt.applyText(jade('stale-after-clear', TABLET_OK), 'p1-epoch', 'generation:success', { generationToken: beforeClear, realtime: true });
+  ok(clear.ok && clear.epoch > beforeClear.clearEpoch, '清除操作推进 generation clear epoch');
+  ok(stale && stale.discarded === true && stale.reason === 'clear-epoch', '清除前 generation 结果被 epoch 门禁丢弃');
+}
+{
+  const protectedState = M.CORE.normalizeState({ spaces: [{ id: 'sp0', isDefault: true, chats: {
+    contacts: [{ id: 'c-user', name: '用户联系人', messages: [{ id: 'pm-1', side: 'self', time: 't', text: '用户消息' }] }],
+    groups: [{ id: 'g-user', name: '用户群聊', messages: [{ id: 'pmg-1', sender: '我', side: 'self', time: 't', text: '群消息' }] }]
+  } }] }, 'p1-protected');
+  const fullContacts = Array.from({ length: 10 }, (_, i) => ({ id: 'ai-c-' + i, name: 'AI联系人' + i, messages: [{ id: 'm-' + i + '-1', side: 'other', time: 't', text: '甲' }, { id: 'm-' + i + '-2', side: 'other', time: 't', text: '乙' }] }));
+  const fullGroups = Array.from({ length: 6 }, (_, i) => ({ id: 'ai-g-' + i, name: 'AI群聊' + i, messages: [{ id: 'gm-' + i + '-1', sender: '甲', side: 'other', time: 't', text: '甲' }, { id: 'gm-' + i + '-2', sender: '乙', side: 'other', time: 't', text: '乙' }] }));
+  const protectedResult = M.CORE.applySnapshot(protectedState, snapOf('p1-protected-full', 'full', { chats: { contacts: fullContacts, groups: fullGroups } }), { tablet: false, forum: false, notes: false, market: false, space: false, map: false });
+  const protectedChats = M.CORE.defaultSpaceState(protectedResult.state).chats;
+  ok(protectedChats.contacts.some((contact) => contact.id === 'c-user'), 'full 容量满时保留用户联系人');
+  ok(protectedChats.groups.some((group) => group.id === 'g-user' && group.messages.some((message) => message.id === 'pmg-1')), 'full 容量满时保留用户群聊');
+}
+{
+  const noBaselineState = M.CORE.normalizeState({ spaces: [{ id: 'sp0', isDefault: true, chats: { contacts: [{ id: 'c-old', name: '旧联系人', messages: [] }], groups: [] } }] }, 'p1-baseline');
+  const noBaseline = M.CORE.applySnapshot(noBaselineState, { turn: { id: 'p1-baseline', mode: 'diff' }, diff: { msg: [{ add: false, type: 'contact', values: ['c-old'] }] } }, {}, undefined, { realtime: true });
+  const noBaselineContacts = M.CORE.defaultSpaceState(noBaseline.state).chats.contacts;
+  ok(noBaselineContacts.some((contact) => contact.id === 'c-old'), '实时 diff 缺失 prepare 基线时不修改旧数据');
+  ok(noBaseline.assessment.issues.some((issue) => issue.code === 'diff.hidden'), '实时 diff 缺失 prepare 基线记录拒写 issue');
+}
+{
+  const capacityHost = fakeHost();
+  const capacityRt = M.createRuntime(capacityHost.api, null, () => ({}));
+  await capacityRt.switchChat('p1-capacity');
+  const capacitySpace = M.CORE.defaultSpaceState(capacityRt.current());
+  capacitySpace.notes.folders = Array.from({ length: 10 }, (_, i) => ({ id: 'pf-' + i, name: '夹' + i, count: 0 }));
+  capacitySpace.notes.notes = Array.from({ length: 30 }, (_, i) => ({ id: 'pn-' + i, folderId: 'pf-0', title: '记' + i, body: '' }));
+  capacitySpace.space.items = Array.from({ length: 30 }, (_, i) => ({ id: 'pi-' + i, name: '物' + i, qty: 1, grade: '', desc: '' }));
+  capacitySpace.space.currencies = Array.from({ length: 10 }, (_, i) => ({ kind: '币' + i, amount: '1' }));
+  capacitySpace.market.orders = Array.from({ length: 12 }, (_, i) => ({ id: 'po-' + i, name: '单' + i, status: '', price: '', time: '', side: 'buy' }));
+  capacitySpace.forum.posts = Array.from({ length: 20 }, (_, i) => ({ id: 'fp-' + i, owner: 'character', author: '人', title: '帖' + i, body: '', section: '', comments: [] }));
+  eq(capacityRt.spaceSaveEntity('sp0', 'folder', { name: '新夹' }, '').reason, 'full', '文件夹满容量拒绝新建');
+  eq(capacityRt.spaceSaveEntity('sp0', 'note', { title: '新记', body: '', folderId: 'pf-0' }, '').reason, 'full', '备忘满容量拒绝新建');
+  eq(capacityRt.spaceSaveEntity('sp0', 'item', { name: '新物', qty: 1 }, '').reason, 'full', '物品满容量拒绝新建');
+  eq(capacityRt.spaceSaveEntity('sp0', 'currency', { kind: '新币', amount: '1' }, '').reason, 'full', '钱财满容量拒绝新建');
+  eq(capacityRt.spaceSaveEntity('sp0', 'order', { name: '新单', status: '', price: '' }, '').reason, 'full', '订单满容量拒绝新建');
+  eq(capacityRt.spaceSaveEntity('sp0', 'post', { title: '新帖', body: '' }, '').reason, 'full', '帖子满容量拒绝新建');
+}
+{
   const formState = M.CORE.blankUserSpace('p1-form', { id: 'sp0', isDefault: true });
   formState.market.orders = M.CORE.normalizeMarket({ orders: [{ id: 'po-1', name: '订单', status: '已完成', side: 'buy' }] }).orders;
   const formHtml = M.VIEWS.renderPage(formState, { app: 'market', view: 'form', params: { kind: 'order', id: 'po-1' }, stack: [] }, {}, { space: formState });
@@ -2964,6 +3053,13 @@ console.log('# P1 · v3 数据安全与持久化回归');
   ok(armedSpaces.includes(zhCatalog['runtime.space.deleteConfirm']), '空间删除确认态在重渲染后可见');
   ok(zhCatalog['runtime.manage.exportNote'].includes('全部用户空间') && !zhCatalog['runtime.space.localHint'].includes('仅存本机'), '中文隐私文案符合 v3 全空间快照语义');
   ok(enCatalog['runtime.manage.exportNote'].includes('every user space') && !enCatalog['runtime.space.localHint'].includes('only on this device'), '英文隐私文案符合 v3 全空间快照语义');
+}
+{
+  ok(/function beginBusy\(key, nodes\)/.test(source) && /finally \{\s*endBusy\(busy\);\s*\}/.test(source), '发送/表单/空间创建操作有 busy 锁并在 finally 释放');
+  ok(/function clearAppCleanups\(\)/.test(source) && /onCleanup\(function \(\) \{ try \{ observer\.disconnect\(\)/.test(source), 'fragment dispose 清理监听器与 MutationObserver');
+  ok(/function clearOpenLoading\(overlay, epoch\)/.test(source) && /finally \{\s*clearOpenLoading\(overlay, epoch\);\s*\}/.test(source), 'open 失败和关闭路径都会清理 loading 状态');
+  ok(!/var archiveQueue = Promise\.resolve\(\);/.test(source) && /saveQueue = task\.then/.test(source), '本地与世界书提交共用可等待队列');
+  ok(/generationToken: generationContext\.token/.test(source) && /realtime: true/.test(source), 'generation success 传递 prepare token 并启用实时 fail-closed');
 }
 {
   // 运行时销毁：关闭跨 tab 通道并移除 storage 监听，避免测试/宿主进程被 BroadcastChannel 挂住。

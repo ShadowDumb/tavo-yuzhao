@@ -41,7 +41,7 @@
       // 离开页面时清理武装态与倒计时定时器：否则武装后返回，3 秒后定时器仍会触发
       // 一次多余的整页 render（且 armed 按钮已不在页面上）。
       stopWipeCountdown();
-      clearTimeout(wipeTimer);
+      clearAppTimeout(wipeTimer);
       wipeTimer = 0;
       if (nav.stack.length) {
         var previous = nav.stack.pop();
@@ -79,6 +79,17 @@
       render();
     }
 
+    function clearOpenLoading(overlay, epoch) {
+      if (!overlay || overlay.__yzLoadingOwner !== appOwner) return;
+      if (epoch != null && overlay.__yzLoadingEpoch !== epoch) return;
+      overlay.classList.remove('loading');
+      overlay.setAttribute('aria-busy', 'false');
+      var jade = overlay.querySelector('#' + JADE_ID);
+      if (jade) jade.inert = false;
+      delete overlay.__yzLoadingEpoch;
+      delete overlay.__yzLoadingOwner;
+    }
+
     async function open() {
       // 禁用时也要给反馈（与侧边栏 resync/clear 一致的 disabled toast）：
       // 静默返回会让用户以为点了没反应，尤其经宿主侧边栏「打开玉兆」触发时。
@@ -88,44 +99,52 @@
       if (!chatActive) { showToast(I18N.dict().toast.noChat, true); return; }
       ensureShell();
       var overlay = hostDocument.getElementById(OVERLAY_ID);
-      // 异步加载（切聊水化/从存储读快照）期间先显示 loading 态，避免「点了没反应」。
-      if (overlay) {
-        overlay.classList.add('loading');
-        overlay.setAttribute('aria-busy', 'true');
-        var loadingJade = overlay.querySelector('#' + JADE_ID);
-        if (loadingJade) loadingJade.inert = true;
-      }
+      if (!overlay) return;
       var epoch = ++openEpoch;
-      var id = await runtime.resolveCurrentChatId();
-      if (id !== runtime.activeChatId) await runtime.switchChat(id);
-      // async 期间用户可能已关闭 overlay：epoch 变了则 abort，防止意外重开。
-      if (epoch !== openEpoch || !overlay) return;
-      overlay.classList.remove('loading');
-      overlay.setAttribute('aria-busy', 'false');
-      var readyJade = overlay.querySelector('#' + JADE_ID);
-      if (readyJade) readyJade.inert = false;
-      overlay.classList.add('open');
-      overlay.setAttribute('aria-hidden', 'false');
-      clearToast();
-      // 确认框若还挂着（弹框期间切了聊天）其锁定聊天已失效：先收起再恢复导航，
-      // 避免重新打开后残留一个会误操作的新聊天的确认框。
-      hideConfirm();
-      resetManagePanels();
-      // 回到上次位置：若本会话内曾关闭玉兆，恢复离开时的页面与域（翻一半回来不重头找）；
-      // 首开/换聊天后回到主页（savedNav 在 close 时记录、chat:opened 时清空）。
-      if (savedNav) {
-        nav = savedNav;
-        savedNav = null;
-      } else {
-        nav = { app: 'home', view: 'root', params: {}, stack: [] };
+      // 异步加载（切聊水化/从存储读快照）期间先显示 loading 态，避免「点了没反应」。
+      overlay.__yzLoadingOwner = appOwner;
+      overlay.__yzLoadingEpoch = epoch;
+      overlay.classList.add('loading');
+      overlay.setAttribute('aria-busy', 'true');
+      var loadingJade = overlay.querySelector('#' + JADE_ID);
+      if (loadingJade) loadingJade.inert = true;
+      try {
+        var id = await runtime.resolveCurrentChatId();
+        if (id !== runtime.activeChatId) {
+          clearGenerationContexts(runtime.activeChatId);
+          await runtime.switchChat(id);
+        }
+        // async 期间用户可能已关闭 overlay：epoch 变了则 abort，防止意外重开。
+        if (disposed || epoch !== openEpoch || !overlay) return;
+        clearOpenLoading(overlay, epoch);
+        overlay.classList.add('open');
+        overlay.setAttribute('aria-hidden', 'false');
+        clearToast();
+        // 确认框若还挂着（弹框期间切了聊天）其锁定聊天已失效：先收起再恢复导航，
+        // 避免重新打开后残留一个会误操作的新聊天的确认框。
+        hideConfirm();
+        resetManagePanels();
+        // 回到上次位置：若本会话内曾关闭玉兆，恢复离开时的页面与域（翻一半回来不重头找）；
+        // 首开/换聊天后回到主页（savedNav 在 close 时记录、chat:opened 时清空）。
+        if (savedNav) {
+          nav = savedNav;
+          savedNav = null;
+        } else {
+          nav = { app: 'home', view: 'root', params: {}, stack: [] };
+        }
+        resetSearch();
+        render();
+        // 打开时按当前视觉视口收敛玉兆高度（覆盖 iOS 底部工具栏等 vv < 100vh 的场景）。
+        if (typeof overlay.__yzFit === 'function') overlay.__yzFit();
+        // 打开时把焦点移入对话框。
+        var dialog = overlay.querySelector('#' + JADE_ID) || overlay;
+        if (typeof dialog.focus === 'function') dialog.focus();
+      } catch (error) {
+        dbg('open failed', error);
+        if (!disposed && epoch === openEpoch) showToast(I18N.dict().toast.persistenceFailed, true);
+      } finally {
+        clearOpenLoading(overlay, epoch);
       }
-      resetSearch();
-      render();
-      // 打开时按当前视觉视口收敛玉兆高度（覆盖 iOS 底部工具栏等 vv < 100vh 的场景）。
-      if (typeof overlay.__yzFit === 'function') overlay.__yzFit();
-      // 打开时把焦点移入对话框。
-      var dialog = overlay.querySelector('#' + JADE_ID) || overlay;
-      if (typeof dialog.focus === 'function') dialog.focus();
     }
 
     function close() {
@@ -136,6 +155,7 @@
       // 关闭法器时一并收起确认对话框（弹框期间切聊天/关闭后继续确认会误操作）。
       hideConfirm();
       resetManagePanels();
+      clearOpenLoading(overlay);
       // 记录离开位置（同一聊天内再打开时恢复），管理页瞬态不保存。
       savedNav = { app: nav.app, view: nav.view, params: nav.params, stack: [] };
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
@@ -152,4 +172,3 @@
       // 直到下一次 chat:opened/generation 才重新出现，重开玉兆变得繁琐）。
       if (fab) fab.hidden = !enabled() || !chatActive;
     }
-

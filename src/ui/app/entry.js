@@ -56,23 +56,112 @@
       hostDocument = localDocument;
     }
 
+    var disposed = false;
+    var appOwner = {};
+    var appCleanups = [];
+    var appTimeouts = [];
+    var appIntervals = [];
+    var busyActions = Object.create(null);
+    function listen(target, type, handler, options) {
+      if (disposed || !target || typeof target.addEventListener !== 'function') return function () {};
+      target.addEventListener(type, handler, options);
+      var active = true;
+      var remove = function () {
+        if (!active) return;
+        active = false;
+        try { target.removeEventListener(type, handler, options); } catch (_) {}
+      };
+      appCleanups.push(remove);
+      return remove;
+    }
+    function onCleanup(fn) {
+      if (typeof fn === 'function') appCleanups.push(fn);
+      return fn;
+    }
+    function setAppTimeout(fn, delay) {
+      var timer = setTimeout(function () {
+        var index = appTimeouts.indexOf(timer);
+        if (index >= 0) appTimeouts.splice(index, 1);
+        if (!disposed) fn();
+      }, delay);
+      appTimeouts.push(timer);
+      return timer;
+    }
+    function setAppInterval(fn, delay) {
+      var timer = setInterval(function () { if (!disposed) fn(); }, delay);
+      appIntervals.push(timer);
+      return timer;
+    }
+    function clearAppTimeout(timer) {
+      if (timer == null) return;
+      clearTimeout(timer);
+      var index = appTimeouts.indexOf(timer);
+      if (index >= 0) appTimeouts.splice(index, 1);
+    }
+    function clearAppInterval(timer) {
+      if (timer == null) return;
+      clearInterval(timer);
+      var index = appIntervals.indexOf(timer);
+      if (index >= 0) appIntervals.splice(index, 1);
+    }
+    function markBound(node) {
+      if (!node) return;
+      onCleanup(function () { if (node.__yzBound) delete node.__yzBound; });
+    }
+    function clearAppTimers() {
+      appTimeouts.slice().forEach(clearAppTimeout);
+      appIntervals.slice().forEach(clearAppInterval);
+      appTimeouts = [];
+      appIntervals = [];
+    }
+    function clearAppCleanups() {
+      var cleanups = appCleanups.slice().reverse();
+      appCleanups = [];
+      cleanups.forEach(function (fn) { try { fn(); } catch (_) {} });
+    }
     var runtime = options.runtime || RUNTIME.createRuntime(tavoApi, hostWindow && hostWindow.localStorage, function () { return featureFlags; }, {
       window: hostWindow,
       notice: function (reason) {
-        if (reason === 'stateChanged') return setTimeout(render, 0);
+        if (disposed) return;
+        if (reason === 'stateChanged') return setAppTimeout(render, 0);
          if (reason === 'snapshotCorrupted') return showToast(I18N.dict().toast.snapshotCorrupted, true);
          if (reason === 'storageCorrupted') return showToast(I18N.dict().toast.storageCorrupted, true);
         if (reason === 'syncConflict') return showToast(I18N.dict().toast.syncConflict, true);
         if (reason === 'persistenceFailed') return showToast(I18N.dict().toast.persistenceFailed, true);
         }
       });
-    var disposed = false;
     function dispose() {
       if (disposed) return;
       disposed = true;
-       runtime.dispose();
-       if (uiObserver) { try { uiObserver.disconnect(); } catch (_) {} uiObserver = null; }
-      if (hostWindow && typeof hostWindow.removeEventListener === 'function') hostWindow.removeEventListener('pagehide', dispose);
+      ++openEpoch;
+      clearAppTimeout(wipeTimer);
+      wipeTimer = 0;
+      if (typeof stopWipeCountdown === 'function') stopWipeCountdown();
+      if (typeof clearToast === 'function') clearToast();
+      if (typeof hideConfirm === 'function') hideConfirm();
+      toastAction = null;
+      drag = null;
+      if (featureChannel) {
+        try { featureChannel.onmessage = null; } catch (_) {}
+        try { featureChannel.close(); } catch (_) {}
+        featureChannel = null;
+      }
+      if (runtime && typeof runtime.dispose === 'function') { try { runtime.dispose(); } catch (_) {} }
+      if (uiObserver) { try { uiObserver.disconnect(); } catch (_) {} uiObserver = null; }
+      clearAppTimers();
+      clearAppCleanups();
+      var overlay = hostDocument && hostDocument.getElementById ? hostDocument.getElementById(OVERLAY_ID) : null;
+      if (overlay && overlay.__yzLoadingOwner === appOwner) {
+        overlay.classList.remove('loading');
+        overlay.setAttribute('aria-busy', 'false');
+        var jade = overlay.querySelector('#' + JADE_ID);
+        if (jade) jade.inert = false;
+        delete overlay.__yzLoadingOwner;
+      }
+      Object.keys(busyActions).forEach(function (key) {
+        busyActions[key].nodes.forEach(function (node) { setBusyNode(node, false); });
+      });
+      busyActions = Object.create(null);
     }
     I18N.setTranslator(makeTranslator(tavoApi));
     var started = false;
@@ -85,16 +174,7 @@
     // 是否处于聊天会话中：chat:opened 置真、chat:closed 置假。
     // 宿主没有「当前路由是否为聊天页」的查询 API，这是控制 FAB 只在聊天内显示的唯一信号。
     var chatActive = false;
-    // 清除标记：clearAllData/clearFeatureData 执行时置真，generation:success 时检查并丢弃
-    // protocol block——防止生成中清除后数据复活（清空 → 旧 protocol 写回 = 数据复活）。
-    var clearPending = false;
     var discardedEnvelopeHashes = Object.create(null);
-    var activeGenerationKeys = Object.create(null);
-    var preClearGenerationKeys = Object.create(null);
-    var postClearGenerationKeys = Object.create(null);
-    // generation:prepare 与 success 之间保存本轮实际注入的可见实体集，
-    // 让采样窗口外的旧 ID 即使被模型猜中也不能修改。
-    var preparedBaselines = Object.create(null);
     // overlay 开关 epoch：open() 是异步的，用户快速关闭后异步完成会重新 addClass('open')。
     // 递增 epoch 后 async 完成时校验未变则 abort，防止 overlay 意外重开。
     var openEpoch = 0;
@@ -126,6 +206,170 @@
     // 关闭玉兆时记录离开位置（本会话内再打开恢复；chat:opened 换聊天后清空回主页）。
     // 空间选择持久化在 state.activeSpaceId（每聊天独立），不再需要会话内域记忆。
     var savedNav = null;
+
+    // 每轮生成只接受 prepare 时捕获的清除 epoch。匿名请求也单独保存聊天级上下文，
+    // 但清除发生后没有稳定请求 ID 的 success 永远保守丢弃，不能绕过清除保护。
+    var generationContexts = Object.create(null);
+    var anonymousGenerationCounts = Object.create(null);
+    var clearEpochByChat = Object.create(null);
+
+    function generationContextKey(chatId, generationId) {
+      return String(chatId || '') + '|' + String(generationId || '');
+    }
+
+    function clearGenerationContexts(chatId) {
+      var prefix = String(chatId || '') + '|';
+      Object.keys(generationContexts).forEach(function (key) {
+        if (key.indexOf(prefix) === 0) delete generationContexts[key];
+      });
+      delete anonymousGenerationCounts[String(chatId || '')];
+      discardedEnvelopeHashes = Object.create(null);
+    }
+
+    function saveGenerationContext(chatId, generationId, token, visibility) {
+      var context = { chatId: String(chatId || ''), generationId: String(generationId || ''), token: token, visibility: visibility };
+      generationContexts[generationContextKey(chatId, generationId)] = context;
+      if (!generationId) {
+        var id = String(chatId || '');
+        anonymousGenerationCounts[id] = (anonymousGenerationCounts[id] || 0) + 1;
+        // An anonymous success is safe only while exactly one anonymous prepare is pending.
+        if (anonymousGenerationCounts[id] === 1) generationContexts[generationContextKey(chatId, '')] = context;
+        else delete generationContexts[generationContextKey(chatId, '')];
+      }
+      return context;
+    }
+
+    function getGenerationContext(chatId, generationId) {
+      return generationContexts[generationContextKey(chatId, generationId)] || null;
+    }
+
+    function consumeGenerationContext(context, anonymousOnly) {
+      if (!context) return;
+      var exact = generationContextKey(context.chatId, context.generationId);
+      var anonymous = generationContextKey(context.chatId, '');
+      if (!anonymousOnly && generationContexts[exact] === context) delete generationContexts[exact];
+      if (generationContexts[anonymous] === context) delete generationContexts[anonymous];
+      if (!context.generationId) {
+        var id = String(context.chatId || '');
+        delete anonymousGenerationCounts[id];
+      }
+    }
+
+    function captureGenerationToken(chatId) {
+      if (!runtime || typeof runtime.generationToken !== 'function') return null;
+      try { return runtime.generationToken(chatId); } catch (_) { return null; }
+    }
+
+    function beginClearProtection(chatId) {
+      if (!runtime || typeof runtime.beginClear !== 'function') return { ok: false, reason: 'unsupported' };
+      var result;
+      try { result = runtime.beginClear(chatId); } catch (error) { dbg('begin clear failed', error); return { ok: false, reason: 'failed' }; }
+      if (!result || result.ok === false) return result || { ok: false, reason: 'failed' };
+      var id = String(chatId || runtime.activeChatId || '');
+      clearEpochByChat[id] = Number(result.epoch) || 0;
+      clearGenerationContexts(id);
+      discardedEnvelopeHashes = Object.create(null);
+      return result;
+    }
+
+    // data-actions.js 是独立拼接段，清除函数本身不能依赖另一个模块的调用顺序；
+    // 在 App 创建时包装它们，确保任何实际状态变更前都先推进 Runtime 清除 epoch。
+    function installClearProtection() {
+      if (typeof clearFeatureData === 'function') {
+        var clearFeature = clearFeatureData;
+        clearFeatureData = function (featureId) {
+          if (!CORE.blankFeatureField(featureId)) return;
+          var result = beginClearProtection(runtime.activeChatId);
+          if (!result || result.ok === false) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
+          return clearFeature(featureId);
+        };
+      }
+      if (typeof clearAllData === 'function') {
+        var clearAll = clearAllData;
+        clearAllData = function () {
+          var result = beginClearProtection(runtime.activeChatId);
+          if (!result || result.ok === false) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
+          return clearAll();
+        };
+      }
+    }
+
+    function captureUiContext() {
+      var params = nav.params || {};
+      var space = runtime && typeof runtime.activeSpace === 'function' ? runtime.activeSpace() : null;
+      return {
+        chatId: String(runtime.activeChatId || ''),
+        spaceId: String(space && space.id || ''),
+        app: String(nav.app || ''),
+        view: String(nav.view || ''),
+        id: String(params.id || '')
+      };
+    }
+
+    function uiContextMatches(context) {
+      if (disposed || !context || String(runtime.activeChatId || '') !== context.chatId) return false;
+      var current = captureUiContext();
+      return current.spaceId === context.spaceId && current.app === context.app && current.view === context.view && current.id === context.id;
+    }
+
+    function setBusyNode(node, busy) {
+      if (!node) return;
+      if (busy) node.setAttribute('data-busy', 'true');
+      else node.removeAttribute('data-busy');
+      if ('disabled' in node) node.disabled = !!busy;
+    }
+
+    function beginBusy(key, nodes) {
+      if (!key || busyActions[key]) return null;
+      var item = { key: key, nodes: nodes || [] };
+      busyActions[key] = item;
+      item.nodes.forEach(function (node) { setBusyNode(node, true); });
+      return item;
+    }
+
+    function endBusy(item) {
+      if (!item || busyActions[item.key] !== item) return;
+      delete busyActions[item.key];
+      item.nodes.forEach(function (node) { setBusyNode(node, false); });
+      syncBusyUi();
+    }
+
+    function busyKey(kind, id) {
+      var space = runtime && typeof runtime.activeSpace === 'function' ? runtime.activeSpace() : null;
+      return kind + '|' + String(runtime.activeChatId || '') + '|' + String(space && space.id || '') + '|' + String(id || '');
+    }
+
+    function busyKeyForNode(node) {
+      if (!node || !node.getAttribute) return '';
+      var action = node.getAttribute('data-action');
+      if (node.getAttribute('data-thread-input') !== null) return busyKey('thread', node.getAttribute('data-thread-id') || '');
+      if (node.getAttribute('data-comment-input') !== null) return busyKey('comment', node.getAttribute('data-post-id') || '');
+      if (node.getAttribute('data-space-input') !== null) return busyKey('space-create', '');
+      if (action === 'entity-save') return busyKey('form', (node.getAttribute('data-kind') || '') + ':' + (node.getAttribute('data-id') || ''));
+      return '';
+    }
+
+    function syncBusyUi(root) {
+      if (disposed) return;
+      root = root || hostDocument.getElementById(OVERLAY_ID);
+      if (!root || !root.querySelectorAll) return;
+      Array.prototype.forEach.call(root.querySelectorAll('[data-thread-input], [data-comment-input], [data-space-input], [data-action="entity-save"]'), function (node) {
+        var key = busyKeyForNode(node);
+        var item = key && busyActions[key];
+        var nodes = [node];
+        if (node.getAttribute('data-thread-input') !== null || node.getAttribute('data-comment-input') !== null || node.getAttribute('data-space-input') !== null) {
+          var parent = node.parentNode;
+          var button = parent && parent.querySelector ? parent.querySelector('button[data-action]') : null;
+          if (button) nodes.push(button);
+        } else {
+          var page = node.closest ? node.closest('[data-page]') : null;
+          if (page) nodes = nodes.concat(Array.prototype.slice.call(page.querySelectorAll('[data-form-field]')));
+        }
+        nodes.forEach(function (control) { setBusyNode(control, !!item); });
+      });
+    }
+
+    installClearProtection();
 
     // 界面语言唯一真值源是宿主 locale（tavo.plugin.i18n）；
     // lang 设置仅决定注入提示词的语言（生成内容语言策略，见 settings.info）。
@@ -162,7 +406,7 @@
     }
 
     function acceptFeatureRecord(record) {
-      if (!record || compareFeatureRecord(record, { revision: featureRevision, writer: featureLastWriter }) <= 0) return false;
+      if (disposed || !record || compareFeatureRecord(record, { revision: featureRevision, writer: featureLastWriter }) <= 0) return false;
       applyFeatureRecord(record);
       runtime.current().pendingFull = true;
       runtime.saveChat(runtime.activeChatId);
@@ -180,13 +424,14 @@
       } catch (_) { featureChannel = null; }
       if (featureChannel) {
         featureChannel.onmessage = function (event) {
+          if (disposed) return;
           var data = event && event.data;
           if (!data || data.type !== 'yz-features-changed') return;
           acceptFeatureRecord(data.record);
         };
       }
       if (hostWindow && typeof hostWindow.addEventListener === 'function') {
-        hostWindow.addEventListener('storage', function (event) {
+        listen(hostWindow, 'storage', function (event) {
           if (!event || event.key !== FEATURES_KEY) return;
           acceptFeatureRecord(parseFeatureRecord(event.newValue));
         });
@@ -212,6 +457,7 @@
       };
       featureRevision = record.revision;
       featureSaveQueue = featureSaveQueue.then(async function () {
+        if (disposed) return null;
         var latest = null;
         try { latest = parseFeatureRecord(await Promise.resolve(tavoApi.get(FEATURES_KEY, 'global'))); } catch (_) {}
         if (latest && compareFeatureRecord(latest, record) > 0) {
@@ -221,7 +467,7 @@
         var raw = JSON.stringify(record);
         try { await Promise.resolve(tavoApi.set(FEATURES_KEY, raw, 'global')); } catch (_) {}
         try { hostWindow.localStorage.setItem('yz:features', raw); } catch (_) {}
-        if (featureChannel) {
+        if (featureChannel && !disposed) {
           try { featureChannel.postMessage({ type: 'yz-features-changed', record: record }); } catch (_) {}
         }
         return record;

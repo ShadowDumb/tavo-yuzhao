@@ -504,12 +504,27 @@
   }
 
   function extractSnapshots(text) {
-    var parsed = parse(text);
-    if (parsed) return [parsed];
+    var source = String(text || '');
+    var opens = [];
+    var openPattern = /<yz_jade\b[^>]*>/gi;
+    var open;
+    while ((open = openPattern.exec(source))) opens.push({ index: open.index, end: openPattern.lastIndex });
+    // Keep the bare-section path for history fragments and explicit callers.
+    if (!opens.length) {
+      var parsed = parse(source);
+      return parsed ? [parsed] : [];
+    }
     var out = [];
-    var bodies = parseEnvelope(text, 'yz_jade');
-    bodies.forEach(function (block) {
-      var parsedBlock = parse(block.body) || parse('<yz_jade>\n' + block.body + '\n</yz_jade>');
+    opens.forEach(function (opening, index) {
+      var nextOpen = index + 1 < opens.length ? opens[index + 1].index : -1;
+      var closePattern = /<\/yz_jade\s*>/gi;
+      closePattern.lastIndex = opening.end;
+      var close = closePattern.exec(source);
+      // A broken envelope must not swallow a later valid envelope. With no
+      // closing tag, parsing to the end preserves the existing loose behavior.
+      var end = close && (nextOpen < 0 || close.index < nextOpen) ? closePattern.lastIndex : (nextOpen >= 0 ? nextOpen : source.length);
+      var blockText = source.slice(opening.index, end);
+      var parsedBlock = parse(blockText) || parse(blockText.slice(opening.end));
       if (parsedBlock) out.push(parsedBlock);
     });
     return out;

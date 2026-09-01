@@ -30,6 +30,11 @@
     var activeChatId = 'unknown';
     var epoch = 0;
     var saveQueue = Promise.resolve();
+    // A CAS conflict is a write lock until this runtime has loaded shared state again.
+    var casBlocked = Object.create(null);
+    var committedStates = Object.create(null);
+    var clearEpochs = Object.create(null);
+    var clearGates = Object.create(null);
 
     function rememberChat(chatId) {
       var i = lru.indexOf(chatId);
@@ -76,6 +81,9 @@
       var currentState = chats[chatId];
       if (currentState && (Number(fresh.storageRevision) || 0) <= (Number(currentState.storageRevision) || 0)) return;
       chats[chatId] = CORE.normalizeState(fresh, chatId);
+      committedStates[chatId] = clone(chats[chatId]);
+      clearEpochs[chatId] = Math.max(Number(clearEpochs[chatId]) || 0, Number(chats[chatId].clearEpoch) || 0);
+      delete casBlocked[chatId];
       notice('stateChanged', chatId);
     }
     function setupSyncChannel() {
@@ -100,37 +108,126 @@
       try { return JSON.parse(String(raw)); } catch (_) { return null; }
     }
 
-    // 落盘走串行队列；写入前检查本地镜像的 revision，拒绝跨 tab 的旧状态覆盖新状态。
-    // 持久化语义：本地镜像（缓存，同步写穿）+ 世界书（权威，排队合并同步）。
-    // 一份状态承载全部用户空间：单存储键、单快照链。
+    function recordClearEpoch(chatId, state) {
+      var currentEpoch = Number(state && state.clearEpoch) || 0;
+      var knownEpoch = Number(clearEpochs[chatId]) || 0;
+      var gate = clearGates[chatId];
+      if (!gate || gate.epoch !== currentEpoch) {
+        currentEpoch = Math.max(currentEpoch, knownEpoch) + 1;
+        if (state) state.clearEpoch = currentEpoch;
+        clearEpochs[chatId] = currentEpoch;
+        clearGates[chatId] = { epoch: currentEpoch };
+      }
+      return currentEpoch;
+    }
+
+    // UI clear flows may call this before mutating the state. The epoch is
+    // persisted by the next save; capture generationToken() at prepare and
+    // pass it as applyText(..., { generationToken: token }) at success.
+    function beginClear(chatId) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (chatId !== activeChatId) return { ok: false, reason: 'stale' };
+      var state = chats[chatId] || current();
+      var currentEpoch = Math.max(Number(state.clearEpoch) || 0, Number(clearEpochs[chatId]) || 0) + 1;
+      state.clearEpoch = currentEpoch;
+      clearEpochs[chatId] = currentEpoch;
+      clearGates[chatId] = { epoch: currentEpoch };
+      return { ok: true, epoch: currentEpoch };
+    }
+
+    function generationToken(chatId) {
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      var state = chats[chatId];
+      var currentEpoch = Math.max(Number(state && state.clearEpoch) || 0, Number(clearEpochs[chatId]) || 0);
+      return { chatId: chatId, clearEpoch: currentEpoch };
+    }
+
+    function optionClearEpoch(options) {
+      options = options || {};
+      var token = options.generationToken;
+      var value = options.clearEpoch != null ? options.clearEpoch : options.generationEpoch;
+      if (value == null && token && typeof token === 'object') value = token.clearEpoch;
+      if (value == null || value === '') return null;
+      var number = Number(value);
+      return Number.isFinite(number) ? number : null;
+    }
+
+    function rememberCommitted(chatId, state) {
+      if (state) committedStates[chatId] = clone(state);
+    }
+
+    // Only roll back when no later mutation replaced the candidate. This keeps a
+    // failed older save from overwriting a newer in-memory operation.
+    function rollbackFailedCommit(chatId, state, serialized, key, localWritten) {
+      if (chats[chatId] !== state) return;
+      var currentSerialized;
+      try { currentSerialized = JSON.stringify(state); } catch (_) { return; }
+      if (currentSerialized !== serialized) return;
+      var committed = committedStates[chatId];
+      if (!committed) return;
+      var restored = clone(committed);
+      chats[chatId] = restored;
+      if (localWritten) {
+        var restoredRaw;
+        try { restoredRaw = JSON.stringify(restored); } catch (_) { restoredRaw = null; }
+        if (restoredRaw != null && !localSet(key, restoredRaw)) notify('persistenceFailed', { reason: 'local' });
+      }
+    }
+
+    // Local mirror and lorebook commits share one queue. A save promise therefore
+    // means both stores have settled, not merely that the cache was written.
     function save(chatId, state, options) {
       options = options || {};
+      chatId = CORE.cleanText(chatId || activeChatId, 160);
+      if (casBlocked[chatId]) {
+        if (state && chats[chatId] === state && committedStates[chatId]) chats[chatId] = clone(committedStates[chatId]);
+        notify('syncConflict', { chatId: chatId });
+        return Promise.resolve({ ok: false, localOk: false, worldOk: false, reason: 'conflict' });
+      }
+      if (options.forceSnapshot) recordClearEpoch(chatId, state);
       var previousRevision = Number(state && state.storageRevision) || 0;
+      var previousWriter = String(state && state.storageWriter || '');
       state.storageRevision = previousRevision + 1;
       state.storageWriter = writerId;
+      var proposedRevision = state.storageRevision;
       var serialized;
       try { serialized = JSON.stringify(state); } catch (error) {
         dbg('state serialize failed', error);
         notify('persistenceFailed', { reason: 'serialize' });
+        if (state.storageRevision === proposedRevision && state.storageWriter === writerId) {
+          state.storageRevision = previousRevision;
+          state.storageWriter = previousWriter;
+        }
         return Promise.resolve({ ok: false, localOk: false, worldOk: false, reason: 'serialize' });
       }
       var stateSnapshot = clone(state);
       if (serialized.length > MAX_SNAPSHOT_BYTES) dbg('serialized state exceeds snapshot limit: ' + serialized.length);
       var key = LOCAL_PREFIX + chatId;
+      function restoreRevision() {
+        if (state.storageRevision !== proposedRevision || state.storageWriter !== writerId) return;
+        state.storageRevision = previousRevision;
+        state.storageWriter = previousWriter;
+      }
+      function conflict() {
+        casBlocked[chatId] = true;
+        rollbackFailedCommit(chatId, state, serialized, key, false);
+        restoreRevision();
+        notify('syncConflict', { chatId: chatId });
+        return { ok: false, localOk: false, worldOk: false, reason: 'conflict' };
+      }
       var localTask = saveQueue.then(function () {
+        if (casBlocked[chatId]) return conflict();
         var latest = parseStored(localGet(key));
         var latestRevision = Number(latest && latest.storageRevision) || 0;
         var latestWriter = String(latest && latest.storageWriter || '');
-        if (latest && latestRevision > previousRevision && latestWriter !== writerId) {
-          notify('syncConflict', { chatId: chatId });
-          return { ok: false, localOk: false, worldOk: false, reason: 'conflict' };
-        }
+        if (latest && (latestRevision > previousRevision ||
+            (latestRevision === previousRevision && latestWriter !== previousWriter))) return conflict();
         if (!localSet(key, serialized)) {
           notify('persistenceFailed', { reason: 'local' });
           return { ok: false, localOk: false, worldOk: false, reason: 'local' };
         }
         if (syncChannel) {
-          try { syncChannel.postMessage({ type: 'yz-storage-changed', key: key, revision: state.storageRevision, writer: writerId }); } catch (_) {}
+          try { syncChannel.postMessage({ type: 'yz-storage-changed', key: key, revision: proposedRevision, writer: writerId }); } catch (_) {}
         }
         return { ok: true, localOk: true, worldOk: true };
       }).catch(function (error) {
@@ -138,21 +235,33 @@
         notify('persistenceFailed', { reason: 'local' });
         return { ok: false, localOk: false, worldOk: false, reason: 'local' };
       });
-      saveQueue = localTask.then(function () {}, function () {});
-      return localTask.then(function (localResult) {
+      var commitTask = localTask.then(function (localResult) {
         // 本地镜像只是缓存；本地写失败时仍尝试写权威世界书，但整体结果保持失败，
         // 让 UI 不会把“只保存到世界书”的降级状态误报为完整成功。
         if (!localResult.ok && localResult.reason !== 'local') return localResult;
-         var touched = CORE.stateHasPersistableData(state);
-        if (!touched && !options.forceSnapshot) return localResult;
-        return syncArchive(chatId, { forceSnapshot: !!options.forceSnapshot, stateSnapshot: stateSnapshot }).then(function (worldResult) {
+        var touched = CORE.stateHasPersistableData(stateSnapshot);
+        if (!touched && !options.forceSnapshot) {
+          if (localResult.ok) rememberCommitted(chatId, stateSnapshot);
+          else rollbackFailedCommit(chatId, state, serialized, key, false);
+          return localResult;
+        }
+        return writeArchive(chatId, { forceSnapshot: !!options.forceSnapshot, stateSnapshot: stateSnapshot }).then(function (worldResult) {
           if (!worldResult || !worldResult.ok) {
             notify('persistenceFailed', { reason: worldResult && worldResult.reason || 'world' });
+            rollbackFailedCommit(chatId, state, serialized, key, localResult.localOk === true);
             return { ok: false, localOk: localResult.localOk, worldOk: false, reason: worldResult && worldResult.reason || 'world' };
           }
+          rememberCommitted(chatId, stateSnapshot);
           return { ok: localResult.localOk === true, localOk: localResult.localOk, worldOk: true, reason: localResult.localOk ? '' : 'local' };
+        }).catch(function (error) {
+          dbg('world save failed: ' + chatId, error);
+          notify('persistenceFailed', { reason: 'world' });
+          rollbackFailedCommit(chatId, state, serialized, key, localResult.localOk === true);
+          return { ok: false, localOk: localResult.localOk, worldOk: false, reason: 'world' };
         });
       });
+      saveQueue = commitTask.then(function () {}, function () {});
+      return commitTask;
     }
 
     function attachSaved(result, promise) {
@@ -230,13 +339,16 @@
       }
       if (parsed) {
         if (worldResult.status === 'corrupt') notify('snapshotCorrupted', { chatId: chatId });
-        if (!localSet(LOCAL_PREFIX + chatId, JSON.stringify(parsed))) notify('persistenceFailed', { reason: 'local' });
-        if (!fromWorld && chatId === activeChatId) syncArchive(chatId);
       } else if (mirrorCorrupted || worldResult.status === 'corrupt' || ((mirrorRev > 0 || worldRev > 0) && !parsed)) {
         // 数据损坏：明确提示，不能把损坏来源当成“没有数据”。
          notify(worldResult.status === 'corrupt' ? 'snapshotCorrupted' : 'storageCorrupted', { chatId: chatId });
       }
-      return CORE.normalizeState(parsed, chatId);
+      if (parsed && !fromWorld && chatId === activeChatId) await syncArchive(chatId, { stateSnapshot: parsed });
+      if (parsed && !localSet(LOCAL_PREFIX + chatId, JSON.stringify(parsed))) notify('persistenceFailed', { reason: 'local' });
+      var normalized = CORE.normalizeState(parsed, chatId);
+      clearEpochs[chatId] = Math.max(Number(clearEpochs[chatId]) || 0, Number(normalized.clearEpoch) || 0);
+      try { Object.defineProperty(normalized, '__loadedSource', { value: parsed ? (fromWorld ? 'world' : 'mirror') : 'none', enumerable: false }); } catch (_) {}
+      return normalized;
     }
 
     async function findAssistantMessages() {
@@ -247,7 +359,7 @@
       } catch (error) { dbg('message find failed', error); return null; }
     }
 
-    function applySnapshotsToState(state, snapshots, source, visibility) {
+    function applySnapshotsToState(state, snapshots, source, visibility, coreOptions) {
       var changed = false;
       var persist = false;
       var oversized = false;
@@ -256,7 +368,7 @@
       snapshots.forEach(function (snapshot) {
         var before = CORE.stateRevision(state);
         var targetVisibility = visibility && visibility[CORE.decodeSpaceRoute(snapshot.turn && snapshot.turn.space) || CORE.DEFAULT_SPACE_ID];
-        var result = CORE.applySnapshot(state, snapshot, getFlags(), targetVisibility || visibility);
+        var result = CORE.applySnapshot(state, snapshot, getFlags(), targetVisibility || visibility, coreOptions);
         state = result.state;
         assessment = result.assessment;
         if (result.persist) persist = true;
@@ -351,8 +463,7 @@
       activeChatId = chatId;
       rememberChat(chatId);
       evictChats();
-      // 读存储前等落盘队列排空：上一聊天未写完的 save 会在队列里落镜像缓存，
-      // 直接读会读到陈旧/空白数据（rev-0 聊天首条玩家消息曾因此丢失）。
+      // 读存储前等本地镜像与世界书提交队列排空，避免读取陈旧/空白数据。
       await saveQueue;
       var loaded = await load(chatId);
       if (token !== epoch || chatId !== activeChatId) return current();
@@ -361,7 +472,16 @@
       // 否则持久化状态会被空白态顶掉，随后水化标记签名还会把空白态回写覆盖存储（丢数据）。
       var existing = chats[chatId];
       var touched = !!existing && (CORE.stateRevision(existing) > 0 || CORE.stateDataUpdatedAt(existing) > 0);
-      if (!touched) chats[chatId] = loaded;
+      if (casBlocked[chatId] && loaded.__loadedSource !== 'none') {
+        chats[chatId] = loaded;
+        rememberCommitted(chatId, loaded);
+        delete casBlocked[chatId];
+      } else if (!touched) {
+        chats[chatId] = loaded;
+        rememberCommitted(chatId, loaded);
+      } else if (!committedStates[chatId]) {
+        rememberCommitted(chatId, loaded);
+      }
       var state = chats[chatId];
       // 版本变化（插件更新/卸载重装恢复）→ 持久化强制全量标记：下一轮生成按新提示词
       // 全量重写数据（旧格式行全部刷新，不再粘滞）；重启不丢标记。
@@ -388,15 +508,19 @@
       if (chatId !== activeChatId) return { stale: true, restored: false };
       epoch += 1;
       var token = epoch;
-      // 读存储前等落盘队列排空：上一聊天未写完的 save 会在队列里落镜像缓存，
-      // 直接读会读到陈旧/空白数据。
+      // 读存储前等本地镜像与世界书提交队列排空，避免读取陈旧/空白数据。
       await saveQueue;
       // 重建 = 从权威存储恢复：世界书快照（yz-snap/yz-psnap 分片）→ 本地镜像。
       // 历史消息正文经正文剥离后不含协议块，旧「从历史重建」数据源已随持久化改造
       // 移除；世界书快照才是当前唯一权威来源。
       var loaded = await load(chatId);
       if (token !== epoch || chatId !== activeChatId) return { stale: true, restored: false };
-       var restoredData = CORE.stateHasPersistableData(loaded);
+      if (casBlocked[chatId] && loaded.__loadedSource !== 'none') {
+        chats[chatId] = loaded;
+        rememberCommitted(chatId, loaded);
+        delete casBlocked[chatId];
+      }
+      var restoredData = CORE.stateHasPersistableData(loaded);
       if (!restoredData) {
         // 权威存储中没有玉兆数据（从未同步或已清空）：保留现有数据，不用空白覆盖。
         return { stale: false, restored: false };
@@ -417,6 +541,7 @@
       if (!chats[activeChatId]) {
         // normalizeState(null) → v2 空白（spaces 里只有一个默认空间）。
         chats[activeChatId] = CORE.normalizeState(null, activeChatId);
+        rememberCommitted(activeChatId, chats[activeChatId]);
         rememberChat(activeChatId);
         evictChats();
       }
@@ -676,6 +801,7 @@
         // 校验通过后才变更对象：失败路径不得留下已改坏/空必填的实体，
         // 否则下一次 normalize 会整行丢弃并级联其下数据。
         var folder = CORE.playerFindEntity(space, 'folder', existingId);
+        if (!folder && safeArray(space.notes.folders, 10).length >= 10) return { ok: false, reason: 'full' };
         if (folder) folder.name = name;
         // safeArray 返回副本：新建必须把拼接结果写回状态，否则 push 在副本上丢失。
         else space.notes.folders = safeArray(space.notes.folders, 10).concat([{ id: CORE.playerNextId(space.notes.folders, 'pf-'), name: name, count: 0 }]);
@@ -689,6 +815,7 @@
         if (!folderOk) reason = 'folder';
         if (reason) return fail();
         var note = CORE.playerFindEntity(space, 'note', existingId);
+        if (!note && safeArray(space.notes.notes, 30).length >= 30) return { ok: false, reason: 'full' };
         if (note) {
           note.title = title;
           note.body = body;
@@ -703,6 +830,7 @@
         if (!hasText(iname)) reason = 'name';
         if (reason) return fail();
         var item = CORE.playerFindEntity(space, 'item', existingId);
+        if (!item && safeArray(space.space.items, 30).length >= 30) return { ok: false, reason: 'full' };
         if (item) {
           item.name = iname;
           item.qty = Math.max(0, Number(raw.qty) || 0);
@@ -718,13 +846,16 @@
           if (clash) reason = 'kindClash';
         }
         if (reason) return fail();
-        space.space.currencies = safeArray(space.space.currencies, 10).filter(function (c) { return String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
+        var currency = CORE.playerFindEntity(space, 'currency', existingId);
+        if (!currency && safeArray(space.space.currencies, 10).length >= 10) return { ok: false, reason: 'full' };
+        space.space.currencies = safeArray(space.space.currencies, 10).filter(function (c) { return !currency || String(c.kind) !== existingId; }).concat([{ kind: ckind, amount: cleanText(raw.amount, 80) }]);
         space.space = CORE.normalizeSpace(space.space);
       } else if (kind === 'order') {
         var oname = cleanText(raw.name, 120);
         if (!hasText(oname)) reason = 'name';
         if (reason) return fail();
         var order = CORE.playerFindEntity(space, 'order', existingId);
+        if (!order && safeArray(space.market.orders, 12).length >= 12) return { ok: false, reason: 'full' };
         var side = /^(sell|卖|售)/i.test(String(raw.side)) ? 'sell' : 'buy';
         if (order) {
           order.name = oname;
@@ -740,6 +871,7 @@
         if (!hasText(ptitle)) reason = 'title';
         if (reason) return fail();
         var post = CORE.playerFindEntity(space, 'post', existingId);
+        if (!post && safeArray(space.forum.posts, 20).length >= 20) return { ok: false, reason: 'full' };
         if (post) {
           post.title = ptitle;
           post.section = cleanText(raw.section, 60);
@@ -951,6 +1083,16 @@
       chatId = CORE.cleanText(chatId || activeChatId, 160);
       if (chatId !== activeChatId) return { changed: false, stale: true, applied: false };
       var state = current();
+      var generation = options && options.generationToken;
+      if (generation && typeof generation === 'object' && generation.chatId != null &&
+          CORE.cleanText(generation.chatId, 160) !== chatId) {
+        return { changed: false, stale: true, discarded: true, reason: 'generation-chat', applied: false };
+      }
+      var tokenEpoch = optionClearEpoch(options);
+      var stateEpoch = Math.max(Number(state.clearEpoch) || 0, Number(clearEpochs[chatId]) || 0);
+      if (tokenEpoch != null && tokenEpoch !== stateEpoch) {
+        return { changed: false, stale: false, discarded: true, reason: 'clear-epoch', clearEpoch: stateEpoch, applied: false };
+      }
       var snapshots = PROTOCOL.extractSnapshots(text);
       if (!snapshots.length) {
         if (/<yz_[a-z0-9_]+\b/i.test(String(text || ''))) {
@@ -962,8 +1104,10 @@
         var perr = (function () { var d = CORE.defaultSpaceState(state); return !!d && d.sync.lastError === 'parse-error'; })();
         return { changed: false, stale: false, applied: false, parseError: perr };
       }
-      var applied = applySnapshotsToState(state, snapshots, source, options && options.visibility);
+      var realtime = !!(options && options.realtime) || /^(generation(?::|$)|message(?::|$))/.test(String(source || ''));
+      var applied = applySnapshotsToState(state, snapshots, source, options && options.visibility, { realtime: realtime });
       chats[chatId] = applied.state;
+      if (tokenEpoch != null && clearGates[chatId] && tokenEpoch === clearGates[chatId].epoch) delete clearGates[chatId];
       // 重复投递的轮次不重复落盘；解析失败标记需持久化，重开后仍可见。
       var dflt = CORE.defaultSpaceState(applied.state);
       if (applied.changed || applied.persist || (dflt && dflt.sync.lastError === 'parse-error')) save(chatId, applied.state);
@@ -1032,7 +1176,6 @@
     var ARCHIVE_NAME_PREFIX = '玉兆档案·';
     var ARCHIVE_ENTRY_CHARS = 6000;
     var ARCHIVE_FOOTER = '\n（只读归档：仅供回忆参考，不要把这些消息重新写入 <yz_jade> 数据块。）';
-    var archiveQueue = Promise.resolve();
 
     function archiveWindow(messages) {
       var rows = safeArray(messages, 100);
@@ -1188,8 +1331,8 @@
     // 挂接需读当前世界书列表后合并（chat.update 整体替换，不能覆盖用户自己的世界书）。
     function syncArchive(chatId, options) {
       options = options || {};
-      var task = archiveQueue.then(function () { return writeArchive(chatId, options); }, function () { return writeArchive(chatId, options); });
-      archiveQueue = task.then(function () {}, function () {});
+      var task = saveQueue.then(function () { return writeArchive(chatId, options); }, function () { return writeArchive(chatId, options); });
+      saveQueue = task.then(function () {}, function () {});
       return task;
     }
 
@@ -1256,6 +1399,8 @@
       LOCAL_PREFIX: LOCAL_PREFIX,
       switchChat: switchChat,
       settle: settle,
+      beginClear: beginClear,
+      generationToken: generationToken,
       rebuildFromHistory: rebuildFromHistory,
       markHistoryCutoff: markHistoryCutoff,
       current: current,

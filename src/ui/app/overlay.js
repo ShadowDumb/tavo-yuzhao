@@ -1,7 +1,8 @@
     function bindOverlay(overlay) {
       if (overlay.__yzBound) return;
       overlay.__yzBound = true;
-      overlay.addEventListener('click', function (event) {
+      markBound(overlay);
+      listen(overlay, 'click', function (event) {
         if (overlay.classList.contains('loading')) {
           event.preventDefault();
           event.stopPropagation();
@@ -74,7 +75,7 @@
       });
       // 检索框输入走 input 事件委托：每次键入只更新内存关键词并重渲染，
       // 纯前端过滤，不触碰任何持久化数据（交互基座第一层的只读约束）。
-      overlay.addEventListener('input', function (event) {
+      listen(overlay, 'input', function (event) {
         if (overlay.classList.contains('loading')) return;
         var box = event.target.closest ? event.target.closest('[data-search-input]') : null;
         if (!box) return;
@@ -84,7 +85,7 @@
         search = String(box.value || '');
         render();
       });
-      overlay.addEventListener('compositionend', function (event) {
+      listen(overlay, 'compositionend', function (event) {
         if (overlay.classList.contains('loading')) return;
         var box = event.target && event.target.closest ? event.target.closest('[data-search-input]') : null;
         if (!box) return;
@@ -92,7 +93,7 @@
         render();
       });
       // 模态焦点陷阱：Tab / Shift+Tab 在对话框内的可见按钮间循环，避免焦点移出到背后页面。
-      overlay.addEventListener('keydown', function (event) {
+      listen(overlay, 'keydown', function (event) {
         if (overlay.classList.contains('loading')) {
           event.preventDefault();
           return;
@@ -130,20 +131,21 @@
          var normal = room >= 560;
          jade.style.minHeight = normal ? '' : '0px';
          jade.style.height = normal ? '' : Math.max(320, room) + 'px';
-       };
-       overlay.__yzFit = fitViewport;
-       if (vv && typeof vv.addEventListener === 'function') vv.addEventListener('resize', fitViewport);
-       if (hostWindow && typeof hostWindow.addEventListener === 'function') hostWindow.addEventListener('resize', fitViewport);
+        };
+        overlay.__yzFit = fitViewport;
+        onCleanup(function () { if (overlay.__yzFit === fitViewport) overlay.__yzFit = null; });
+        if (vv && typeof vv.addEventListener === 'function') listen(vv, 'resize', fitViewport);
+        if (hostWindow && typeof hostWindow.addEventListener === 'function') listen(hostWindow, 'resize', fitViewport);
       // 输入框聚焦时把玉兆内的输入框滚动进可视区（Android WebView 键盘行为差异兜底）。
-      overlay.addEventListener('focusin', function (event) {
+       listen(overlay, 'focusin', function (event) {
         var target = event.target;
         if (!target || !target.getAttribute) return;
          if (target.getAttribute('data-thread-input') === null &&
              target.getAttribute('data-comment-input') === null && target.getAttribute('data-search-input') === null &&
              target.getAttribute('data-space-input') === null) return;
-         setTimeout(function () {
-           if (hostDocument.documentElement.contains(target) && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
-         }, 300);
+          setAppTimeout(function () {
+            if (hostDocument.documentElement.contains(target) && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
+          }, 300);
       });
     }
 
