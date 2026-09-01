@@ -182,8 +182,8 @@ ok(/if \(action === 'core'\) \{\s*if \(nav\.app !== 'home'\) return resetSearch\
 ok(/featureFlags\.msg === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedMsg, true\); return; \}/.test(source), '封印 msg 后发讯明示（不假成功）');
 ok(/featureFlags\.msg === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedMsg, true\); return; \}/.test(source), '封印 msg 后群聊发言明示');
 ok(/featureFlags\.forum === false\) \{ showToast\(I18N\.dict\(\)\.toast\.sealedForum, true\); return; \}/.test(source), '封印 forum 后评论明示');
-// 回归保护：非聊天页重渲染必须保留滚动位置（发论坛评论/搜索后不再跳顶）。
-ok(/var savedScroll = \(\(nav\.view === 'chat' \|\| nav\.view === 'gchat'\) && !search\) \? null : pageNode\.scrollTop;/.test(source) && /pageNode\.scrollTop = savedScroll;/.test(source), '重渲染前保存滚动位置并恢复（非聊天页/检索态）');
+// 回归保护：非聊天页重渲染必须保留实际滚动容器位置（发论坛评论/搜索后不再跳顶）。
+ok(/var scrollNode = pageNode\.querySelector\('\.yz-page-inner'\) \|\| pageNode;/.test(source) && /freshScrollNode\.scrollTop = savedScroll;/.test(source), '重渲染前保存并恢复 .yz-page-inner 滚动位置');
 // 回归保护：确认框点遮罩/Esc 关闭（与文档承诺一致），点非按钮区域等同取消。
 ok(/if \(!btn\) \{ cancelConfirm\(\); return; \}/.test(source), '确认框点遮罩等同取消');
 ok(/hostDocument\.addEventListener\('keydown', function \(event\) \{\s*if \(event\.key !== 'Escape'\) return;/.test(source), '确认框支持 Esc 关闭');
@@ -618,9 +618,22 @@ async function runtimeCase() {
   // 重建 = 从世界书快照恢复（权威存储）：内存被污染后回到存储版本，且不混入他聊天数据
   const hostSeed = fakeHost();
   hostSeed.current.chat = 'chat-1';
+  const seededState = M.CORE.normalizeState({
+    schemaVersion: 2,
+    chatId: 'chat-1',
+    pluginVersion: M.PLUGIN_VERSION,
+    spaces: [{
+      id: 'sp0', isDefault: true, revision: 7, updatedAt: 1,
+      tablet: { name: '李逍遥', groups: [] },
+      chats: { contacts: [], groups: [] }, notes: { folders: [], notes: [] },
+      forum: { posts: [] }, market: { listings: [], auctions: [], orders: [], requests: [] },
+      space: { currencies: [], items: [] }, map: { current: { place: '', domain: '', desc: '' }, tracks: [], places: [] },
+      processedTurns: ['h1']
+    }]
+  }, 'chat-1');
   hostSeed.seedBook('玉兆档案·chat-1', [{
     identifier: 'yz-snap-1', name: '玉兆快照', enabled: false,
-    content: JSON.stringify({ v: 2, ver: M.PLUGIN_VERSION, rev: 7, updatedAt: 0, kind: 'role', index: 1, total: 1, body: JSON.stringify({ revision: 7, pluginVersion: M.PLUGIN_VERSION, updatedAt: 0, tablet: { name: '李逍遥', groups: [] }, chats: { contacts: [], groups: [] }, processedTurns: ['h1'] }) })
+    content: JSON.stringify({ v: 2, ver: M.PLUGIN_VERSION, rev: 7, updatedAt: 0, kind: 'role', index: 1, total: 1, body: JSON.stringify(seededState) })
   }]);
   const rtSeed = M.createRuntime(hostSeed.api, null, () => ({}));
   await rtSeed.switchChat('chat-1');
@@ -742,9 +755,14 @@ const flushWorld = async () => { await flushQueue(); await flushQueue(); };
 
   // 世界书权威：新会话（无本地镜像）从世界书分片快照恢复
   const host2 = fakeHost();
+  const authorityState = M.CORE.normalizeState({
+    schemaVersion: 2,
+    pluginVersion: M.PLUGIN_VERSION,
+    spaces: [{ id: 'sp0', isDefault: true, revision: 3, chats: { contacts: [], groups: [] } }]
+  }, 'chat-1');
   host2.seedBook('玉兆档案·chat-1', [{
     identifier: 'yz-snap-1', name: '玉兆快照', enabled: false,
-    content: JSON.stringify({ v: 2, ver: M.PLUGIN_VERSION, rev: 3, updatedAt: 0, kind: 'role', index: 1, total: 1, body: JSON.stringify({ revision: 3, chats: { contacts: [], groups: [] } }) })
+    content: JSON.stringify({ v: 2, ver: M.PLUGIN_VERSION, rev: 3, updatedAt: 0, kind: 'role', index: 1, total: 1, body: JSON.stringify(authorityState) })
   }]);
   const rt2 = M.createRuntime(host2.api, null, () => ({}));
   await rt2.switchChat('chat-1');
@@ -829,14 +847,6 @@ const flushWorld = async () => { await flushQueue(); await flushQueue(); };
   eq(bigRestored.length, 20, '多片快照数据完整（归一保尾 20 条）');
   ok(bigRestored[19].text === bigText + '0-19', '分片边界无截断');
 
-  // 旧版单条 yz-snap（无分片包装，内容为状态 JSON）读取兼容
-  const hostLegacy = fakeHost();
-  const legacyState = { revision: 7, pluginVersion: '2.0.2', chats: { contacts: [{ id: 'c1', name: '旧人', messages: [], preview: '' }], groups: [] } };
-  hostLegacy.seedBook('玉兆档案·chat-legacy', [{ identifier: 'yz-snap', name: '玉兆快照', enabled: false, content: JSON.stringify(legacyState) }]);
-  const legacyRt = M.createRuntime(hostLegacy.api, null, () => ({}));
-  await legacyRt.switchChat('chat-legacy');
-  eq(dflt(legacyRt.current()).revision, 7, '旧版单条 yz-snap 兼容读取');
-  eq(dflt(legacyRt.current()).chats.contacts[0].name, '旧人', '旧快照数据完整');
 }
 
 // ---------- Views ----------
@@ -1056,7 +1066,7 @@ console.log('# P1 · 卦位三态徽标');
   const newState = M.CORE.blankState('bd3');
   newState.sync.applied = ['notes'];
   const newHtml = M.VIEWS.renderNodes({}, newState);
-  ok(newHtml.includes('b-new') && !newHtml.includes('yz-badge-new'), '新同步仅光效，无文字角标');
+  ok(newHtml.includes('b-new') && newHtml.includes('yz-badge-new') && newHtml.includes(zhCatalog['runtime.badge.new']), '新同步显示文字角标并保留光效');
   ok(newHtml.includes('，' + zhCatalog['runtime.badge.new']), '新同步 aria 语义保留');
 }
 
@@ -1110,8 +1120,14 @@ console.log('# P1 · appliedSeen 与 importState');
   const host = fakeHost();
   const rt = M.createRuntime(host.api, null, () => ({}));
   await rt.switchChat('imp');
-  eq(rt.importState(JSON.stringify({ revision: 7 })).ok, true, '合法 JSON 导入成功');
-  eq(dflt(rt.current()).revision, 7, '导入替换内存态');
+  eq(rt.importState(JSON.stringify({ revision: 7 })).reason, 'parse', '缺少 v3 空间结构的 JSON 拒收');
+  eq(dflt(rt.current()).revision, 0, '拒收弱结构后当前内存态未被覆盖');
+  const importable = M.CORE.normalizeState({ schemaVersion: 2, spaces: [{ id: 'sp0', isDefault: true, revision: 7, tablet: { name: '导入档', groups: [] } }] }, 'imp');
+  const candidate = rt.importState(JSON.stringify(importable));
+  ok(candidate.ok && dflt(rt.current()).revision === 0, '当前 v3 存档先解析为候选，不立即替换');
+  const committed = rt.commitImport(candidate.state);
+  await committed.saved;
+  eq(dflt(rt.current()).revision, 7, '确认提交后导入替换内存态');
   eq(rt.importState('{bad json').reason, 'parse', '非法 JSON 拒收');
   eq(rt.importState('x'.repeat(200001)).reason, 'oversized', '超出容量拒收');
   // 回归：误贴任意 JSON（无玉兆特征字段）绝不能「导入成功」后清空当前角色域数据。
@@ -1568,6 +1584,199 @@ console.log('# P2 · 最新消息保留、基线窗口与世界书归档');
   eq(art4.buildArchiveEntries(sealedState).length, 0, '封印交流讯息不归档');
 }
 
+// ---------- P2 · v3 评审边界回归 ----------
+console.log('# P2 · v3 评审边界回归');
+{
+  // P2-01：发送基线与 AI 写入是两个独立策略。
+  const policy = M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [], spaces: [
+    { name: '仅写入', isDefault: false, sendToAI: false, allowAIWrite: true },
+    { name: '仅读取', isDefault: false, sendToAI: true, allowAIWrite: false }
+  ] });
+  ok(policy.includes('不送入基线') && policy.includes('允许 AI 写入'), 'sendToAI 关闭时提示词仍明确允许 AI 写入');
+  ok(policy.includes('送入基线') && policy.includes('拒收 AI 写入'), 'allowAIWrite 关闭时提示词仍明确送入基线');
+
+  // P2-02：名称不能占用任何空间 ID，定位不会因 ID 优先级发生歧义。
+  const clashState = M.CORE.normalizeState({ spaces: [
+    { id: 'sp0', isDefault: true }, { id: 'sp1', name: 'sp1' }, { id: 'sp2', name: 'SP2' }
+  ] }, 'p2-clash');
+  ok(clashState.spaces.every((sp) => !sp.isDefault ? !clashState.spaces.some((other) => other.id.toLowerCase() === sp.name.toLowerCase()) : true), '归一化保持空间 ID/name 不冲突');
+  ok(M.CORE.findSpaceState(clashState, 'sp1').id === 'sp1' && M.CORE.findSpaceState(clashState, 'sp1').name !== 'sp1', 'ID/name 冲突修复后 ID 定位唯一');
+
+  // P2-03：特殊名称进入协议时只传 token，解析可还原原名。
+  const specialName = '手账 | 春\"\t册';
+  const specialState = M.CORE.normalizeState({ spaces: [{ id: 'sp1', name: specialName, chats: { contacts: [{ id: 'c1', name: '可见联系人', messages: [] }], groups: [] } }] }, 'p2-route');
+  const special = specialState.spaces[0];
+  const specialRows = M.PROMPT.buildCurrent(specialState, {});
+  const specialToken = M.CORE.encodeSpaceRoute(special.name);
+  ok(specialToken && specialRows.join('\n').includes('space="' + specialToken + '"') && !specialRows.join('\n').includes('space="' + special.name + '"'), '特殊空间名使用可逆且协议安全的路由 token');
+  const specialParsed = M.PROTOCOL.parse('<yz_jade><yz_meta>\nturn｜route｜角色｜回写｜diff｜' + specialToken + '\n</yz_meta></yz_jade>');
+  eq(specialParsed.turn.space, special.name, '空间路由 token 解析还原原名称');
+
+  // P2-04：满容量且缺默认空间时不挤掉任何自定义空间；默认位于末尾也优先保留。
+  const sixCustom = M.CORE.normalizeState({ spaces: Array.from({ length: 6 }, (_, i) => ({ id: 'sp' + (i + 1), name: '域' + i })) }, 'p2-cap');
+  const beforeNames = sixCustom.spaces.map((sp) => sp.name);
+  eq(M.CORE.ensureDefaultSpace(sixCustom), null, '无容量时默认空间不强行扩成第七个');
+  eq(sixCustom.spaces.map((sp) => sp.name), beforeNames, '默认空间重建失败时自定义空间数据不丢');
+  const defaultLast = M.CORE.normalizeState({ spaces: [{ id: 'sp1', name: '甲' }, { id: 'sp2', name: '乙' }, { id: 'sp0', isDefault: true }] }, 'p2-default-last');
+  ok(M.CORE.defaultSpaceState(defaultLast) && defaultLast.spaces.length === 3, '默认空间排在输入末尾时仍保留');
+
+  // P2-05/P2-14：只有空间元数据、meta-only 和拒写诊断也写入权威世界书。
+  const mh = fakeHost();
+  mh.current.chat = 'p2-meta';
+  const mrt = M.createRuntime(mh.api, null, () => ({}));
+  await mrt.switchChat('p2-meta');
+  const metaSpace = mrt.createSpace('只保存元数据');
+  await metaSpace.saved;
+  const metaFlag = mrt.setSpaceFlag(metaSpace.id, 'sendToAI', false);
+  await metaFlag.saved;
+  const metaActive = mrt.setActiveSpace(metaSpace.id);
+  await metaActive.saved;
+  await mrt.saveChat('p2-meta');
+  const mReload = M.createRuntime(mh.api, null, () => ({}));
+  await mReload.switchChat('p2-meta');
+  const restoredMeta = M.CORE.findSpaceState(mReload.current(), metaSpace.id);
+  ok(restoredMeta && restoredMeta.name === '只保存元数据' && restoredMeta.sendToAI === false && mReload.current().activeSpaceId === metaSpace.id, '空白聊天空间元数据从权威快照恢复');
+  await mrt.applyText('<yz_jade><yz_meta>\nturn｜p2-meta-only｜角色｜只记摘要｜diff\n</yz_meta></yz_jade>', 'p2-meta', 'test');
+  await mrt.applyText('<yz_jade><yz_meta>\nturn｜p2-unknown｜角色｜未知空间｜diff｜不存在\n</yz_meta><yz_msg>\n-msg｜bad-parent｜bad-id\n</yz_msg></yz_jade>', 'p2-meta', 'test');
+  await mrt.saveChat('p2-meta');
+  const mReload2 = M.createRuntime(mh.api, null, () => ({}));
+  await mReload2.switchChat('p2-meta');
+  ok(M.CORE.defaultSpaceState(mReload2.current()).sync.issues.some((issue) => issue.code === 'space.unknown'), '拒写 issue 重载后仍在权威状态');
+
+  // P2-06：未知实体/父实体的 diff 行拒写且形成诊断。
+  const unknownState = M.CORE.normalizeState({ spaces: [{ id: 'sp0', isDefault: true, chats: { contacts: [{ id: 'c1', name: '甲', messages: [] }], groups: [] } }] }, 'p2-unknown-core');
+  const unknownResult = M.CORE.applySnapshot(unknownState, { turn: { id: 'u1', mode: 'diff' }, diff: { msg: [{ add: false, type: 'msg', values: ['c1', 'missing'] }] } }, {});
+  ok(!unknownResult.state.spaces[0].chats.contacts[0].messages.length && unknownResult.assessment.issues.some((issue) => issue.code === 'diff.unknown'), '未知 diff ID 不改数据并记 diff.unknown');
+
+  // P2-07：采样未选中的实体即使仍存在，也不能被本轮 diff 改写。
+  const sampled = M.CORE.normalizeState({ spaces: [{ id: 'sp0', isDefault: true, chats: { contacts: Array.from({ length: 5 }, (_, i) => ({ id: 'c' + i, name: '人' + i, messages: [] })), groups: [] } }] }, 'p2-hidden');
+  const sampledCurrent = M.PROMPT.buildCurrent(sampled, {}, () => 0);
+  const hiddenResult = M.CORE.applySnapshot(sampled, { turn: { id: 'hidden', mode: 'diff' }, diff: { msg: [{ add: false, type: 'contact', values: ['c4'] }] } }, {}, sampledCurrent.visibility);
+  ok(sampled.spaces[0].chats.contacts.some((contact) => contact.id === 'c4') && hiddenResult.assessment.issues.some((issue) => issue.code === 'diff.hidden'), '采样窗口外联系人 diff fail-closed');
+
+  // P2-08：窗口淘汰后靠累计 replyCount/seenReplies 继续计算未读。
+  const longMessages = [{ id: 'pm-1', side: 'self', text: '我说' }].concat(Array.from({ length: 30 }, (_, i) => ({ id: 'r' + i, side: 'other', text: '回' + i })));
+  const longChats = M.CORE.normalizeChats({ contacts: [{ id: 'c-1', name: '甲', messages: longMessages }], groups: [] });
+  const unreadState = { chats: longChats, forum: { posts: [] } };
+  M.CORE.recomputeThreadUnread(unreadState);
+  eq(longChats.contacts[0].messages.length, 20, '长线程仍只保留消息窗口');
+  eq(longChats.contacts[0].replyCount, 30, '窗口外回复累计数持久保留');
+  eq(longChats.contacts[0].unread, 30, '窗口外回复仍计入未读');
+  longChats.contacts[0].seenReplies = 12;
+  M.CORE.recomputeThreadUnread(unreadState);
+  eq(longChats.contacts[0].unread, 18, '持久 seenReplies 继续扣除未读');
+  const longPost = M.CORE.normalizeForum({ posts: [{ id: 'fp', owner: 'player', title: '帖', comments: Array.from({ length: 25 }, (_, i) => ({ id: 'cm-' + i, author: '人', time: '' + i, text: '评' + i })) }] });
+  const postUnreadState = { chats: { contacts: [], groups: [] }, forum: longPost };
+  M.CORE.recomputeThreadUnread(postUnreadState);
+  eq(longPost.posts[0].comments.length, 20, '长帖子仍只保留评论窗口');
+  eq(longPost.posts[0].replyCount, 25, '窗口外评论累计数持久保留');
+  eq(longPost.posts[0].unread, 25, '窗口外评论仍计入未读');
+
+  // P2-09：评论满额时拒写，不通过保尾截断丢掉旧评论。
+  const fullHost = fakeHost();
+  const fullRt = M.createRuntime(fullHost.api, null, () => ({}));
+  await fullRt.switchChat('p2-comments');
+  const fullSid = fullRt.createSpace('评论空间').id;
+  fullRt.spaceSaveEntity(fullSid, 'post', { title: '满帖', body: '正文' }, '');
+  const fullPost = M.CORE.findSpaceState(fullRt.current(), fullSid).forum.posts[0];
+  fullPost.comments = Array.from({ length: 20 }, (_, i) => ({ id: 'cm-' + i, author: '旧人', time: '' + i, text: '旧评论' + i }));
+  const oldComment = fullPost.comments[0].text;
+  const fullComment = fullRt.sendSpaceComment(fullSid, fullPost.id, '新评论');
+  eq(fullComment.reason, 'full', '评论满额拒绝新评论');
+  eq(fullPost.comments.length, 20, '评论满额不改变旧评论数量');
+  eq(fullPost.comments[0].text, oldComment, '评论满额不丢最旧评论');
+
+  // P2-10/P2-11：撤销快照绑定聊天，空间 ID 重用不假成功。
+  const undoHost = fakeHost();
+  const undoRt = M.createRuntime(undoHost.api, null, () => ({}));
+  await undoRt.switchChat('p2-undo-a');
+  const undoSid = undoRt.createSpace('待撤销').id;
+  undoRt.spaceSaveEntity(undoSid, 'contact', { name: '旧联系人' }, '');
+  const entityDelete = undoRt.spaceDeleteEntity(undoSid, 'contact', M.CORE.findSpaceState(undoRt.current(), undoSid).chats.contacts[0].id, '');
+  await entityDelete.saved;
+  await undoRt.switchChat('p2-undo-b');
+  eq(undoRt.spaceRestoreEntity(entityDelete.snapshot).reason, 'chat', '实体撤销绑定原聊天');
+  await undoRt.switchChat('p2-undo-a');
+  const deletedSpace = undoRt.deleteSpace(undoSid);
+  await deletedSpace.saved;
+  const reused = undoRt.createSpace('新空间');
+  eq(reused.id, undoSid, '删除后新空间复用旧 ID');
+  eq(undoRt.restoreSpace(deletedSpace.snapshot).reason, 'id-reused', '空间 ID 重用时撤销失败而非假成功');
+
+  // P2-12：实体撤销先检查父实体和容量。
+  const restoreRt = M.createRuntime(fakeHost().api, null, () => ({}));
+  await restoreRt.switchChat('p2-restore');
+  const restoreSid = restoreRt.createSpace('容量空间').id;
+  eq(restoreRt.spaceRestoreEntity({ chatId: 'p2-restore', spaceId: restoreSid, kind: 'message', parentId: 'gone', entity: { id: 'm1', text: '孤儿' } }).reason, 'missing', '父线程消失时消息撤销拒绝');
+  for (let i = 0; i < 10; i += 1) restoreRt.spaceSaveEntity(restoreSid, 'contact', { name: '联系人' + i }, '');
+  eq(restoreRt.spaceRestoreEntity({ chatId: 'p2-restore', spaceId: restoreSid, kind: 'contact', entity: { id: 'c-restored', name: '超量' } }).reason, 'full', '实体列表满额时撤销拒绝');
+
+  // P2-13：最终序列化结果（含标签/换行）严格不超过预算。
+  const hugeSpaces = { spaces: Array.from({ length: 6 }, (_, s) => ({ id: 'sp' + (s + 1), name: '空间' + s, chats: { contacts: Array.from({ length: 10 }, (_, c) => ({ id: 'c' + s + '-' + c, name: '人' + c, messages: Array.from({ length: 20 }, (_, i) => ({ id: 'm' + i, side: 'other', text: '字'.repeat(3000) })) })), groups: [] } })) };
+  const hardCurrent = M.PROMPT.buildCurrent(M.CORE.normalizeState(hugeSpaces, 'p2-budget'), {});
+  ok(hardCurrent.join('\n').length <= M.PROMPT.MAX_BASELINE_CHARS, '多空间最终基线严格不超过 MAX_BASELINE_CHARS');
+
+  // P2-15：双字段事件都剥离协议，不让 content 侧残留。
+  const dualEvent = { text: '<yz_jade><yz_meta>turn｜t｜r｜s</yz_meta></yz_jade>正文 text', content: '正文 content<yz_jade><yz_meta>turn｜c｜r｜s</yz_meta></yz_jade>' };
+  M.stripEventFields(dualEvent);
+  ok(!dualEvent.text.includes('yz_jade') && !dualEvent.content.includes('yz_jade') && dualEvent.text.includes('正文 text') && dualEvent.content.includes('正文 content'), 'text/content 双字段均剥离协议');
+
+  // P2-16/17/18/19/20/21/22/23/24/26/27/28：UI 语义、键盘、窄屏和触控契约。
+  ok(/confirmHost\.addEventListener\('keydown'/.test(source) && /event\.key !== 'Tab'/.test(source) && /event\.stopImmediatePropagation\(\);\s*hideConfirm\(\);/.test(source), '确认框独立处理 Tab 循环与 Esc，避免关闭底层玉兆');
+  ok(/#yz1-overlay\.loading #yz1-jade\{visibility:hidden;pointer-events:none\}/.test(source) && /overlay\.classList\.contains\('loading'\)/.test(source), 'loading 期间底层玉兆控件不可交互');
+  ok(/var viewportHeight = vv && Number\(vv\.height\) > 0 \? Number\(vv\.height\) : Number\(hostWindow\.innerHeight\)/.test(source), '键盘适配兼容 visualViewport 缺失的 WebView');
+  ok(/\.yz-map-delete\{[^}]*width:44px;height:44px/.test(source) && /class="yz-map-delete"[^>]*aria-label=/.test(source), '地图删除按钮触屏可见且有可访问名称');
+  ok(/\.yz-space-row\{display:flex;flex-direction:column/.test(source) && /\.yz-space-actions>\*\{flex:1 1 auto;min-width:44px\}/.test(source), '空间管理行在窄屏纵向重排');
+  ok(/\.yz-btn\{[^}]*min-width:44px;min-height:44px/.test(source) && /\.yz-row-action\{[^}]*width:44px;height:44px/.test(source), '高风险控件触摸尺寸至少 44px');
+  const customHome = M.CORE.normalizeState({ spaces: [{ id: 'sp1', name: '私人', isDefault: false }] }, 'p2-ui-home');
+  const customHomeHtml = M.VIEWS.renderHome(customHome, {}, { space: customHome.spaces[0], spaceName: '私人' });
+  ok(!customHomeHtml.includes('data-action="sync-detail"') && customHomeHtml.includes('yz-sync-static'), '自定义空间首页不显示角色同步诊断入口');
+  const mapHtml = M.VIEWS.renderMap({ map: { current: {}, tracks: [{ id: 't1', place: '山门', time: '今' }], places: [{ id: 'p1', name: '山门' }] } }, '', '');
+  ok(mapHtml.includes('class="yz-map-delete"') && mapHtml.includes(zhCatalog['runtime.player.deleteTrack']) && mapHtml.includes(zhCatalog['runtime.player.deletePlace']), '地图删除按钮使用双语 catalog 文案');
+}
+
+// ---------- P3 · 细节与视觉优化 ----------
+console.log('# P3 · 细节与视觉优化');
+{
+  // P3-01：开关、页签和封印卦位提供状态语义，屏幕阅读器不依赖颜色猜测。
+  const p3State = M.CORE.blankState('p3-ui');
+  const manageHtml = M.VIEWS.renderManage(p3State, { tablet: false }, {}, { view: 'root' });
+  const tabsHtml = M.VIEWS.renderMsg(p3State, { app: 'msg', view: 'chats', params: {} }, '', {}, {});
+  const sealedNodes = M.VIEWS.renderNodes({ tablet: false }, p3State);
+  ok(manageHtml.includes('aria-pressed="false"') && manageHtml.includes('aria-label="' + zhCatalog['runtime.feature.tablet'] + ' ' + zhCatalog['runtime.manage.off'] + '"'), '管理开关带 aria-pressed 与状态名称');
+  ok(tabsHtml.includes('role="tablist"') && tabsHtml.includes('role="tab"') && tabsHtml.includes('aria-selected="true"'), '页签带 tablist/tab/aria-selected 语义');
+  ok(sealedNodes.includes('aria-disabled="true"') && sealedNodes.includes(zhCatalog['runtime.manage.off']), '封印卦位带 aria-disabled 与封印状态');
+
+  // P3-02：新同步必须有可见文字标识，不只依赖颜色和呼吸动画。
+  p3State.sync.applied = ['notes'];
+  p3State.sync.appliedSeen = [];
+  const newNode = M.VIEWS.renderNodes({}, p3State);
+  ok(newNode.includes('yz-badge-new') && newNode.includes(zhCatalog['runtime.badge.new']), '新同步显示文字徽标');
+
+  // P3-03/P3-08：减少动态效果和超长标题断词策略落在样式中。
+  ok(/@media \(prefers-reduced-motion:reduce\)[^']*animation:none!important/.test(source), '支持 prefers-reduced-motion');
+  ok(/\.yz-post-paper h2\{[^}]*overflow-wrap:anywhere/.test(source) && /\.yz-row-copy b\{[^}]*overflow-wrap:anywhere/.test(source), '长标题允许在任意字符处断行');
+
+  // P3-04/P3-05：管理页不渲染无效自链接，空态首页只保留一条行动文案。
+  ok(!source.includes('data-action="nav-manage"') && !source.includes('runtime.manage.openManage'), '管理页移除无效重复管理入口');
+  const emptyHome = M.VIEWS.renderHome(M.CORE.blankState('p3-empty'), {});
+  ok(emptyHome.includes(zhCatalog['runtime.home.empty']) && !emptyHome.includes('yz-home-empty'), '首页空态不重复渲染两条引导文案');
+
+  // P3-06：玉牌折叠状态由 UI 参数恢复，不进入业务状态。
+  const tabletState = { tablet: { groups: [{ id: 'basic', fields: [{ key: 'name', value: '甲' }] }] } };
+  const collapsedTablet = M.VIEWS.renderTablet(tabletState, '', '', { tabletOpenGroups: { basic: false } });
+  const openTablet = M.VIEWS.renderTablet(tabletState, '', '', { tabletOpenGroups: { basic: true } });
+  ok(collapsedTablet.includes('data-group-id="basic"') && !collapsedTablet.includes('data-group-id="basic" open'), '玉牌折叠状态可保持关闭');
+  ok(openTablet.includes('data-group-id="basic" open'), '玉牌折叠状态可保持展开');
+
+  // P3-07：评论检索只过滤展示项，标题仍显示帖子实际评论总数。
+  const forumP3 = { forum: { posts: [{ id: 'p3', author: '掌门', title: '议事', body: '正文', comments: [
+    { author: '甲', time: '一', text: '目标' }, { author: '乙', time: '二', text: '不相关' }
+  ] }] } };
+  const forumSearch = M.VIEWS.renderForum(forumP3, { app: 'forum', view: 'post', params: { id: 'p3' } }, '目标', '', false, {});
+  ok(forumSearch.includes('2 ' + zhCatalog['runtime.label.commentsWord']) && !forumSearch.includes('1 ' + zhCatalog['runtime.label.commentsWord']) && forumSearch.includes('目标') && !forumSearch.includes('不相关'), '论坛评论标题显示实际总数且检索只过滤内容');
+}
+
 // ---------- P3 · 版本迁移与备份恢复 ----------
 console.log('# P3 · 版本迁移与备份恢复');
 {
@@ -1766,8 +1975,12 @@ console.log('# 用户空间 · 核心与运行时');
   const legacyStore = new Map();
   legacyStore.set('yz-jade-player-v1:chat-m', JSON.stringify({
     chatId: 'chat-m', updatedAt: 123,
-    chats: { contacts: [{ id: 'yz-character', name: '李逍遥', messages: [{ id: 'pm-1', side: 'self', time: '今日', text: '旧传讯' }] }], groups: [] },
+    tablet: { groups: [{ id: 'basic', fields: [{ key: '名字', value: '旧我' }] }] },
+    chats: { contacts: [{ id: 'yz-character', name: '李逍遥', messages: [{ id: 'pm-1', side: 'self', time: '今日', text: '旧传讯' }] }], groups: [{ id: 'pg-1', name: '旧群', messages: [] }] },
     notes: { folders: [{ id: 'pf-1', name: '手札' }], notes: [{ id: 'pn-1', folderId: 'pf-1', title: '旧备忘', body: 'x' }] },
+    market: { listings: [{ id: 'pl-1', name: '旧物' }], auctions: [], orders: [], requests: [] },
+    space: { currencies: [{ kind: '灵石', amount: '10' }], items: [] },
+    map: { current: { place: '旧山门' }, tracks: [], places: [] },
     forum: { posts: [{ id: 'fp-1', owner: 'player', title: '旧帖', author: '我' }] }
   }));
   const gLocal = {
@@ -1781,6 +1994,11 @@ console.log('# 用户空间 · 核心与运行时');
   ok(me && me.name === '我', '旧玩家域迁移为「我」空间');
   eq(me.chats.contacts[0].messages.length, 1, '旧传讯线程保留');
   eq(me.notes.notes.length, 1, '旧备忘保留');
+  eq(me.tablet.groups.length, 1, '旧玉牌分区保留');
+  eq(me.chats.groups.length, 1, '旧群聊分区保留');
+  eq(me.market.listings.length, 1, '旧坊市分区保留');
+  eq(me.space.currencies.length, 1, '旧储物分区保留');
+  eq(me.map.current.place, '旧山门', '旧舆图分区保留');
   eq(me.forum.posts[0].owner, 'player', '旧玩家帖 owner 标记保留');
   ok(!legacyStore.has('yz-jade-player-v1:chat-m'), '迁移后旧玩家域镜像键删除');
   ok(rt.current().migratedPlayer === true, 'migratedPlayer 标记持久化');
@@ -2507,7 +2725,7 @@ const GUARD_FULL = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜�
   const rows = M.PROMPT.buildCurrent(twoSpaces, {});
   const flat = rows.join('\n');
   ok(flat.includes('<yzc_msg>'), '默认空间容器无 space 属性');
-  ok(flat.includes('<yzc_msg space="我">'), '自定义空间容器带 space 名');
+  ok(flat.includes('<yzc_msg space="' + M.CORE.encodeSpaceRoute('我') + '">'), '自定义空间容器带可逆 space token');
   ok(flat.includes('角色线人') && flat.includes('自建联系人'), '两个发送空间的数据都进基线');
   ok(!flat.includes('隐形条目') && !flat.includes('不该出现'), 'sendToAI=false 的空间完全不注入');
   eq(rows.filter((r) => r === '<yzc_msg>').length, 1, '默认空间容器仅一个开标签');
@@ -2525,18 +2743,18 @@ const GUARD_FULL = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜�
 
   // 提示词空间协议：路由规则、可写空间清单、turn 行第 6 字段
   const pZh = M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [], spaces: [
-    { name: '云十三', isDefault: true, writable: true },
-    { name: '我', isDefault: false, writable: true },
-    { name: '手账', isDefault: false, writable: false }
+    { name: '云十三', isDefault: true, sendToAI: true, allowAIWrite: true },
+    { name: '我', isDefault: false, sendToAI: true, allowAIWrite: true },
+    { name: '手账', isDefault: false, sendToAI: true, allowAIWrite: false }
   ] });
   ok(pZh.includes('用户空间：法器内并存多个互相隔离的数据空间'), 'zh 含空间协议说明');
-  ok(pZh.includes('「我」（可写）') && pZh.includes('「手账」（只读）'), 'zh 列明各空间写权限');
-  ok(pZh.includes('第 6 个字段填写该空间名'), 'zh turn 行空间字段说明');
+  ok(pZh.includes('「我」[送入基线 + 允许 AI 写入') && pZh.includes('「手账」[送入基线 + 拒收 AI 写入'), 'zh 分别列明空间发送/写入权限');
+  ok(pZh.includes('第 6 个字段填写对应路由 token'), 'zh turn 行空间字段说明');
   ok(pZh.includes('非默认空间只接受 diff 轮'), 'zh 用户空间 diff-only 约束');
-  const pEn = M.PROMPT.buildPrompt('en', {}, { forceFull: false, current: [], spaces: [{ name: 'Me', isDefault: false, writable: true }] });
+  const pEn = M.PROMPT.buildPrompt('en', {}, { forceFull: false, current: [], spaces: [{ name: 'Me', isDefault: false, sendToAI: true, allowAIWrite: true }] });
   ok(pEn.includes('User spaces:') && pEn.includes('ANOTHER complete <yz_jade> block'), 'en 含空间协议说明');
-  ok(pEn.includes('(writable)'), 'en 空间写权限标记');
-  const pNoSpace = M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [], spaces: [{ name: '云十三', isDefault: true, writable: true }] });
+  ok(pEn.includes('baseline sent') && pEn.includes('AI writes allowed'), 'en 分别列明空间发送/写入权限');
+  const pNoSpace = M.PROMPT.buildPrompt('zh', {}, { forceFull: false, current: [], spaces: [{ name: '云十三', isDefault: true, sendToAI: true, allowAIWrite: true }] });
   ok(pNoSpace.includes('（无）'), '仅默认空间时清单为空');
   ok(!/yz-player|传讯通道/.test(pZh), '旧双域通道规则已消失');
 
@@ -2556,16 +2774,165 @@ const GUARD_FULL = '<yz_tablet>\nfield｜基本｜名字｜李逍遥\nfield｜�
   await rt.applyText('<yz_jade><yz_meta>\nturn｜w2｜李逍遥｜再答｜diff｜我\n</yz_meta><yz_forum>\n+comment｜' + post().id + '｜李逍遥｜今日｜答二\n</yz_forum></yz_jade>', 'chat-pu', 'test');
   eq(post().unread, 1, '新评论再计未读（seen 不反弹）');
 
-  // 导入 v2 存档：spaces 特征键 + 空间数据整体替换
+  // 导入当前 v3 存档：完整 spaces 结构 + 空间数据整体替换
   const ih = fakeHost();
   const irt = M.createRuntime(ih.api, null, () => ({}));
   await irt.switchChat('imp2');
-  const v2Save = JSON.stringify({ schemaVersion: 2, spaces: [{ id: 'sp0', isDefault: true, revision: 9, tablet: { name: '导入者' } }, { id: 'sp7', name: '导入空间', notes: { folders: [], notes: [{ id: 'n1', folderId: '', title: '帖' }] } }], migratedPlayer: true });
-  eq(irt.importState(v2Save).ok, true, 'v2 spaces 存档导入成功');
-  eq(dflt(irt.current()).revision, 9, '导入 revision 生效');
+  const v3Save = M.CORE.normalizeState({ schemaVersion: 2, spaces: [{ id: 'sp0', isDefault: true, revision: 9, tablet: { name: '导入者' } }, { id: 'sp7', name: '导入空间', notes: { folders: [], notes: [] } }], migratedPlayer: true }, 'imp2');
+  const importCandidate = irt.importState(JSON.stringify(v3Save));
+  ok(importCandidate.ok && dflt(irt.current()).revision === 0, '当前 v3 存档先解析为候选');
+  const importCommit = irt.commitImport(importCandidate.state);
+  await importCommit.saved;
+  eq(dflt(irt.current()).revision, 9, '确认提交后导入 revision 生效');
   eq(irt.current().spaces.length, 2, '导入恢复两个空间');
   eq(irt.current().migratedPlayer, true, '导入保留迁移标记');
-  eq(irt.importState(JSON.stringify({ spaces: [{ id: 'sp0' }] })).ok, true, '仅 spaces 键也算合法签名');
+  eq(irt.importState(JSON.stringify({ spaces: [{ id: 'sp0' }] })).reason, 'parse', '缺少 schemaVersion/isDefault 的 JSON 拒收');
+}
+
+// ---------- P1 · v3 数据安全与持久化回归 ----------
+console.log('# P1 · v3 数据安全与持久化回归');
+{
+  const state = M.CORE.normalizeState(null, 'p1-full');
+  const base = M.CORE.defaultSpaceState(state);
+  base.chats = M.CORE.normalizeChats({
+    contacts: [
+      { id: 'c-1', name: '我的联系人', messages: [{ id: 'pm-1', side: 'self', text: '用户消息' }] },
+      { id: 'c1', name: '角色联系人', messages: [{ id: 'pm-2', side: 'self', text: '不能丢' }] }
+    ],
+    groups: [{ id: 'g1', name: '群', messages: [{ id: 'pmg-1', side: 'self', text: '群发言' }] }]
+  });
+  base.forum = M.CORE.normalizeForum({ posts: [
+    { id: 'fp-1', owner: 'player', title: '我的帖子', body: '正文', comments: [] },
+    { id: 'rp-1', title: '旧角色帖', body: '正文', comments: [{ id: 'pmc-1', owner: 'player', text: '我的评论' }] }
+  ] });
+  const full = M.CORE.applySnapshot(state, {
+    version: 1,
+    turn: { id: 'p1-full', roleName: '角色', summary: 'full' },
+    chats: MSG_OBJ,
+    forum: { posts: [
+      { id: 'p1', author: '角色', title: '新帖', body: '正文', comments: [{ id: 'cm-1', text: '回复' }] },
+      { id: 'p2', author: '角色', title: '新帖2', body: '正文', comments: [{ id: 'cm-2', text: '回复' }] },
+      { id: 'fp-1', owner: '', author: '角色', title: '试图覆盖用户帖', body: '不应覆盖', comments: [] },
+      { id: 'evil', owner: 'player', title: '伪造用户帖', body: '不应出现', comments: [] }
+    ] }
+  }, {});
+  const protectedSpace = M.CORE.defaultSpaceState(full.state);
+  ok(protectedSpace.chats.contacts.some((c) => c.id === 'c-1'), 'full 不删除用户联系人');
+  ok(protectedSpace.chats.contacts.some((c) => c.id === 'c1' && c.messages.some((m) => m.id === 'pm-2')), 'full 保留私讯用户消息');
+  ok(protectedSpace.chats.groups[0].messages.some((m) => m.id === 'pmg-1'), 'full 保留群聊用户消息');
+  ok(protectedSpace.forum.posts.some((p) => p.id === 'fp-1') && protectedSpace.forum.posts.some((p) => p.id === 'rp-1' && p.comments.some((c) => c.id === 'pmc-1')), 'full 保留用户帖子与评论');
+  ok(protectedSpace.forum.posts.find((p) => p.id === 'fp-1').owner === 'player' && !protectedSpace.forum.posts.some((p) => p.id === 'evil'), 'full 拒绝覆盖或新增 owner=player 帖子');
+
+  const forged = M.CORE.applySnapshot(M.CORE.normalizeState(null, 'p1-forge'), {
+    turn: { id: 'p1-forge', mode: 'diff' },
+    diff: { forum: [{ type: 'post', add: true, values: ['evil', 'a', 'b', 'c', 't', '标题', '正文', '0', 'player'] }] }
+  }, {});
+  ok(!M.CORE.defaultSpaceState(forged.state).forum.posts.some((p) => p.id === 'evil'), 'diff 拒绝伪造 owner=player 帖子');
+}
+{
+  const host = fakeHost();
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('p1-clear');
+  host.setHistory([{ id: 'old-clear', role: 'assistant', content: jade('old-clear', TABLET_OK) }]);
+  await rt.applyText(jade('before-clear', TABLET_OK), 'p1-clear', 'test');
+  await rt.saveChat('p1-clear');
+  await rt.syncArchive('p1-clear');
+  rt.current().spaces = [M.CORE.blankUserSpace('p1-clear', { id: 'sp0', isDefault: true })];
+  rt.current().activeSpaceId = 'sp0';
+  await rt.saveChat('p1-clear', { forceSnapshot: true });
+  await rt.markHistoryCutoff('p1-clear');
+  const restored = M.createRuntime(host.api, null, () => ({}));
+  await restored.switchChat('p1-clear');
+  eq(dflt(restored.current()).revision, 0, '强制空快照阻止清除数据复活');
+  eq(host.lorebooks().find((b) => b.name === '玉兆档案·p1-clear').entries.filter((e) => /^yz-snap-/.test(e.identifier)).length, 1, '清除后世界书保留空快照墓碑');
+}
+{
+  const corruptHost = fakeHost();
+  corruptHost.seedBook('玉兆档案·p1-corrupt', [{ identifier: 'yz-snap-1', content: '{bad', enabled: false }]);
+  const notices = [];
+  const corruptRt = M.createRuntime(corruptHost.api, null, () => ({}), { notice: (reason) => notices.push(reason) });
+  await corruptRt.switchChat('p1-corrupt');
+  ok(notices.includes('snapshotCorrupted'), '损坏世界书快照发出明确诊断');
+  eq(dflt(corruptRt.current()).revision, 0, '损坏快照不静默恢复成旧数据');
+}
+{
+  const shared = new Map();
+  const local = { getItem: (key) => shared.has(key) ? shared.get(key) : null, setItem: (key, value) => shared.set(key, String(value)) };
+  const host = fakeHost();
+  const first = M.createRuntime(host.api, local, () => ({}));
+  const second = M.createRuntime(host.api, local, () => ({}));
+  await first.switchChat('p1-conflict');
+  await second.switchChat('p1-conflict');
+  const firstSpace = first.createSpace('甲');
+  await firstSpace.saved;
+  const secondSpace = second.createSpace('乙');
+  const secondSaved = await secondSpace.saved;
+  ok(secondSaved && secondSaved.ok === false && secondSaved.reason === 'conflict', '跨 tab 旧状态拒绝覆盖新状态');
+  ok(!JSON.parse(shared.get(first.LOCAL_PREFIX + 'p1-conflict')).spaces.some((sp) => sp.name === '乙'), '冲突写入未静默覆盖本地数据');
+}
+{
+  const failHost = fakeHost();
+  const failLocal = { getItem: () => null, setItem: () => { throw new Error('quota'); } };
+  const notices = [];
+  const failRt = M.createRuntime(failHost.api, failLocal, () => ({}), { notice: (reason) => notices.push(reason) });
+  await failRt.switchChat('p1-local-fail');
+  const created = failRt.createSpace('世界书仍应保存');
+  const result = await created.saved;
+  ok(result && result.ok === false && result.localOk === false && result.worldOk === true, '本地缓存失败返回降级持久化结果');
+  ok(notices.includes('persistenceFailed') && failHost.lorebooks().length === 1, '本地写入失败仍尝试世界书并提示');
+}
+{
+  const largeHost = fakeHost();
+  const largeRt = M.createRuntime(largeHost.api, null, () => ({}));
+  await largeRt.switchChat('p1-large');
+  const largeSpace = M.CORE.defaultSpaceState(largeRt.current());
+  const long = '字'.repeat(3000);
+  largeSpace.chats = M.CORE.normalizeChats({
+    contacts: Array.from({ length: 6 }, (_, i) => ({ id: 'c' + i, name: '联系人' + i, messages: Array.from({ length: 20 }, (_, j) => ({ id: 'm' + i + '-' + j, side: 'other', time: 't', text: long })) })),
+    groups: Array.from({ length: 6 }, (_, i) => ({ id: 'g' + i, name: '群' + i, messages: Array.from({ length: 24 }, (_, j) => ({ id: 'gm' + i + '-' + j, sender: '人', side: 'other', time: 't', text: long })) }))
+  });
+  largeSpace.revision = 1;
+  largeSpace.updatedAt = Date.now();
+  largeRt.current().updatedAt = Date.now();
+  const oldSnapshot = largeRt.buildSnapshotEntries(M.CORE.normalizeState(null, 'p1-large'), { force: true });
+  largeHost.seedBook('玉兆档案·p1-large', oldSnapshot);
+  const tooLarge = await largeRt.syncArchive('p1-large');
+  ok(tooLarge && tooLarge.ok === false && tooLarge.reason === 'snapshot-too-large', '超分片快照返回失败而非空替换');
+  ok(largeHost.lorebooks()[0].entries.length === oldSnapshot.length, '超分片失败保留旧恢复点');
+}
+{
+  const worldHost = fakeHost();
+  const worldApi = Object.assign({}, worldHost.api, { lorebook: Object.assign({}, worldHost.api.lorebook, { update: async () => { throw new Error('write denied'); } }) });
+  const worldRt = M.createRuntime(worldApi, null, () => ({}));
+  await worldRt.switchChat('p1-world-fail');
+  const created = worldRt.createSpace('无法落盘');
+  const result = await created.saved;
+  ok(result && result.ok === false && result.worldOk === false, '世界书写入失败返回明确失败');
+}
+{
+  const formState = M.CORE.blankUserSpace('p1-form', { id: 'sp0', isDefault: true });
+  formState.market.orders = M.CORE.normalizeMarket({ orders: [{ id: 'po-1', name: '订单', status: '已完成', side: 'buy' }] }).orders;
+  const formHtml = M.VIEWS.renderPage(formState, { app: 'market', view: 'form', params: { kind: 'order', id: 'po-1' }, stack: [] }, {}, { space: formState });
+  ok(formHtml.includes('<option value="completed" selected>'), '订单中文状态编辑时映射到 canonical value');
+  ok(M.VIEWS.renderManage({ spaces: [{ id: 'sp1', name: '空间', isDefault: false, sync: {} }], activeSpaceId: 'sp1' }, {}, {}, { view: 'root' }).includes('等待剧情同步'), '删除默认空间后管理诊断仍可渲染');
+  const armedSpaces = M.VIEWS.renderPage({ spaces: [{ id: 'sp1', name: '空间', isDefault: false, sync: {} }], activeSpaceId: 'sp1' }, { app: 'manage', view: 'spaces', params: {}, stack: [] }, {}, { armed: { id: 'space:sp1' } });
+  ok(armedSpaces.includes(zhCatalog['runtime.space.deleteConfirm']), '空间删除确认态在重渲染后可见');
+  ok(zhCatalog['runtime.manage.exportNote'].includes('全部用户空间') && !zhCatalog['runtime.space.localHint'].includes('仅存本机'), '中文隐私文案符合 v3 全空间快照语义');
+  ok(enCatalog['runtime.manage.exportNote'].includes('every user space') && !enCatalog['runtime.space.localHint'].includes('only on this device'), '英文隐私文案符合 v3 全空间快照语义');
+}
+{
+  // 运行时销毁：关闭跨 tab 通道并移除 storage 监听，避免测试/宿主进程被 BroadcastChannel 挂住。
+  const disposeHost = fakeHost();
+  let removed = 0;
+  const runtimeWindow = {
+    localStorage: null,
+    addEventListener: () => {},
+    removeEventListener: (name) => { if (name === 'storage') removed += 1; }
+  };
+  const disposable = M.createRuntime(disposeHost.api, null, () => ({}), { window: runtimeWindow });
+  disposable.dispose();
+  disposable.dispose();
+  ok(removed === 1 && /syncChannel\.close\(\)/.test(source), 'runtime dispose 幂等关闭 BroadcastChannel 并移除 storage 监听');
 }
 
 // ---------- 结果 ----------

@@ -309,8 +309,9 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
 
 ### 6.1 数据模型
 
-- 顶层 `state`：`{schemaVersion:2, chatId, pluginVersion, pendingFull, activeSpaceId,
-  migratedPlayer, hydration, spaces:[Space], updatedAt}`。单存储键、单快照链。
+- 顶层 `state`：`{schemaVersion:2, chatId, pluginVersion, storageRevision, storageWriter,
+  pendingFull, activeSpaceId, migratedPlayer, hydration, spaces:[Space], updatedAt}`。
+  单存储键、单快照链；`storageRevision/storageWriter` 用于跨 tab 冲突拒写。
 - `Space`：与旧版状态同构的全套分区（tablet/chats/notes/forum/market/space/map）
   加空间元信息与模型域字段：
   `{id, name, isDefault, sendToAI, allowAIWrite, createdAt, revision, processedTurns,
@@ -326,13 +327,13 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
 
 ### 6.2 AI 协议：空间参数路由
 
-- `turn` 行第 6 字段（可选）= 目标空间名；缺省/`sp0` → 默认空间。
+- `turn` 行第 6 字段（可选）= 目标空间的可逆 URI token；缺省/`sp0` → 默认空间。
   `findSpaceState` 按 id → 名称（trim+忽略大小写）解析。
 - 拒写记入目标（或默认）空间 `sync.issues` 并回声：`space.unknown`（未知空间）、
   `space.denied`（allowAIWrite=false）、`space.full`（非默认空间只接受 diff 轮——
   全量轮会抹掉用户私有数据，直接丢弃）。
 - 基线注入按空间分组：`sendToAI` 的空间各出 `<yzc_*>` 容器，默认空间不带属性、
-  自定义空间带 `space="空间名"`；条目采样上限按发送空间数均摊（保底 1），
+  自定义空间带 `space="路由 token"`；条目采样上限按发送空间数均摊（保底 1），
   五级预算淘汰全空间共用一条池子。完整性底线评估（assess）只对默认空间生效。
 
 ### 6.3 真实发言门禁（任何空间一致）
@@ -340,8 +341,9 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
 - 用户内容 id 前缀：联系人 `c-<n>`、私讯 `pm-<n>`、群讯 `pmg-<n>`、评论 `pmc-<n>`、
   用户帖 `owner=player`。模型不得增删改这些行（diff 应用器直接丢弃）；
   c- 线程允许模型追加新行（self/other 皆可，不得覆盖/删除既有行）。
-- 未读为客户端语义：用户线程 unread = 最后一条 pm/pmg 之后的回复数 − `seen`
-  （打开详情 `markSpaceThreadSeen` 推进）；用户帖 unread = 非用户评论数 − `seen`。
+- 未读为客户端语义：用户线程使用持久累计 `replyCount - seenReplies`，用户帖使用
+  非用户评论累计数 − `seenReplies`；打开详情由 `markSpaceThreadSeen/markSpacePostSeen` 推进游标，
+  不因消息/评论保留窗口淘汰而回退。
   `recomputeThreadUnread` 在每次空间写入与快照应用后重算；模型线程的 unread
   仍由协议字段维护，不被触碰。
 
@@ -356,29 +358,29 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   表单编辑（entity-new/edit/save/delete 动作）不再是玩家域专属。
 - 气泡左右：右 = 用户真实发言（pm/pmg id）；默认空间的模型线程维持旧语义
   （self 在右）；用户空间/用户线程里 AI 一律在左带发送者名。
-- 空间数据变更统一走 `saveSpace`（updatedAt + 未读重算 + 落盘）。
+- 空间数据变更统一走 `saveSpace`（updatedAt + 未读重算 + 落盘）；即使只有空间元数据或
+  拒写诊断，也写入世界书权威快照。
 - 归档/召回条目只从默认空间构建（用户空间数据每轮基线注入，无需归档）。
+  但整份 v3 状态快照包含全部用户空间，且 full 轮会保留所有用户拥有的联系人、消息、评论和帖子。
 
 ## 七、状态与持久化
 
 - 按 `chatId` 隔离；`chat:opened` 切换加载、重建按钮/`message:deleted` 从世界书快照恢复。
 - `processedTurns` 去重，防同一轮重复应用；重复投递的轮次不重复落盘。
 - 快照超阈值（200KB）拒收；解析失败转 Toast 并保留旧数据。
-- **世界书为主存储（v2.2.0 持久化改造）**：权威数据在世界书 `玉兆档案·<chatId>` 的
-  分片快照条目（角色域 `yz-snap-N` / 玩家域 `yz-psnap-N`，enabled:false 永不注入，
-  每片 ≤90KB、单域 ≤5 片，包装 `{v, ver, rev, updatedAt, kind, index, total, body}`，
-  读取按 index 拼接还原；兼容旧版单条 `yz-snap`）。本地镜像（`yz-jade-v1:<chatId>` /
-  `yz-jade-player-v1:<chatId>`）只是启动加速缓存，可随时丢弃。存储回退链 = 世界书
-  （权威）→ 本地镜像（缓存）→ 空白。save 只在"有实际数据"时排队同步（空白/未加载
-  状态不得覆盖已有书）；syncArchive 无可写内容时不触碰已有书。宿主 chat 键与全局
-  备份已移除（不再有切聊复查竞态）；UI 偏好（封印开关/FAB 位置）仍走 global 键。
-- **镜像/世界书 tie-break**：save 先写镜像（同步）后排队写世界书（async busy 合并），
-  因此镜像的 updatedAt 恒不早于世界书；load 时 revision 严格更高或 revision 平局且
-  updatedAt 更新者胜——rev-0 聊天与游标/未读等 revision 中性变更不会被陈旧世界书
-  覆盖，陈旧世界书由镜像治愈回写。
-- **并发写安全**：镜像同步在 await 后复查状态对象同一性（双通道交错不覆盖新轮次）；
-  hydrateHistory 写回前引用复查（水化窗口内新轮次不被静默回滚）；落盘队列与 load
-  协同（切聊前先排空队列，rev-0 首条玩家消息不再丢失）。
+- **世界书为主存储（v3）**：权威数据在世界书 `玉兆档案·<chatId>` 的 v3 分片快照条目
+  `yz-snap-N`（enabled:false 永不注入，每片 ≤90KB、最多 5 片，包装
+  `{v, ver, rev, updatedAt, kind, index, total, body}`，读取按 index 拼接还原）。
+  不再接受旧单条快照格式。本地镜像 `yz-jade-v1:<chatId>` 只是启动加速缓存，可随时
+  丢弃；存储回退链 = 世界书（权威）→ 本地镜像（缓存）→ 空白。空白/未加载状态不覆盖
+  已有书；明确清除操作写入 v3 空快照墓碑。UI 偏好（封印开关/FAB 位置）仍走 global 键。
+- **镜像/世界书选择**：save 先写带 `storageRevision/storageWriter` 的本地镜像，再串行
+  写世界书。读取时仍按 revision/updatedAt 选择较新来源；本地写入失败会继续尝试世界书，
+  但完整操作结果保持失败并提示用户。
+- **并发写安全**：跨 tab 写入前校验本地镜像 revision；检测到其他 writer 已更新时拒绝
+  旧写入，不做静默 last-writer-wins 覆盖。BroadcastChannel 只用于通知重读，`storage`
+  事件作回退；Runtime 提供 `dispose()` 关闭通道。hydrateHistory 写回前保留对象一致性，
+  清除操作持久化历史截断点，避免旧消息协议在重载时复活。
 - **版本迁移（v2.1.0 防旧数据粘滞）**：状态记录 `pluginVersion`；加载/导入时发现版本
   变化即置持久化强制全量标记 `state.pendingFull`（封印切换同样置位，替代内存
   flagsDirty 重启丢失的盲区）。下一轮生成按新提示词强制全量重写全部数据（旧格式行、
@@ -386,11 +388,9 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   assessment.ok）后清除标记；diff/part 轮不清除。全量轮提示词含「时间字段为相对表述
   的行本轮一律改写为绝对日期」规则——否则「基线数据视为既定事实」会诱导模型把旧相对
   时间原样照抄进全量输出，粘滞修复被规则自相矛盾抵消。
-- **旧数据兼容**：全部历史版本 schemaVersion 恒为 1 且字段集是当前字段集的子集，
-  normalizeState 白名单重建双向吸收（缺失补空、畸形消毒、超限截断），结构上不存在
-  不兼容路径；若未来发生结构性变更，以 schemaVersion 显式迁移 + pendingFull 全量重建
-  兜底，而不是原地改写旧档。
-- 双写规则：save 先写本地镜像再写宿主键（宿主键带当前聊天复查，切走时跳过宿主写入，镜像与全局备份照常）；load 以 revision 或 updatedAt 更新的数据源为准——镜像更新时以镜像为准（宿主键陈旧则被治愈回写），host 仅作镜像缺失兜底。
+- **当前格式约束**：导入与世界书快照只接受当前 v3 `schemaVersion:2 + spaces[]` 结构；
+  不新增旧版兼容、回退或额外迁移路径。现有一次性旧玩家数据迁移仅作为 v3 发布前既定
+  入口，不扩展为通用兼容层。
 
 ## 八、视觉风格
 
