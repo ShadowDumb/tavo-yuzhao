@@ -414,7 +414,7 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
 
 | 决策 | 说明 |
 | --- | --- |
-| 全屏 UI 直接挂载，不走 `htmlFragments` | 法器是全视口模态 + 全局悬浮入口，需在 Hook 期间独立于聊天页生命周期工作；宿主没有「当前是否聊天页」的查询 API，用 `chatActive`（chat:opened/chat:closed 维护）门控 FAB 显隐，配合禁用收起并隐藏 FAB、`visibilitychange` / window focus 刷新 |
+| UI 与数据层由 `/chat/body/end` 的 `htmlFragments` 提供 | `ui/jade.html` 承载 Core、Protocol、i18n、Runtime、Prompt、静态 shell、CSS、FAB、Toast、确认框和 UI 脚本；`entry.js` 只注册 Hooks/入口动作并提供共享桥。全屏定位仍由 CSS 覆盖视口，`chatActive`（chat:opened/chat:closed 维护）门控 FAB 显隐，配合禁用收起并隐藏 FAB、`visibilitychange` / window focus 刷新；片段晚于 entry 挂载时由共享 ready 事件等待后再绑定 |
 | z-index 取单档 `Z_INDEX_TOP = 2147483646` | overlay 与 FAB 共用同一常量，全屏模态语义需要顶层；刻意避开 2147483647 最大值，给与宿主或其它插件的层级协调留一档余量 |
 | FAB 默认位置 `bottom:96px; right:16px` | 由 `FAB_MARGIN_BOTTOM/FAB_MARGIN_RIGHT` 常量统一供 CSS 初始位置与长按复位/管理页复位按钮使用，保证「复位」即回到初始位置；真机（手机/平板/桌面）仍需逐一验证默认与复位位置不遮挡发送等控件 |
 | generation:success 内部顺序不变式 | 读 payload → 同步剥离事件正文 → 异步应用快照 → 后台落盘。该 Hook 每个 handler 只有约 5 秒预算且超时整体丢弃：剥离是阻止协议块进入已保存消息的关键动作，纯字符串操作，必须在任何 await 之前完成 |
@@ -423,7 +423,7 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
 | 水化版本标记 | `state.hydration.sig = 消息条数:末条id`，未变化时跳过历史全文扫描。已知盲区：编辑中间楼层不改变签名，由「message:updated 不带信封 → 去抖 `rebuildFromHistory`」兜底；消息删除同样走快照恢复 |
 | 内存聊天缓存上限 | 按 chatId LRU 只保留最近 5 个会话的内存态；淘汰无损——每次写入已落盘，重进时从宿主/本地重新加载 |
 | 历史水化只查 assistant | role 过滤枚举按 API 文档只有 system/assistant/user；群聊多角色以 `role:'assistant'` + 不同 characterId 表达，不做别名兜底查询 |
-| 宿主行为依赖清单（每次升级 Tavo 后回归） | ① entry 可访问顶层 window/document 并向 body 挂载（跨域 iframe 时回退当前文档）；② Pointer Events、MutationObserver、TreeWalker 可用；③ `tavo.get/set` 与 localStorage 可用。全屏 UI 与剥离通道依赖以上行为，宿主若提供页面级挂载点应迁移并删除手工门控 |
+| 宿主行为依赖清单（每次升级 Tavo 后回归） | ① `/chat/body/end` HTML fragment 能挂载 `ui/jade.html`，并允许其中的 fixed overlay/FAB 覆盖视口；② entry 可访问顶层 window/document（跨域 iframe 时回退当前文档）；③ Pointer Events、MutationObserver、TreeWalker 可用；④ `tavo.get/set` 与 localStorage 可用。全屏 UI、事件绑定与剥离通道依赖以上行为 |
 | issues 只存 `{path, code}` | 文案在 catalog（`assess.issue.*`），展示时按界面语言翻译 |
 
 ## 十一、变更记录

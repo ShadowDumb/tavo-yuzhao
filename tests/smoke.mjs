@@ -5,16 +5,20 @@
  * Runtime 状态机（去重/水化签名/切聊竞态/重建）、持久化队列与缓存淘汰、
  * Views 渲染、manifest 与 catalog 结构校验。
  *
- * 实现说明：entry.js 是自启动 IIFE，测试在其尾部 smoke-bootstrap 标记注释处截断源码，
- * 注入一段导出内部模块的代码后用 new Function 执行。标记与引导行绑定，
- * 若 entry.js 尾部结构变化，需同步更新 ANCHOR。
+ * 实现说明：entry.js 负责 Hook bridge，ui/jade.html 负责数据层与 UI 脚本；测试直接
+ * 加载 src/ 中的源码片段，再用 new Function 运行数据层与纯渲染函数。
+ * entry.js 的标记仍作为入口注册契约锚点。
  */
 import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (p) => readFileSync(path.join(ROOT, p), 'utf8');
+const readMany = (paths) => paths.map(read).join('\n\n');
+
+execFileSync(process.execPath, ['scripts/build.mjs', '--check'], { cwd: ROOT, stdio: 'pipe' });
 
 // ---------- 断言工具 ----------
 let passed = 0;
@@ -37,22 +41,24 @@ function localExpected(utcStr) {
 }
 
 // ---------- 加载插件内部模块 ----------
-// ANCHOR 用 entry.js 尾部的 smoke-bootstrap 注释作锚（注释后即 app 创建/启动引导，
+// ANCHOR 用 entry.js 中的 smoke-bootstrap 注释截断数据层（注释后是入口桥与 Hook 注册，
 // 截断时不会执行）。锚定注释而非代码字符串，避免变量改名破坏截断。
 const ANCHOR = '/* smoke-bootstrap */';
-const source = read('entry.js');
-const cut = source.indexOf(ANCHOR);
+const entrySource = read('entry.js');
+const uiSource = read('ui/jade.html');
+const source = entrySource + '\n' + uiSource;
+if (source.includes('refreshPlayerName')) throw new Error('启动流程仍引用不存在的 refreshPlayerName，请使用 refreshOwnerName');
+const cut = entrySource.indexOf(ANCHOR);
 if (cut < 0) throw new Error('未找到 entry.js 的 /* smoke-bootstrap */ 标记，请同步更新 tests/smoke.mjs 的 ANCHOR');
-const head = source.slice(0, cut);
-// 截断点位于 IIFE 内部：probe 借助闭包导出内部模块，随后补回函数收尾。
-const probe = head + `
+const dataSource = readMany(['src/core.js', 'src/protocol.js', 'src/i18n.js', 'src/runtime.js', 'src/prompt.js']);
+// 数据层源码片段共享同一测试闭包；UI 片段在下方单独加载，模拟 htmlFragments 的边界。
+const probe = `(function () {
+${dataSource}
   globalThis.__YZ_SMOKE__ = {
-    CORE, PROTOCOL, PROMPT, VIEWS,
+    CORE, PROTOCOL, PROMPT,
     createRuntime: RUNTIME.createRuntime,
     makeTranslator: makeTranslator,
     setTranslator: function (t) { TRANSLATE = t; },
-    pickEnvelopePayload: APP.pickEnvelopePayload,
-    stripEventFields: APP.stripEventFields,
     i18n: I18N,
     MAX_SNAPSHOT_BYTES: MAX_SNAPSHOT_BYTES,
     PLUGIN_VERSION: PLUGIN_VERSION
@@ -61,6 +67,31 @@ const probe = head + `
 `;
 new Function(probe)();
 const M = globalThis.__YZ_SMOKE__;
+
+const uiViewsSource = readMany([
+  'src/ui/views/shared.js', 'src/ui/views/tablet.js', 'src/ui/views/messages.js', 'src/ui/views/forms.js',
+  'src/ui/views/notes.js', 'src/ui/views/forum.js', 'src/ui/views/market.js', 'src/ui/views/space.js',
+  'src/ui/views/map.js', 'src/ui/views/sync.js', 'src/ui/views/manage.js', 'src/ui/views/page.js'
+]);
+M.VIEWS = new Function('CORE', 'I18N', 'tr', 'MAX_SNAPSHOT_BYTES', 'GROUP_ORDER', 'keyId', 'formatDateTime', uiViewsSource + '\nreturn VIEWS;')(
+  M.CORE, M.i18n, M.i18n.tr || ((key) => key), M.MAX_SNAPSHOT_BYTES, M.CORE.GROUP_ORDER, M.CORE.keyId, M.CORE.formatDateTime
+);
+const uiAppSource = readMany([
+  'src/ui/app/entry.js', 'src/ui/app/shell.js', 'src/ui/app/state.js', 'src/ui/app/data-actions.js',
+  'src/ui/app/navigation.js', 'src/ui/app/overlay.js', 'src/ui/app/messaging.js', 'src/ui/app/forms.js',
+  'src/ui/app/fab.js', 'src/ui/app/dom-strip.js', 'src/ui/app/hooks.js'
+]);
+const uiHelpers = new Function(
+  'CORE', 'PROTOCOL', 'I18N', 'RUNTIME', 'PROMPT', 'tr', 'makeTranslator', 'dbg',
+  'stableHash', 'cleanText', 'safeObject', 'safeArray', 'hasText', 'GROUP_ORDER', 'MAX_SNAPSHOT_BYTES', 'keyId', 'formatDateTime',
+  uiAppSource + '\nreturn { pickEnvelopePayload, stripEventFields };'
+)(
+  M.CORE, M.PROTOCOL, M.i18n, { createRuntime: M.createRuntime }, M.PROMPT,
+  M.i18n.tr || ((key) => key), M.makeTranslator, () => {}, M.CORE.stableHash,
+  M.CORE.cleanText, M.CORE.safeObject, M.CORE.safeArray, M.CORE.hasText, M.CORE.GROUP_ORDER, M.MAX_SNAPSHOT_BYTES, M.CORE.keyId, M.VIEWS.formatDateTime
+);
+M.pickEnvelopePayload = uiHelpers.pickEnvelopePayload;
+M.stripEventFields = uiHelpers.stripEventFields;
 
 // v3 空间模型：读「当前聊天默认空间」的分区/同步/revision（旧用例的 dflt(rt.current()).tablet 等）。
 function dflt(state) { return M.CORE.defaultSpaceState(state) || (state && state.spaces && state.spaces[0]) || state; }
@@ -88,9 +119,8 @@ console.log('# i18n 字典');
 for (const [name, catalog] of [['zh-CN', zhCatalog], ['en', enCatalog]]) {
   M.setTranslator(M.makeTranslator({ plugin: { i18n: { t: translatorFor(catalog) } } }));
   M.i18n.invalidate();
-  const shell = M.VIEWS.renderShell(M.CORE.blankState('c'), {});
-  ok(shell.includes(catalog['runtime.brand.title']), `${name} renderShell 品牌文案走 catalog`);
-  ok(shell.includes('aria-label="' + catalog['runtime.appName'] + '"'), `${name} 对话框 aria-label 走 catalog`);
+  ok(uiSource.includes('id="yz1-overlay"') && source.includes('brand.textContent = t.brand.title'), `${name} UI 片段与品牌文案刷新逻辑存在`);
+  ok(uiSource.includes('id="yz1-jade"') && source.includes("jade.setAttribute('aria-label', t.appName)"), `${name} UI 片段与对话框 aria-label 刷新逻辑存在`);
 }
 
 // ---------- manifest 与 catalog 结构 ----------
@@ -101,6 +131,15 @@ ok(/^\d+\.\d+\.\d+$/.test(manifest.version), 'version 是合法 SemVer');
 eq(manifest.permissions.slice().sort(), ['generate', 'message', 'variable'], 'permissions 仅含实际使用的能力');
 ok(existsSync(path.join(ROOT, manifest.entry)), 'entry 文件存在');
 ok(existsSync(path.join(ROOT, manifest.cover)), 'cover 文件存在');
+const htmlFragments = manifest.contributes && manifest.contributes.htmlFragments || [];
+eq(htmlFragments.map((fragment) => fragment.id), ['yu-zhao-ui'], 'htmlFragments 声明玉兆 UI');
+ok(htmlFragments[0] && htmlFragments[0].src === 'ui/jade.html' && htmlFragments[0].mount === '/chat/body/end', 'UI 片段挂载路径合法');
+ok(uiSource.includes('id="yz1-overlay"') && uiSource.includes('id="yz1-fab"') && uiSource.includes('<style>'), 'UI 片段包含静态 shell、FAB 与样式');
+ok(source.includes('shared.uiReady') && source.includes('shared.attachUI(app)'), 'entry 与 UI 通过 ready bridge 连接');
+ok(/plugin\.on\('generation:prepare', function \(event\) \{ return callUi\('generationPrepare', event\); \}/.test(source), 'generation Hook 仍由 entry 注册');
+ok(!/plugin\.on\(/.test(uiSource), 'UI 片段不注册插件 Hooks');
+ok(/shared\.uiReady\.then\(function \(\) \{\s*var app = shared\.ui;/.test(source), 'Hook bridge 每次读取当前 UI 实例');
+ok(/shared\.ui && shared\.ui !== app/.test(source) && /shared\.ui\.dispose\(\)/.test(source), 'UI fragment 重挂载时销毁旧实例');
 
 const releaseKey = manifest.releaseNotes && manifest.releaseNotes.$t;
 ok(!!releaseKey && zhCatalog[releaseKey] && enCatalog[releaseKey], 'releaseNotes 键在双语 catalog 中存在');
@@ -145,11 +184,11 @@ ok(['actions.openJade'].every((k) => zhCatalog[k].length <= 48 && enCatalog[k].l
 
 // 回归保护：FAB 默认位置与复位必须共用常量，不允许再出现硬编码 64px 复位。
 ok(/var FAB_MARGIN_BOTTOM = 96;/.test(source) && !/innerHeight - height - 64\)/.test(source), 'FAB 默认/复位位置共用常量（96px）');
-ok(/var Z_INDEX_TOP = 2147483646;/.test(source) && !/z-index:\s*2147483647/.test(source), 'z-index 单档 2147483646 常量，保留最大档余量');
+ok(uiSource.includes('z-index:2147483646') && uiSource.includes('z-index:2147483648'), 'overlay 使用 2147483646，确认框保留更高层级');
 ok(/fab\.hidden = !enabled\(\) \|\| !chatActive \|\| overlay\.classList\.contains\('open'\);/.test(source), 'FAB 显隐受 enabled + chatActive + 玉兆打开 三重门控（打开时隐藏防遮挡误触）');
 // 回归保护：侧边栏「清除玉兆数据」必须走二次确认——首击只弹确认 toast（内嵌「确认清除」
 // 按钮），确认按钮才真正执行，防止误触不可恢复操作。
-ok(/plugin\.onSidebarAction\('clear-data', armSidebarClear\)/.test(source), '侧边栏注册 clear-data 动作');
+ok(/plugin\.onSidebarAction\('clear-data', function \(\) \{ return callUi\('clearData'\)/.test(source) && /clearData: armSidebarClear/.test(source), '侧边栏注册 clear-data 动作');
 ok(/showConfirm\(dict\.toast\.clearTitle, dict\.toast\.clearConfirm, dict\.toast\.clearConfirmAction, clearAllData\)/.test(source), '首击只弹居中确认对话框（showConfirm），确认才真正清除');
 ok(/state\.spaces = \[CORE\.blankUserSpace\(chatId, \{ id: CORE\.DEFAULT_SPACE_ID, isDefault: true \}\)\]/.test(source), 'clearAllData 重建全部用户空间（只留空白默认空间）');
 // 回归保护：清除后必须重置同步状态并强制下一轮全量重建——否则 status 残留
@@ -159,8 +198,8 @@ ok(/function clearFeatureData\(featureId\) \{\s*var blank/.test(source) && /pend
 ok(/plugin\.onSidebarAction\('resync-history'/.test(source) && /plugin\.onSidebarAction\('clear-data'/.test(source), '侧边栏 resync-history 与 clear-data 双动作并存');
 // 回归保护：确认框必须是 body 级居中 modal（独立于 overlay 与 toast），最高 z-index，
 // 带半透明遮罩——宿主侧边栏展开等布局变化不能把确认入口遮挡到看不见。
-ok(/#yz1-confirm\{position:fixed;left:0;top:0;width:100%;height:100%;z-index:' \+ \(Z_INDEX_TOP \+ 2\)/.test(source), '确认框为 body 级全屏居中 modal 且 z-index 高于 toast（+2）');
-ok(/\.yz-confirm-backdrop\{[^}]*background:rgba\(0,0,0,\.55\)/.test(source), '确认框带半透明遮罩（视觉聚焦，明确表达模态等待决策）');
+ok(/#yz1-confirm\{position:fixed;left:0;top:0;width:100%;height:100%;z-index:2147483648/.test(uiSource), '确认框为 body 级全屏居中 modal 且 z-index 高于 toast（+2）');
+ok(/\.yz-confirm-backdrop\{[^}]*background:rgba\(0,0,0,\.55\)/.test(uiSource), '确认框带半透明遮罩（视觉聚焦，明确表达模态等待决策）');
 ok(/showConfirm\(title, message, okLabel, fn\)/.test(source) && /host\.classList\.add\('show'\)/.test(source), 'showConfirm 渲染标题/文案/确认按钮并显示 modal');
 ok(/if \(btn\.classList\.contains\('yz-confirm-ok'\)/.test(source) && /setTimeout\(fn, 0\)/.test(source), '确认按钮才执行 fn（微任务防竞态），点取消/遮罩只关闭');
 // 回归保护：确认框必须锁定弹起时的聊天——确认时校验仍指向同一聊天才执行，
@@ -192,7 +231,7 @@ ok(/var restoreBusy = false;/.test(source) && /if \(restoreBusy\) \{ showToast\(
 // 回归保护：非聊天页（宿主主页/设置等）侧边栏/输入动作不操作上一个聊天的残留数据。
 ok(/if \(!chatActive\) \{ showToast\(I18N\.dict\(\)\.toast\.noChat, true\); return; \}/.test(source), 'open()/resync/clear 非聊天页统一门控（不作用于残留聊天）');
 // 回归保护：聊天详情检索时不钉底（搜旧消息不被拉回底部）、非聊天页重渲染恢复滚动位置。
-ok(/#yz1-overlay\.loading\{display:flex/.test(source), 'open() 异步加载期间有 loading 态');
+ok(/#yz1-overlay\.loading\{display:flex/.test(uiSource), 'open() 异步加载期间有 loading 态');
 // 回归保护（v3 空间模型）：发言是本机直写，无跨域投递、无发送锁/游标回退——旧机制必须已移除。
 ok(!/syncPlayerChannel|restorePlayerReadCursor|markPlayerRead|playerReadCursor/.test(source), '双域镜像通道与已读游标机制已整体移除');
 ok(/function sendSpaceMessage\(spaceId, threadId, text\)/.test(source) && /function sendSpaceComment\(spaceId, postId, text\)/.test(source), '空间内发言/评论本机直写函数存在');
@@ -217,22 +256,22 @@ ok(/data-action="delete-track"/.test(source), '舆图行踪有删除按钮');
 ok(/data-action="delete-place"/.test(source), '舆图地点有删除按钮');
 // 用户线程未读：尾随回复数 − seen 游标（客户端语义，见 Core 空间测试）。
 // 回归保护：卦名允许两行换行（en 长卦名小屏不截断）。
-ok(/\.yz-node b\{[^}]*display:-webkit-box;-webkit-line-clamp:2/.test(source), '卦名两行换行（en 不截断）');
+ok(/\.yz-node b\{[^}]*display:-webkit-box;-webkit-line-clamp:2/.test(uiSource), '卦名两行换行（en 不截断）');
 // 回归保护：英文顶栏窄屏适配（媒体查询隐藏副标、缩字距）。
-ok(/@media \(max-width:374px\)\{\.yz-topbar\{gap:6px\}/.test(source), '窄屏顶栏适配（防 EN 溢出）');
+ok(/@media \(max-width:374px\)\{\.yz-topbar\{gap:6px\}/.test(uiSource), '窄屏顶栏适配（防 EN 溢出）');
 // 回归保护：封印后给「启封」撤销按钮（误封可一键回退）。
 ok(/toast\.sealed[\s\S]*?label: I18N\.dict\(\)\.unseal/.test(source), '封印后 toast 带「启封」撤销按钮');
 // 回归保护：超长标识行截断按字段边界（不腰斩 id）。
 ok(/var lastSep = cut\.lastIndexOf\('｜'\);\s*if \(lastSep > 0\) cut = cut\.slice\(0, lastSep\);/.test(source), '第五轮截断按「｜」边界切（不腰斩 id）');
 // 回归保护：玩家域主页同步行为纯展示（无手形）。
-ok(/\.yz-sync\.yz-sync-static\{cursor:default\}/.test(source), '玩家域主页同步行纯展示（不伪装可点）');
+ok(/\.yz-sync\.yz-sync-static\{cursor:default\}/.test(uiSource), '玩家域主页同步行纯展示（不伪装可点）');
 // 回归保护：确认框语言切换刷新文案 + 无障碍焦点（aria 关联 + 焦点入取消）。
 ok(/function refreshConfirmText\(\) \{/.test(source) && /box\.setAttribute\('aria-labelledby', titleId\);/.test(source), '确认框语言刷新 + aria 关联 + 焦点入取消');
 // 回归保护：英文「New/Edit+名词」补空格（en 不粘连成 NewFolder）。
 ok(/function playerVerbNoun\(verb, noun\) \{/.test(source) && /verb \+ ' ' \+ noun : verb \+ noun;/.test(source), 'playerVerbNoun 按语言补空格（en 不粘连）');
 // 回归保护：带操作按钮的 toast（清除确认等）文案较长，nowrap+overflow 会把按钮挤出可视区，
 // 必须允许换行且不裁剪，保证「确认清除」按钮始终可见。
-ok(/\.yz-toast\.has-action\{white-space:normal;max-width:92%;overflow:visible;text-overflow:clip;line-height:1.5\}/.test(source), 'has-action toast 允许换行、不裁剪（按钮不被挤出）');
+ok(/\.yz-toast\.has-action\{white-space:normal;max-width:92%;overflow:visible;text-overflow:clip;line-height:1.5\}/.test(uiSource), 'has-action toast 允许换行、不裁剪（按钮不被挤出）');
 ok(/toast\.classList\.toggle\('has-action', !!\(action && action\.label\)\);/.test(source), 'showToast 按是否有操作按钮切换 has-action 类');
 ok(/toast\.classList\.remove\('show', 'bad', 'has-action'\);/.test(source), 'clearToast 复位 has-action 类');
 // 回归保护：× 关闭玉兆后 FAB 必须立即恢复可见（close() 内按同一门控刷新 fab.hidden，
@@ -241,24 +280,24 @@ const closeBody = source.slice(source.indexOf('function close()'), source.indexO
 ok(/fab\.hidden = !enabled\(\) \|\| !chatActive;/.test(closeBody), 'close() 内直接刷新 FAB 显隐（× 关闭后悬浮球立即回来）');
 // 回归保护：全局 Toast 通道——toast 宿主独立于 overlay（overlay 关闭时 display:none 会藏掉
 // overlay 内的 toast），长按 FAB 复位/侧边栏重建等玉兆未打开时的提示才能可见。
-ok(/#yz1-toast\{position:fixed/.test(source) && source.includes("hostDocument.body.appendChild(toastHost)"), 'toast 宿主为 body 级全局浮层（非 overlay 内，玉兆未打开也可见）');
-ok(!/renderShell[^}]*data-toast/.test(source) && !/<div class="yz-toast" data-toast>/.test(source), 'shell 模板不再内嵌 overlay 内 toast（已迁移到全局宿主）');
+ok(/#yz1-toast\{position:fixed/.test(uiSource) && uiSource.includes('id="yz1-toast"'), 'toast 宿主为 body 级全局浮层（非 overlay 内，玉兆未打开也可见）');
+ok(uiSource.indexOf('id="yz1-overlay"') < uiSource.indexOf('id="yz1-toast"') && !source.includes('VIEWS.renderShell'), '静态 UI 片段提供 shell，入口不再生成 UI 模板');
 // 回归保护：FAB chatActive 启动兜底——插件重载后宿主不再重发 chat:opened，启动时主动探测一次。
 ok(source.indexOf('chatActive 启动兜底') >= 0 && source.includes('tavoApi.chat.current') && /startChat && startChat\.id != null/.test(source), '启动时主动探测当前聊天置 chatActive（防 FAB 永久隐藏）');// 回归保护：表单校验定位化——reason → 字段高亮 focus + 行内错误提示；数量步进按钮。
 ok(/flagFormError\(fieldKey, message\)/.test(source) && /box\.classList\.add\('error'\)/.test(source), '保存失败按字段高亮 focus + 行内错误提示');
 ok(/REASON_FIELD = \{ name: 'name'/.test(source), 'reason 映射到具体表单字段');
 ok(/data-action="qty-step"/.test(source), '数量字段带步进按钮');
 // 回归保护：拖拽跟手——触摸不被滚动劫持 + 手势中禁用位置过渡（否则按钮滞后于指针）。
-ok(/#yz1-fab\{[^}]*touch-action:none/.test(source), 'FAB 声明 touch-action:none，触摸拖拽不被页面滚动劫持');
-ok(/#yz1-fab\.dragging\{transition:none\}/.test(source), 'FAB 拖拽中禁用位置过渡动画');
+ok(/#yz1-fab\{[^}]*touch-action:none/.test(uiSource), 'FAB 声明 touch-action:none，触摸拖拽不被页面滚动劫持');
+ok(/#yz1-fab\.dragging\{transition:none\}/.test(uiSource), 'FAB 拖拽中禁用位置过渡动画');
 // 回归保护：图标与点击反馈——玉璧 SVG、禁用方形触摸高亮、按压为圆形缩放。
-ok(/id="yzJadeFace"/.test(source) && source.includes('fab.innerHTML = FAB_ICON'), 'FAB 图标为玉璧 SVG（FAB_ICON 常量）');
-ok(/#yz1-fab\{[^}]*-webkit-tap-highlight-color:transparent/.test(source), 'FAB 禁用系统方形触摸高亮');
-ok(/#yz1-fab:active\{transform:scale\(/.test(source), 'FAB 按压反馈为圆形缩放');
+ok(/id="yzJadeFace"/.test(uiSource) && source.includes('var FAB_ICON'), 'FAB 图标为玉璧 SVG（静态 UI + 视图复用图标）');
+ok(/#yz1-fab\{[^}]*-webkit-tap-highlight-color:transparent/.test(uiSource), 'FAB 禁用系统方形触摸高亮');
+ok(/#yz1-fab:active\{transform:scale\(/.test(uiSource), 'FAB 按压反馈为圆形缩放');
 ok(/!enabled\(\) \|\| !autoStrip\(\)/.test(source), '正文剥离有 enabled 门控');
 // 回归保护：generation:success 内剥离必须先于快照应用（防 5 秒预算超时丢弃剥离结果）。
 // 切片端点用相邻事件字符串而非局部变量名，避免改名破坏测试。
-const successHandler = source.slice(source.indexOf("plugin.on('generation:success'"), source.indexOf("plugin.on('generation:error'"));
+const successHandler = uiSource.slice(uiSource.indexOf('async function onGenerationSuccess'), uiSource.indexOf('function onGenerationError'));
 ok(successHandler.indexOf('stripEventFields(event)') >= 0 && successHandler.indexOf('stripEventFields(event)') < successHandler.indexOf('applyText('), 'success 先同步剥离再应用快照');
 
 // 回归保护：全部渲染出来的 data-action 按钮都有对应的 bindOverlay 路由分支（双向一致），
@@ -870,8 +909,7 @@ M.i18n.invalidate();
   ok(manage.includes(zhT('runtime.manage.resetFab')), '复位入口文案走 catalog');
   ok(manage.includes(zhT('runtime.manage.off')), '封印开关显示已封印');
 
-  const shell = M.VIEWS.renderShell(state, {});
-  ok(shell.includes('data-action="close"') && shell.includes('role="dialog"'), 'shell 具备关闭按钮与 dialog 语义');
+  ok(uiSource.includes('data-action="close"') && uiSource.includes('role="dialog"'), '静态 UI 片段具备关闭按钮与 dialog 语义');
 
   const emptyMsg = M.VIEWS.renderMsg(state, { app: 'msg', view: 'root', params: {} });
   ok(emptyMsg.includes(zhT('runtime.guard.contacts')), '空讯息页展示引导文案');
@@ -1723,11 +1761,11 @@ console.log('# P2 · v3 评审边界回归');
 
   // P2-16/17/18/19/20/21/22/23/24/26/27/28：UI 语义、键盘、窄屏和触控契约。
   ok(/confirmHost\.addEventListener\('keydown'/.test(source) && /event\.key !== 'Tab'/.test(source) && /event\.stopImmediatePropagation\(\);\s*hideConfirm\(\);/.test(source), '确认框独立处理 Tab 循环与 Esc，避免关闭底层玉兆');
-  ok(/#yz1-overlay\.loading #yz1-jade\{visibility:hidden;pointer-events:none\}/.test(source) && /overlay\.classList\.contains\('loading'\)/.test(source), 'loading 期间底层玉兆控件不可交互');
+  ok(/#yz1-overlay\.loading #yz1-jade\{visibility:hidden;pointer-events:none\}/.test(uiSource) && /overlay\.classList\.contains\('loading'\)/.test(source), 'loading 期间底层玉兆控件不可交互');
   ok(/var viewportHeight = vv && Number\(vv\.height\) > 0 \? Number\(vv\.height\) : Number\(hostWindow\.innerHeight\)/.test(source), '键盘适配兼容 visualViewport 缺失的 WebView');
-  ok(/\.yz-map-delete\{[^}]*width:44px;height:44px/.test(source) && /class="yz-map-delete"[^>]*aria-label=/.test(source), '地图删除按钮触屏可见且有可访问名称');
-  ok(/\.yz-space-row\{display:flex;flex-direction:column/.test(source) && /\.yz-space-actions>\*\{flex:1 1 auto;min-width:44px\}/.test(source), '空间管理行在窄屏纵向重排');
-  ok(/\.yz-btn\{[^}]*min-width:44px;min-height:44px/.test(source) && /\.yz-row-action\{[^}]*width:44px;height:44px/.test(source), '高风险控件触摸尺寸至少 44px');
+  ok(/\.yz-map-delete\{[^}]*width:44px;height:44px/.test(uiSource) && /class="yz-map-delete"[^>]*aria-label=/.test(source), '地图删除按钮触屏可见且有可访问名称');
+  ok(/\.yz-space-row\{display:flex;flex-direction:column/.test(uiSource) && /\.yz-space-actions>\*\{flex:1 1 auto;min-width:44px\}/.test(uiSource), '空间管理行在窄屏纵向重排');
+  ok(/\.yz-btn\{[^}]*min-width:44px;min-height:44px/.test(uiSource) && /\.yz-row-action\{[^}]*width:44px;height:44px/.test(uiSource), '高风险控件触摸尺寸至少 44px');
   const customHome = M.CORE.normalizeState({ spaces: [{ id: 'sp1', name: '私人', isDefault: false }] }, 'p2-ui-home');
   const customHomeHtml = M.VIEWS.renderHome(customHome, {}, { space: customHome.spaces[0], spaceName: '私人' });
   ok(!customHomeHtml.includes('data-action="sync-detail"') && customHomeHtml.includes('yz-sync-static'), '自定义空间首页不显示角色同步诊断入口');
@@ -1754,8 +1792,8 @@ console.log('# P3 · 细节与视觉优化');
   ok(newNode.includes('yz-badge-new') && newNode.includes(zhCatalog['runtime.badge.new']), '新同步显示文字徽标');
 
   // P3-03/P3-08：减少动态效果和超长标题断词策略落在样式中。
-  ok(/@media \(prefers-reduced-motion:reduce\)[^']*animation:none!important/.test(source), '支持 prefers-reduced-motion');
-  ok(/\.yz-post-paper h2\{[^}]*overflow-wrap:anywhere/.test(source) && /\.yz-row-copy b\{[^}]*overflow-wrap:anywhere/.test(source), '长标题允许在任意字符处断行');
+  ok(/@media \(prefers-reduced-motion:reduce\)[^']*animation:none!important/.test(uiSource), '支持 prefers-reduced-motion');
+  ok(/\.yz-post-paper h2\{[^}]*overflow-wrap:anywhere/.test(uiSource) && /\.yz-row-copy b\{[^}]*overflow-wrap:anywhere/.test(uiSource), '长标题允许在任意字符处断行');
 
   // P3-04/P3-05：管理页不渲染无效自链接，空态首页只保留一条行动文案。
   ok(!source.includes('data-action="nav-manage"') && !source.includes('runtime.manage.openManage'), '管理页移除无效重复管理入口');
@@ -2562,7 +2600,7 @@ console.log('# 玩家发帖（forum owner 维度）');
   ok(mgHtml.includes(zhCatalog['runtime.space.tagDefault']), '默认空间有标记徽标');
   const mgList = M.VIEWS.renderPage(mgState, { app: 'manage', view: 'root', params: {}, stack: [] }, {}, {});
   ok(mgList.includes('data-action="switch-space"'), '管理页有空间管理入口行');
-  ok(M.VIEWS.renderShell(dflt(mgState), {}).includes('data-action="switch-space"'), '顶栏空间切换按钮');
+  ok(uiSource.includes('data-action="switch-space"'), '顶栏空间切换按钮');
 }
 
 // ---------- 评审加固：恶意数据渲染契约（XSS 守卫） ----------

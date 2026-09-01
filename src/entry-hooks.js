@@ -1,9 +1,3 @@
-/* Yu Zhao — 修仙传讯法器，协议驱动，八大功能：玉牌/讯息/玉册/论坛/坊市/芥子空间/舆图/管理，i18n 走 tavo.plugin.i18n */
-/* Generated file. Edit src/ and run node scripts/build.mjs. */
-(function () {
-  'use strict';
-
-  /* ---------- Hook bridge ---------- */
   /* smoke-bootstrap */
   var host = typeof window !== 'undefined' ? window : globalThis;
   var shared = host.__YU_ZHAO__;
@@ -63,4 +57,3 @@
       plugin.on('generation:cancelled', function (event) { return callUi('generationCancelled', event); });
     }
   }
-})();

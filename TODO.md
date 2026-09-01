@@ -1,6 +1,6 @@
 # 玉兆 开发待办（TODO）
 
-> 当前基线：v3.0.0（冒烟 892 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
+> 当前基线：v3.0.0（冒烟 900 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
 > 本文件只记录未完成工作。已完成的工作与全部变更记录见 CHANGELOG.md。
 
 ---
@@ -22,7 +22,7 @@ buildCurrent 窗口化、条目级注入采样（sampleEntries 强制集/活跃�
 模型改写）、未读 seen 游标（recomputeThreadUnread）、空间路由（turn 行第 6 字段，
 unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
-- 冒烟门禁：`node --check entry.js && node tests/smoke.mjs`（当前 892 项全绿）
+- 冒烟门禁：`node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs`（当前 900 项全绿）
 - 发布门禁：MCP `tavo_plugin_validate` → `tavo_plugin_audit` → `tavo_plugin_package`，
   产物随版本号更新出包
 
@@ -196,14 +196,14 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
       补 lockedHint；空间管理页 CSS；死 CSS（retry/status/start-thread/mark-all/locked 徽标）移除
 - [x] **测试**：双域契约整体替换为用户空间契约（生命周期/路由/门禁/拒写 issue/迁移/
       未读生命周期/注入分组/提示词规则/当前 v3 导入/空间管理视图渲染）；微任务排干修复；
-      `node --check entry.js && node tests/smoke.mjs` 892 项全绿
+      `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 900 项全绿
 - [x] **文档**：CHANGELOG v3.0.0、DESIGN.md 第六节重写 + 持久化/重建段落更新、README 特性/协议/安装更新
 - [x] **版本**：PLUGIN_VERSION/manifest = 3.0.0，releaseNotes.3_0_0 双语
 
 ### 待完成（发布前）
 
 - [x] git commit `9f1d62c`（本地）；~~push origin main~~ 网络不可达，待恢复后 `git push origin main`
-- [x] 打包 `../yu-zhao-v3.0.0.tpg`（manifest 3.0.0 / entry.js / locales×2 / cover.png）
+- [x] 打包 `../yu-zhao-v3.0.0.tpg`（manifest 3.0.0 / entry.js / locales×2 / ui/jade.html / cover.png）
 - [ ] MCP 发布门禁：`tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
 - [ ] 真机回归：空间切换/新建/删除+撤销、
       跨空间收发与 AI 回帖未读、只读/关发送开关生效、世界书快照恢复、触屏两击确认
@@ -290,4 +290,4 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 - [x] 增加容量和撤销测试：消息/评论窗口、实体满额、父实体消失、空间 ID 重用、基线最终字符数（现有回归覆盖）。
 - [ ] 增加浏览器回归：320/360/375px、iOS 安全区与键盘、Android WebView、触屏 hover、键盘 Tab/Esc、VoiceOver/TalkBack、减少动态效果。
 - [x] 修正测试进程退出问题：`runtime.dispose()` 幂等关闭 runtime 创建的 `BroadcastChannel` 并移除 `storage` 监听。
-- [x] 统一文档测试数量为实际 892 项，删除 README/TODO 中 814、815、841、842、872、880、890、891 等过时数字。
+- [x] 统一文档测试数量为实际 900 项，删除 README/TODO 中 814、815、841、842、872、880、890、891、892、895、898 等过时数字。
