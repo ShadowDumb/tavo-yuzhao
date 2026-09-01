@@ -128,7 +128,7 @@ function buildUi() {
     '',
     uiSections.join('\n\n'),
     '',
-    '    var app = APP.create({ tavo: tavo, document: document, window: window, runtime: RUNTIME });',
+    '    var app = APP.create({ tavo: tavo, document: document, window: window });',
     '    shared.attachUI(app);',
     '    Promise.resolve(app.start()).catch(function (error) {',
     "      try { console.error('[Yu Zhao] UI start failed', error); } catch (_) {}",

@@ -47,6 +47,9 @@ const ANCHOR = '/* smoke-bootstrap */';
 const entrySource = read('entry.js');
 const uiSource = read('ui/jade.html');
 const source = entrySource + '\n' + uiSource;
+const buildSource = read('scripts/build.mjs');
+const runtimeSource = read('src/runtime.js');
+const uiHooksSource = read('src/ui/app/hooks.js');
 if (source.includes('refreshPlayerName')) throw new Error('启动流程仍引用不存在的 refreshPlayerName，请使用 refreshOwnerName');
 const cut = entrySource.indexOf(ANCHOR);
 if (cut < 0) throw new Error('未找到 entry.js 的 /* smoke-bootstrap */ 标记，请同步更新 tests/smoke.mjs 的 ANCHOR');
@@ -140,6 +143,10 @@ ok(/plugin\.on\('generation:prepare', function \(event\) \{ return callUi\('gene
 ok(!/plugin\.on\(/.test(uiSource), 'UI 片段不注册插件 Hooks');
 ok(/shared\.uiReady\.then\(function \(\) \{\s*var app = shared\.ui;/.test(source), 'Hook bridge 每次读取当前 UI 实例');
 ok(/shared\.ui && shared\.ui !== app/.test(source) && /shared\.ui\.dispose\(\)/.test(source), 'UI fragment 重挂载时销毁旧实例');
+ok(!/\bsetupSyncChannel\(\);/.test(uiHooksSource), 'UI 启动不调用 Runtime 私有同步函数');
+ok(/function setupSyncChannel\(\)[\s\S]*?\n\s*setupSyncChannel\(\);/.test(runtimeSource), 'Runtime 创建时初始化同步通道');
+ok(/APP\.create\(\{ tavo: tavo, document: document, window: window \}\)/.test(buildSource), 'UI 构建传入由 App 创建的 Runtime 实例');
+ok(!buildSource.includes('runtime: RUNTIME'), 'UI 构建不再把 Runtime 工厂误传为实例');
 
 const releaseKey = manifest.releaseNotes && manifest.releaseNotes.$t;
 ok(!!releaseKey && zhCatalog[releaseKey] && enCatalog[releaseKey], 'releaseNotes 键在双语 catalog 中存在');

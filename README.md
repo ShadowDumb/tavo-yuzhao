@@ -100,11 +100,11 @@ node --check entry.js && node tests/smoke.mjs
 
 日常修改 `src/` 下对应功能文件，不直接编辑生成的 `entry.js` 或 `ui/jade.html`。构建脚本分别生成数据层/Hook 入口和 `/chat/body/end` UI 片段；UI 脚本通过共享桥接对象访问 Core、Protocol、Runtime 和 Prompt，Hooks 仍只由 `entry.js` 注册。可用 `node scripts/build.mjs --check` 检查两个产物是否与源码一致。
 
-基线 **900 项全绿**，覆盖协议解析、diff 合并、评估矩阵、预算窗口（含五级淘汰与标识行截断）、条目级注入采样（强制包含集/活跃度加权/冷门保底/隐藏条目不出现）、帖子未读机制（启发式兼容/清零保留/置顶光效）、世界书归档、版本迁移、备份恢复链、镜像 tie-break 与并发竞态回归、检索筛选、用户空间持久化安全、恶意载荷渲染契约（XSS 守卫）、静态 UI 片段、entry/UI bridge 与 fragment 重挂载契约、data-action↔路由双向守卫等。
+基线 **904 项全绿**，覆盖协议解析、diff 合并、评估矩阵、预算窗口（含五级淘汰与标识行截断）、条目级注入采样（强制包含集/活跃度加权/冷门保底/隐藏条目不出现）、帖子未读机制（启发式兼容/清零保留/置顶光效）、世界书归档、版本迁移、备份恢复链、镜像 tie-break 与并发竞态回归、检索筛选、用户空间持久化安全、恶意载荷渲染契约（XSS 守卫）、静态 UI 片段、entry/UI bridge、Runtime 启动契约与 fragment 重挂载契约、data-action↔路由双向守卫等。
 
 ### 发布门禁
 
-1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 900 项全绿
+1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 904 项全绿
 2. Tavo MCP 环境执行 `tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
 3. 真机回归：世界书归档挂接、FAB 拖拽/复位、卦位徽标、同步详情页、触屏两击确认、空间切换/新建与跨空间收发（手机/平板/桌面）
 4. `zip -r ../yu-zhao-v3.0.0.tpg manifest.json entry.js locales ui/jade.html cover.png`

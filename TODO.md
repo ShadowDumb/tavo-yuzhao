@@ -1,6 +1,6 @@
 # 玉兆 开发待办（TODO）
 
-> 当前基线：v3.0.0（冒烟 900 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
+> 当前基线：v3.0.0（冒烟 904 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
 > 本文件只记录未完成工作。已完成的工作与全部变更记录见 CHANGELOG.md。
 
 ---
@@ -22,7 +22,7 @@ buildCurrent 窗口化、条目级注入采样（sampleEntries 强制集/活跃�
 模型改写）、未读 seen 游标（recomputeThreadUnread）、空间路由（turn 行第 6 字段，
 unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
-- 冒烟门禁：`node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs`（当前 900 项全绿）
+- 冒烟门禁：`node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs`（当前 904 项全绿）
 - 发布门禁：MCP `tavo_plugin_validate` → `tavo_plugin_audit` → `tavo_plugin_package`，
   产物随版本号更新出包
 
@@ -202,7 +202,7 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
       补 lockedHint；空间管理页 CSS；死 CSS（retry/status/start-thread/mark-all/locked 徽标）移除
 - [x] **测试**：双域契约整体替换为用户空间契约（生命周期/路由/门禁/拒写 issue/迁移/
       未读生命周期/注入分组/提示词规则/当前 v3 导入/空间管理视图渲染）；微任务排干修复；
-      `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 900 项全绿
+      `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 904 项全绿
 - [x] **文档**：CHANGELOG v3.0.0、DESIGN.md 第六节重写 + 持久化/重建段落更新、README 特性/协议/安装更新
 - [x] **版本**：PLUGIN_VERSION/manifest = 3.0.0，releaseNotes.3_0_0 双语
 
@@ -296,23 +296,24 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 - [x] 增加容量和撤销测试：消息/评论窗口、实体满额、父实体消失、空间 ID 重用、基线最终字符数（现有回归覆盖）。
 - [ ] 增加浏览器回归：320/360/375px、iOS 安全区与键盘、Android WebView、触屏 hover、键盘 Tab/Esc、VoiceOver/TalkBack、减少动态效果。
 - [x] 修正测试进程退出问题：`runtime.dispose()` 幂等关闭 runtime 创建的 `BroadcastChannel` 并移除 `storage` 监听。
-- [x] 统一文档测试数量为实际 900 项，删除 README/TODO 中 814、815、841、842、872、880、890、891、892、895、898 等过时数字。
+- [x] 统一文档测试数量为实际 904 项，删除 README/TODO 中 814、815、841、842、872、880、890、891、892、895、898、900 等过时数字。
 
 ### v3.0.0 用户视角复审新增问题（2026-09-01）
 
 > 本节来自多 subagent 的源码/UI/运行时交叉评审。已合并重复报告，仅记录当前源码可定位的问题；
-> P0/P1 需在下一次发布前处理。900 项 smoke 主要覆盖纯函数、渲染字符串和运行时数据，不能证明真实 DOM、
+> P0/P1 需在下一次发布前处理。904 项 smoke 主要覆盖纯函数、渲染字符串和运行时数据，不能证明真实 DOM、
 > Tavo fragment 生命周期、浏览器触控或屏幕阅读器行为正常。
 
 #### P0：启动阻断
 
-- [ ] **R0-01 UI 启动调用未定义函数**：`src/ui/app/hooks.js:247-252` 的 `start()` 直接调用
+- [x] **R0-01 UI 启动调用未定义函数**：已将同步通道初始化移入 `src/runtime.js` 的 Runtime 创建流程，
+      `src/ui/app/hooks.js:247-252` 不再调用 Runtime 私有函数。原问题：`start()` 直接调用
       `setupSyncChannel()`，但该函数只存在于 `src/runtime.js:81-89` 的 `createRuntime` 私有作用域，
       未注入 UI 闭包。进入聊天后 `start()` 在加载数据和绑定入口前抛 `ReferenceError`，玉兆功能入口全部失效。
-- [ ] **R0-02 构建脚本把 Runtime 工厂当实例传入**：`scripts/build.mjs:131` 将 `RUNTIME` 传给
+- [x] **R0-02 构建脚本把 Runtime 工厂当实例传入**：`scripts/build.mjs:131` 不再覆盖传入 `runtime`，
+      由 `src/ui/app/entry.js:59` 创建并持有 `RUNTIME.createRuntime(...)` 实例。原问题：构建脚本将 `RUNTIME` 传给
       `APP.create()`，而 `src/ui/app/entry.js:59` 期待的是有 `current/switchChat/dispose` 等方法的实例；
-      即使修复 R0-01，启动仍会因 `runtime` 方法不存在而失败。应传 `RUNTIME.createRuntime(...)` 的结果，
-      或删除该覆盖参数让 App 自行创建实例。
+      即使修复 R0-01，启动仍会因 `runtime` 方法不存在而失败；现已删除该覆盖参数，改由 App 自行创建实例。
 
 #### P1：数据完整性与高风险操作
 

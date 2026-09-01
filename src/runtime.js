@@ -87,6 +87,7 @@
         refreshFromStorage(msg.key, msg.revision);
       };
     }
+    setupSyncChannel();
 
     function onStorage(event) {
       refreshFromStorage(event && event.key, null);

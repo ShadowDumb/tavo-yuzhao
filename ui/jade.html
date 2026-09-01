@@ -2950,6 +2950,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         refreshFromStorage(msg.key, msg.revision);
       };
     }
+    setupSyncChannel();
 
     function onStorage(event) {
       refreshFromStorage(event && event.key, null);
@@ -7723,7 +7724,6 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       if (started || disposed) return;
       started = true;
       if (hostWindow && typeof hostWindow.addEventListener === 'function') hostWindow.addEventListener('pagehide', dispose);
-      setupSyncChannel();
       setupFeatureSync();
       try {
         var i18nApi = tavoApi.plugin && tavoApi.plugin.i18n;
@@ -7790,7 +7790,7 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
 
   var APP = { create: create, pickEnvelopePayload: pickEnvelopePayload, stripEventFields: stripEventFields };
 
-    var app = APP.create({ tavo: tavo, document: document, window: window, runtime: RUNTIME });
+    var app = APP.create({ tavo: tavo, document: document, window: window });
     shared.attachUI(app);
     Promise.resolve(app.start()).catch(function (error) {
       try { console.error('[Yu Zhao] UI start failed', error); } catch (_) {}

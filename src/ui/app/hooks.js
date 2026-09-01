@@ -248,7 +248,6 @@
       if (started || disposed) return;
       started = true;
       if (hostWindow && typeof hostWindow.addEventListener === 'function') hostWindow.addEventListener('pagehide', dispose);
-      setupSyncChannel();
       setupFeatureSync();
       try {
         var i18nApi = tavoApi.plugin && tavoApi.plugin.i18n;
