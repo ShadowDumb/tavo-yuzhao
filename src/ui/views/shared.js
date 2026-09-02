@@ -126,12 +126,19 @@
   }
 
   // 卦位三态徽标，互斥优先级：警示 > 未读 > 新；封印态不显示任何徽标。
+  // 警示只反映「本轮真实拒写/数据问题」（diff 违规、超限拒绝）——剧情数据只是还没
+  // 凑满完整性底线属于待补齐，不亮红叹号（提示模型补齐的 issue 回声照常走 sync 诊断）。
+  function issueBlocksWrite(issue) {
+    var code = String((issue && issue.code) || '');
+    return code.indexOf('diff.') === 0 || code === 'payload.oversized';
+  }
   function nodeBadge(feature, disabled, state) {
     if (!!feature.toggleable && disabled[feature.id] === false) return null;
     var sync = (state && state.sync) || {};
     var issues = CORE.safeArray(sync.issues, 20);
     for (var i = 0; i < issues.length; i += 1) {
-      if (String((issues[i] && issues[i].path) || '').indexOf(feature.id + '.') === 0) return { kind: 'alert' };
+      var issue = issues[i];
+      if (issueBlocksWrite(issue) && String((issue && issue.path) || '').indexOf(feature.id + '.') === 0) return { kind: 'alert' };
     }
     if (feature.id === 'msg') {
       var total = unreadTotal(state);
@@ -159,7 +166,8 @@
         if (badge.kind === 'alert') { badgeHtml = '<i class="yz-badge yz-badge-alert">!</i>'; aria = name + sep + t.badge.alert; }
         else if (badge.kind === 'unread') { badgeHtml = '<i class="yz-badge yz-badge-unread">' + CORE.escapeHtml(badge.label) + '</i>'; aria = name + sep + tr('runtime.badge.unread', { n: badge.label }); }
         else {
-          badgeHtml = '<i class="yz-badge yz-badge-new">' + CORE.escapeHtml(t.badge.new) + '</i>';
+          // 新同步不再渲染文字角标（会遮挡卦名/按钮文字）：b-new 呼吸光效已足够，
+          // 语义经 aria-label 保留给读屏。
           aria = name + sep + t.badge.new;
         }
       }

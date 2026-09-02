@@ -1094,8 +1094,10 @@ console.log('# P1 · 卦位三态徽标');
   eq(B(featMsg, {}, bs), null, '空白态无徽标');
   bs.chats.contacts = [{ id: 'c', name: '甲', unread: 120 }];
   bs.sync.applied = ['notes'];
+  bs.sync.issues = [{ path: 'msg.c9', code: 'diff.forbidden' }];
+  eq(B(featMsg, {}, bs).kind, 'alert', '真实拒写（diff 违规）警示优先于未读');
   bs.sync.issues = [{ path: 'msg.contacts', code: 'msg.contacts' }];
-  eq(B(featMsg, {}, bs).kind, 'alert', '警示优先于未读');
+  eq(B(featMsg, {}, bs).kind, 'unread', '仅完整性未达标（待补齐）不亮红叹号');
   eq(B(featNotes, {}, bs).kind, 'new', '已应用且未见 → 新');
   bs.sync.appliedSeen = ['notes'];
   eq(B(featNotes, {}, bs), null, '查看后并入 seen，新徽标熄灭');
@@ -1112,11 +1114,11 @@ console.log('# P1 · 卦位三态徽标');
   ok(nodesHtml.includes('yz-badge-unread') && nodesHtml.includes('99+'), 'renderNodes 渲染未读角标');
   ok(nodesHtml.includes('99+ 条未读'), 'aria-label 附未读语义');
 
-  // 新同步：仅 b-new 呼吸光效，不渲染文字角标（避免遮挡卦名）；aria 语义保留。
+  // 新同步：仅 b-new 呼吸光效，不渲染文字角标（避免遮挡卦名/按钮文字）；aria 语义保留。
   const newState = M.CORE.blankState('bd3');
   newState.sync.applied = ['notes'];
   const newHtml = M.VIEWS.renderNodes({}, newState);
-  ok(newHtml.includes('b-new') && newHtml.includes('yz-badge-new') && newHtml.includes(zhCatalog['runtime.badge.new']), '新同步显示文字角标并保留光效');
+  ok(newHtml.includes('b-new') && !newHtml.includes('yz-badge-new') && !newHtml.includes('>' + zhCatalog['runtime.badge.new'] + '<'), '新同步不再渲染文字角标，保留呼吸光效');
   ok(newHtml.includes('，' + zhCatalog['runtime.badge.new']), '新同步 aria 语义保留');
 }
 
@@ -1854,11 +1856,13 @@ console.log('# P3 · 细节与视觉优化');
   ok(tabsHtml.includes('role="tablist"') && tabsHtml.includes('role="tab"') && tabsHtml.includes('aria-selected="true"'), '页签带 tablist/tab/aria-selected 语义');
   ok(sealedNodes.includes('aria-disabled="true"') && sealedNodes.includes(zhCatalog['runtime.manage.off']), '封印卦位带 aria-disabled 与封印状态');
 
-  // P3-02：新同步必须有可见文字标识，不只依赖颜色和呼吸动画。
+  // P3-02：新同步视觉以 b-new 呼吸光效为准（文字角标已移除，避免遮挡卦名/按钮文字）；
+  // 无障碍语义经 aria-label 保留，不依赖颜色与动画。
   p3State.sync.applied = ['notes'];
   p3State.sync.appliedSeen = [];
   const newNode = M.VIEWS.renderNodes({}, p3State);
-  ok(newNode.includes('yz-badge-new') && newNode.includes(zhCatalog['runtime.badge.new']), '新同步显示文字徽标');
+  ok(newNode.includes('b-new') && !newNode.includes('yz-badge-new'), '新同步保留光效、移除文字徽标');
+  ok(newNode.includes('，' + zhCatalog['runtime.badge.new']), '新同步 aria 语义仍可被读屏感知');
 
   // P3-03/P3-08：减少动态效果和超长标题断词策略落在样式中。
   ok(/@media \(prefers-reduced-motion:reduce\)[^']*animation:none!important/.test(uiSource), '支持 prefers-reduced-motion');
