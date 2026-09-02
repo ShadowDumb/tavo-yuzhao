@@ -18,17 +18,6 @@
   },
   "permissions": ["message", "generate", "variable"],
   "contributes": {
-    "inputActions": [
-      { "id": "open-jade", "label": { "$t": "actions.openJade" } }
-    ],
-    "sidebar": [
-      { "id": "open-jade", "label": { "$t": "actions.openJade" } },
-      { "id": "resync-history", "label": { "$t": "actions.resyncHistory" } },
-      { "id": "clear-data", "label": { "$t": "actions.clearData" } }
-    ],
-    "htmlFragments": [
-      { "id": "yu-zhao-ui", "src": "ui/jade.html", "mount": "/chat/body/end" }
-    ],
     "settings": {
       "schema": [
         { "type": "info", "text": { "$t": "settings.info" }, "icon": "info" },

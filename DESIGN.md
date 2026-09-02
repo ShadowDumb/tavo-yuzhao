@@ -347,22 +347,6 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   `recomputeThreadUnread` 在每次空间写入与快照应用后重算；模型线程的 unread
   仍由协议字段维护，不被触碰。
 
-### 6.4 UI：一套空间视图
-
-- 顶栏空间按钮显示当前空间名，点击进入管理页 spaces 视图：切换（进入）、
-  发送AI / AI可写开关、改名（默认空间禁改）、删除（两击确认 + 6s 撤销，
-  默认空间按钮文案「清空重建」）、底部新建输入。
-- `activeSpaceId` 持久化在 state（每聊天独立）；空间切换做子页消毒（详情/表单
-  回退根视图）。所有功能页统一可编辑：讯息列表带「新增联系人」CTA（自定义名称），
-  私聊/群聊/论坛评论在任何空间都有发言输入框，玉册/坊市订单/储物/舆图删除、
-  表单编辑（entity-new/edit/save/delete 动作）不再是玩家域专属。
-- 气泡左右：右 = 用户真实发言（pm/pmg id）；默认空间的模型线程维持旧语义
-  （self 在右）；用户空间/用户线程里 AI 一律在左带发送者名。
-- 空间数据变更统一走 `saveSpace`（updatedAt + 未读重算 + 落盘）；即使只有空间元数据或
-  拒写诊断，也写入世界书权威快照。
-- 归档/召回条目只从默认空间构建（用户空间数据每轮基线注入，无需归档）。
-  但整份 v3 状态快照包含全部用户空间，且 full 轮会保留所有用户拥有的联系人、消息、评论和帖子。
-
 ## 七、状态与持久化
 
 - 按 `chatId` 隔离；`chat:opened` 切换加载、重建按钮/`message:deleted` 从世界书快照恢复。
@@ -373,7 +357,7 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   `{v, ver, rev, updatedAt, kind, index, total, body}`，读取按 index 拼接还原）。
   不再接受旧单条快照格式。本地镜像 `yz-jade-v1:<chatId>` 只是启动加速缓存，可随时
   丢弃；存储回退链 = 世界书（权威）→ 本地镜像（缓存）→ 空白。空白/未加载状态不覆盖
-  已有书；明确清除操作写入 v3 空快照墓碑。UI 偏好（封印开关/FAB 位置）仍走 global 键。
+  已有书；明确清除操作写入 v3 空快照墓碑。
 - **镜像/世界书选择**：save 先写带 `storageRevision/storageWriter` 的本地镜像，再串行
   写世界书。读取时仍按 revision/updatedAt 选择较新来源；本地写入失败会继续尝试世界书，
   但完整操作结果保持失败并提示用户。
@@ -392,15 +376,7 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
   不新增旧版兼容、回退或额外迁移路径。现有一次性旧玩家数据迁移仅作为 v3 发布前既定
   入口，不扩展为通用兼容层。
 
-## 八、视觉风格
-
-- **玉质**：青玉/白玉透光、温润反光。
-- **纹饰**：祥云纹、雷纹、篆书铭文环绕玉盘。
-- **光效**：灵气流光、卦位呼吸光晕、太极缓转。
-- **字体**：标题篆/隶，正文保证可读。
-- 悬浮入口为一枚**玉佩/玉简**（可拖拽），点击展开太极八卦盘。
-
-## 九、设置项（settings.schema）
+## 八、设置项（settings.schema）
 
 | key | 类型 | 说明 |
 | --- | --- | --- |
@@ -410,22 +386,18 @@ diff 格式只降「输出」token；每轮注入的 `<yz_current>` 基线仍随
 
 界面语言不设开关：跟随宿主 App 语言（`tavo.plugin.i18n`），语言切换时全量重渲染。
 
-## 十、关键实现决策
+## 九、关键实现决策
 
 | 决策 | 说明 |
 | --- | --- |
-| UI 与数据层由 `/chat/body/end` 的 `htmlFragments` 提供 | `ui/jade.html` 承载 Core、Protocol、i18n、Runtime、Prompt、静态 shell、CSS、FAB、Toast、确认框和 UI 脚本；`entry.js` 只注册 Hooks/入口动作并提供共享桥。全屏定位仍由 CSS 覆盖视口，`chatActive`（chat:opened/chat:closed 维护）门控 FAB 显隐，配合禁用收起并隐藏 FAB、`visibilitychange` / window focus 刷新；片段晚于 entry 挂载时由共享 ready 事件等待后再绑定 |
-| z-index 取单档 `Z_INDEX_TOP = 2147483646` | overlay 与 FAB 共用同一常量，全屏模态语义需要顶层；刻意避开 2147483647 最大值，给与宿主或其它插件的层级协调留一档余量 |
-| FAB 默认位置 `bottom:96px; right:16px` | 由 `FAB_MARGIN_BOTTOM/FAB_MARGIN_RIGHT` 常量统一供 CSS 初始位置与长按复位/管理页复位按钮使用，保证「复位」即回到初始位置；真机（手机/平板/桌面）仍需逐一验证默认与复位位置不遮挡发送等控件 |
 | generation:success 内部顺序不变式 | 读 payload → 同步剥离事件正文 → 异步应用快照 → 后台落盘。该 Hook 每个 handler 只有约 5 秒预算且超时整体丢弃：剥离是阻止协议块进入已保存消息的关键动作，纯字符串操作，必须在任何 await 之前完成 |
 | 持久化为后台串行队列 | 内存态同步更新，写盘不阻塞调用方（同 key 写入按入队顺序生效）；重复投递轮次不再触发落盘；序列化体积超限仅在 yz_debug 下告警 |
 | 正文剥离双通道 | 权威路径在 Hook 层：generation:success 同步剥离事件正文、message hook 应用快照；兜底路径：MutationObserver 收集增量变更记录（220ms 防抖、队列上限），只扫描新增/变化的文本节点，启动时做一次全量扫描；两条路径都受 `enabled()` + `auto_strip` 门控 |
 | 水化版本标记 | `state.hydration.sig = 消息条数:末条id`，未变化时跳过历史全文扫描。已知盲区：编辑中间楼层不改变签名，由「message:updated 不带信封 → 去抖 `rebuildFromHistory`」兜底；消息删除同样走快照恢复 |
 | 内存聊天缓存上限 | 按 chatId LRU 只保留最近 5 个会话的内存态；淘汰无损——每次写入已落盘，重进时从宿主/本地重新加载 |
 | 历史水化只查 assistant | role 过滤枚举按 API 文档只有 system/assistant/user；群聊多角色以 `role:'assistant'` + 不同 characterId 表达，不做别名兜底查询 |
-| 宿主行为依赖清单（每次升级 Tavo 后回归） | ① `/chat/body/end` HTML fragment 能挂载 `ui/jade.html`，并允许其中的 fixed overlay/FAB 覆盖视口；② entry 可访问顶层 window/document（跨域 iframe 时回退当前文档）；③ Pointer Events、MutationObserver、TreeWalker 可用；④ `tavo.get/set` 与 localStorage 可用。全屏 UI、事件绑定与剥离通道依赖以上行为 |
 | issues 只存 `{path, code}` | 文案在 catalog（`assess.issue.*`），展示时按界面语言翻译 |
 
-## 十一、变更记录
+## 十、变更记录
 
 版本变更记录统一保存在 [CHANGELOG.md](CHANGELOG.md)（最新版本在最前）。
