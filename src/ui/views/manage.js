@@ -19,18 +19,21 @@
       var enter = isActive
         ? '<span class="yz-space-current">' + CORE.escapeHtml(t.spaceCurrent) + '</span>'
         : '<button type="button" class="yz-tab" data-action="space-enter" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceEnter) + '</button>';
-      var sendBtn = '<button type="button" class="yz-clear-btn' + (sp.sendToAI !== false ? ' armed' : '') + '" data-action="space-flag" data-flag="sendToAI" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceSendToggle) + ' ' + (sp.sendToAI !== false ? t.manage.on : t.manage.off) + '</button>';
-      var writeBtn = '<button type="button" class="yz-clear-btn' + (sp.allowAIWrite !== false ? ' armed' : '') + '" data-action="space-flag" data-flag="allowAIWrite" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceWriteToggle) + ' ' + (sp.allowAIWrite !== false ? t.manage.on : t.manage.off) + '</button>';
+      var writeLocked = !!sp.isDefault;
+      var sendBtn = '<button type="button" class="yz-space-toggle" data-action="space-flag" data-flag="sendToAI" data-id="' + CORE.escapeHtml(sp.id) + '" aria-pressed="' + (sp.sendToAI !== false ? 'true' : 'false') + '">' + CORE.escapeHtml(t.spaceSendToggle) + ' ' + (sp.sendToAI !== false ? t.manage.on : t.manage.off) + '</button>';
+      var writeBtn = '<button type="button" class="yz-space-toggle' + (writeLocked ? ' locked' : '') + '" data-action="space-flag" data-flag="allowAIWrite" data-id="' + CORE.escapeHtml(sp.id) + '" aria-pressed="' + (sp.allowAIWrite !== false ? 'true' : 'false') + '"' + (writeLocked ? ' disabled aria-disabled="true"' : '') + '>' + CORE.escapeHtml(t.spaceWriteToggle) + ' ' + (sp.allowAIWrite !== false ? t.manage.on : t.manage.off) + '</button>';
       var rename = sp.isDefault ? '' :
         '<div class="yz-space-rename"><input type="text" data-space-rename="' + CORE.escapeHtml(sp.id) + '" value="' + CORE.escapeHtml(sp.name) + '" maxlength="120" aria-label="' + CORE.escapeHtml(t.spaceRenameLabel) + '">' +
         '<button type="button" class="yz-tab" data-action="space-rename" data-id="' + CORE.escapeHtml(sp.id) + '">' + CORE.escapeHtml(t.spaceRenameBtn) + '</button></div>';
-      var del = '<button type="button" class="yz-clear-btn" data-action="space-delete" data-id="' + CORE.escapeHtml(sp.id) + '" data-wipe-base="' + CORE.escapeHtml(t.spaceDeleteConfirm) + '">' + CORE.escapeHtml(sp.isDefault ? t.spaceDeleteDefault : t.spaceDelete) + '</button>';
+       var deleteConfirm = sp.isDefault ? t.spaceDeleteDefaultConfirm : t.spaceDeleteConfirm;
+       var deleteLabel = contextualLabel(deleteConfirm, name);
+       var del = '<button type="button" class="yz-clear-btn" data-action="space-delete" data-id="' + CORE.escapeHtml(sp.id) + '" aria-label="' + CORE.escapeHtml(deleteLabel) + '" data-wipe-base="' + CORE.escapeHtml(deleteConfirm) + '">' + CORE.escapeHtml(sp.isDefault ? t.spaceDeleteDefault : t.spaceDelete) + '</button>';
       return '<div class="yz-row yz-static yz-manage-row yz-space-row">' +
         '<div class="yz-manage-main" style="display:block"><b>' + CORE.escapeHtml(name) + '</b>' + badges + '</div>' +
         '<div class="yz-space-actions">' + enter + sendBtn + writeBtn + del + '</div>' + rename + '</div>';
     }).join('');
     var addRow = '<div class="yz-space-rename"><input type="text" data-space-input placeholder="' + CORE.escapeHtml(t.spaceNewPlaceholder) + '" maxlength="120" aria-label="' + CORE.escapeHtml(t.spaceNewPlaceholder) + '">' +
-      '<button type="button" class="yz-add-btn" data-action="space-create">' + CORE.escapeHtml(t.spaceCreateBtn) + '</button></div>';
+      '<button type="button" class="yz-tab" data-action="space-create">' + CORE.escapeHtml(t.spaceCreateBtn) + '</button></div>';
     return '<main class="yz-page-inner" data-marker="manage-spaces">' + yzHeader(t.spaceManageTitle) +
       '<p class="yz-manage-info">' + CORE.escapeHtml(t.spaceManageInfo) + '</p>' +
       '<div class="yz-page-list">' + rows + '</div>' + addRow + '</main>';
@@ -59,7 +62,7 @@
         '<button type="button" class="yz-manage-main" data-action="toggle-feature" data-feature="' + feature.id + '" aria-pressed="' + (onFlag ? 'true' : 'false') + '" aria-label="' + CORE.escapeHtml(t.features[feature.id] + ' ' + (onFlag ? t.manage.on : t.manage.off)) + '">' +
          '<span class="yz-glyph-sm">' + feature.glyph + '</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(t.features[feature.id]) + '<i>' + CORE.escapeHtml(t.gua[feature.id]) + '</i></b><em>' + CORE.escapeHtml(onFlag ? t.manage.on : t.manage.off) + '</em></span><span class="yz-switch' + (onFlag ? ' on' : '') + '" aria-hidden="true"><i></i></span>' +
         '</button>' +
-        '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="clear-feature" data-feature="' + feature.id + '"' + (armed ? ' data-wipe-base="' + CORE.escapeHtml(t.manage.clearConfirm) + '"' : '') + '>' + CORE.escapeHtml(armed ? t.manage.clearConfirm : t.manage.clear) + '</button>' +
+         '<button type="button" class="yz-clear-btn' + (armed ? ' armed' : '') + '" data-action="clear-feature" data-feature="' + feature.id + '" aria-label="' + CORE.escapeHtml(contextualLabel(armed ? t.manage.clearConfirm : t.manage.clear, t.features[feature.id])) + '"' + (armed ? ' data-wipe-base="' + CORE.escapeHtml(t.manage.clearConfirm) + '"' : '') + '>' + CORE.escapeHtml(armed ? t.manage.clearConfirm : t.manage.clear) + '</button>' +
         '</div>';
     }).join('');
     // 显式复位入口：长按 FAB 复位不可发现，且持久化数据异常或无法拖动时也需要恢复手段。
@@ -92,8 +95,9 @@
         '<div class="yz-io-warn">' + CORE.escapeHtml(t.manage.importWarn) + '</div>' +
         '<div class="yz-io-actions"><button type="button" class="yz-tab" data-action="import-submit">' + CORE.escapeHtml(t.manage.importBtn) + '</button></div>';
     }
-    return '<main class="yz-page-inner" data-marker="manage">' + yzHeader(t.features.manage) +
-      '<p class="yz-manage-info">' + CORE.escapeHtml(t.manage.info) + '</p>' +
+     return '<main class="yz-page-inner" data-marker="manage">' + yzHeader(t.features.manage) +
+       '<p class="yz-manage-info">' + CORE.escapeHtml(t.manage.info) + '</p>' +
+       '<details class="yz-manage-help"><summary>' + CORE.escapeHtml(t.manage.helpTitle) + '</summary><p>' + CORE.escapeHtml(t.manage.helpBody) + '</p></details>' +
       diag +
       '<div class="yz-page-list">' + rows + spaceRow + resetRow + dataRows + '</div>' + panel + '</main>';
   }

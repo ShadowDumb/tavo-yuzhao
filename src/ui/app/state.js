@@ -22,6 +22,10 @@
     }
 
     function openFeature(featureId) {
+      return withDiscardGuard(function () { openFeatureNow(featureId); });
+    }
+
+    function openFeatureNow(featureId) {
       var t = I18N.dict();
       var feature = null;
       VIEWS.FEATURES.forEach(function (f) { if (f.id === featureId) feature = f; });

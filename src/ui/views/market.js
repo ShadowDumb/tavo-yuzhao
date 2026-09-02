@@ -4,7 +4,8 @@
     // 绑 entity-edit 让整行可点进编辑表单，避免「可点无动作」的假 affordance。
     if (asButton) {
       var attrs = ' data-action="entity-edit" data-kind="' + CORE.escapeHtml(editTarget && editTarget.kind || '') + '" data-id="' + CORE.escapeHtml(String(editTarget && editTarget.id || '')) + '"';
-      return '<button type="button" class="yz-manage-main"' + attrs + '>' + inner + '</button>';
+      attrs += ' aria-label="' + CORE.escapeHtml(playerActionLabel(I18N.dict().playerEdit, editTarget && editTarget.kind || '', avatarName)) + '"';
+      return '<div class="yz-row yz-static yz-manage-row"><button type="button" class="yz-manage-main yz-row-main"' + attrs + '>' + inner + '</button></div>';
     }
     return '<div class="yz-row yz-static">' + inner + '</div>';
   }
@@ -49,7 +50,7 @@
         var sideCls = /^(buy|买|求购|购)/i.test(order.side) ? 'yz-side buy' : 'yz-side sell';
         var row = marketRow(order.name,
           CORE.escapeHtml(order.name), '<span class="' + sideCls + '">' + CORE.escapeHtml(side) + '</span>',
-          CORE.escapeHtml(order.status || ''),
+           CORE.escapeHtml(orderStatusLabel(order.status)),
           CORE.escapeHtml(order.time || '') + '<u class="yz-price-tag">' + CORE.escapeHtml(formatNum(order.price)) + '</u>', !!player, player && { kind: 'order', id: order.id });
         // 整行已是 entity-edit 按钮：不再叠加行尾 ✎（双入口同一动作，✎ 冗余）。
         return player ? row : row;
@@ -78,7 +79,7 @@
       }).join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.listings) + '</div>';
     }
     var cta = view === 'orders' ? playerAddBtn('order', '') : '';
-    return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true, tag) +
+    return '<main class="yz-page-inner" data-marker="market-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.market, true) +
       yzTabs([['listings', t.tabs.listings], ['requests', t.tabs.requests], ['auctions', t.tabs.auctions], ['orders', t.tabs.orders]], view) + searchBoxIf(hasRows, search) + body + cta + '</main>';
   }
 
@@ -94,4 +95,3 @@
     }
     return (neg ? '-' : '') + out;
   }
-

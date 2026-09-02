@@ -1,6 +1,6 @@
 # 玉兆 开发待办（TODO）
 
-> 当前基线：v3.0.0（冒烟 926 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
+> 当前基线：v3.0.0（冒烟 961 项全绿，用户空间改版完成，见文末「v3.0.0 空间改版进度」）。
 > 本文件只记录未完成工作。已完成的工作与全部变更记录见 CHANGELOG.md。
 
 ---
@@ -22,7 +22,7 @@ buildCurrent 窗口化、条目级注入采样（sampleEntries 强制集/活跃�
 模型改写）、未读 seen 游标（recomputeThreadUnread）、空间路由（turn 行第 6 字段，
 unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
-- 冒烟门禁：`node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs`（当前 926 项全绿）
+- 冒烟门禁：`node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs`（当前 961 项全绿）
 - 发布门禁：MCP `tavo_plugin_validate` → `tavo_plugin_audit` → `tavo_plugin_package`，
   产物随版本号更新出包
 
@@ -202,7 +202,7 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
       补 lockedHint；空间管理页 CSS；死 CSS（retry/status/start-thread/mark-all/locked 徽标）移除
 - [x] **测试**：双域契约整体替换为用户空间契约（生命周期/路由/门禁/拒写 issue/迁移/
       未读生命周期/注入分组/提示词规则/当前 v3 导入/空间管理视图渲染）；微任务排干修复；
-      `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 926 项全绿
+      `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 961 项全绿
 - [x] **文档**：CHANGELOG v3.0.0、DESIGN.md 第六节重写 + 持久化/重建段落更新、README 特性/协议/安装更新
 - [x] **版本**：PLUGIN_VERSION/manifest = 3.0.0，releaseNotes.3_0_0 双语
 
@@ -296,12 +296,12 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 - [x] 增加容量和撤销测试：消息/评论窗口、实体满额、父实体消失、空间 ID 重用、基线最终字符数（现有回归覆盖）。
 - [ ] 增加浏览器回归：320/360/375px、iOS 安全区与键盘、Android WebView、触屏 hover、键盘 Tab/Esc、VoiceOver/TalkBack、减少动态效果。
 - [x] 修正测试进程退出问题：`runtime.dispose()` 幂等关闭 runtime 创建的 `BroadcastChannel` 并移除 `storage` 监听。
-- [x] 统一文档测试数量为实际 926 项，删除 README/TODO 中 814、815、841、842、872、880、890、891、892、895、898、900、904 等过时数字。
+- [x] 统一文档测试数量为实际 961 项，删除 README/TODO 中 814、815、841、842、872、880、890、891、892、895、898、900、904、926、948、949 等过时数字。
 
 ### v3.0.0 用户视角复审新增问题（2026-09-01）
 
 > 本节来自多 subagent 的源码/UI/运行时交叉评审。已合并重复报告，仅记录当前源码可定位的问题；
-> P0/P1 已完成代码修复。926 项 smoke 主要覆盖纯函数、渲染字符串和运行时数据，不能证明真实 DOM、
+> P0/P1/P2 已完成代码修复。961 项 smoke 主要覆盖纯函数、渲染字符串和运行时数据，不能证明真实 DOM、
 > Tavo fragment 生命周期、浏览器触控或屏幕阅读器行为正常。
 
 #### P0：启动阻断
@@ -366,72 +366,37 @@ unknown/denied/full 三类拒写记 issue）、非默认空间 diff-only。
 
 #### P2：功能流程与明显可用性问题
 
-- [ ] **R2-01 表单删除后落在“新建表单”**：`src/ui/app/navigation.js:29-36` 的
-      `backNavSkippingDeleted()` 不识别 `form/contact-form`，而 `src/ui/app/forms.js:109-126` 从编辑表单删除后
-      仍按当前路由渲染；实体消失后 `src/ui/views/forms.js:103-109` 将其当作新建表单，而不是回到列表。
-- [ ] **R2-02 删除单条消息错误退出会话且线程摘要陈旧**：`src/ui/app/navigation.js:34-35` 将 message 删除
-      当作详情回退；`src/runtime.js:772-779` 只过滤消息，不重算 `preview/time/anchorId/replyCount/seenReplies`。
-      用户会被带回列表，列表还可能显示已删除消息和错误未读数。
-- [ ] **R2-03 空间切换未等待持久化结果**：`src/ui/app/shell.js:227-238` 忽略 `runtime.setActiveSpace()` 返回的
-      `saved` Promise；写入失败仍立即显示新空间，刷新后可能回到旧空间且没有失败反馈。
-- [ ] **R2-04 单功能清空后主页仍显示旧同步信息**：`src/ui/app/data-actions.js:2-20` 只清空功能分区并设置
-      `pendingFull`，未清理 `sync.summary/roleName/status/issues`；`src/ui/views/shared.js:129-135` 会继续显示
-      旧角色名、摘要或绿色“已同步”状态，直到下一轮生成。
-- [ ] **R2-05 空间删除的二次确认会被重渲染抹掉**：`src/ui/views/manage.js:13,27-30` 计算了 `armed` 但未用于
-      删除按钮的 class/文案；`src/ui/app/forms.js:209-223` 首击局部设置确认态后立即 `render()`，用户看不到确认状态，
-      第二次普通删除点击即可执行危险操作。
-- [ ] **R2-06 联系人、消息、地图删除确认不可见且文案会溢出**：`src/ui/views/messages.js:14,48`、
-      `src/ui/views/map.js:21,26` 的固定尺寸按钮没有统一 `.armed` 样式；`src/ui/app/forms.js:146-153` 将长确认文案
-      写入 `.yz-row-action/.yz-bubble-del` 等紧凑按钮，可能遮挡内容，用户也无法知道第一次点击发生了什么。
-- [ ] **R2-07 表单关闭/返回静默丢弃未保存输入**：`src/ui/app/overlay.js:73-74`、
-      `src/ui/app/navigation.js:131-153` 关闭/返回不检查 dirty 状态；编辑备忘、订单、帖子或导入文本后点击关闭、遮罩、
-      Esc 或顶栏操作会直接丢失草稿。
-- [ ] **R2-08 未读状态保存失败无反馈**：`src/ui/app/navigation.js:60-72`、`src/ui/app/state.js:15-21` 调用
-      `markSpaceThreadSeen/markSpacePostSeen/saveChat` 后不等待或检查保存结果；存储失败时本次看似已读，重载后角标复现。
-- [ ] **R2-09 空间管理开关复用危险确认样式**：`src/ui/views/manage.js:22-23` 给开启的 `sendToAI/allowAIWrite`
-      按钮使用 `armed`，而模板 CSS 的 `.yz-clear-btn.armed` 是红色危险态；默认空间的 AI 可写还不可关闭，却表现为可操作按钮，
-      点击只得到错误 Toast。
-- [ ] **R2-10 物品、钱财、订单编辑行缺少统一卡片布局**：`src/ui/views/market.js:1-9`、`space.js:13-19,25-34`
-      直接输出 `.yz-manage-main`，没有 `.yz-row` 的背景、边框、内边距和明确编辑入口；与其他列表视觉不一致，用户难以发现整行可点。
-- [ ] **R2-11 列表存在嵌套卡片**：`src/ui/views/messages.js:14-16`、`notes.js:39-40`、`forum.js:56-59` 将已有行容器
-      与内部导航按钮再次套用 `.yz-row/yz-note-row`，造成双层边框、重复背景和窄屏内容空间浪费。
-- [ ] **R2-12 地图搜索不筛选当前所在地**：`src/ui/views/map.js:12-16,35-41` 对 tracks/places 应用关键词，却无条件渲染
-      current 卡片；搜索其他地点时当前所在地仍显示，用户无法判断它是否属于结果。
-- [ ] **R2-13 空玉册文件夹仍显示全局搜索框**：`src/ui/views/notes.js:32-44` 列表按当前 folder 过滤，但
-      `searchBoxIf()` 使用全部 notes 数量；当前文件夹为空而其他文件夹有内容时会出现无意义搜索框。
-- [ ] **R2-14 联系人没有可见编辑入口**：`src/ui/views/messages.js:9-16` 仅输出联系人/群聊删除按钮，运行时和表单虽支持
-      contact 编辑，用户却只能删除后重新创建，无法修改名称或关系。
-- [ ] **R2-15 重新渲染会丢失普通表单焦点和草稿保护**：`src/ui/app/shell.js:294-328` 用 `innerHTML` 整体替换页面，
-      只恢复搜索框和消息/评论输入框；生成结果、跨 tab 更新或状态变化期间编辑表单/导入文本可能被旧落盘状态覆盖，焦点也会跳失。
-- [ ] **R2-16 Overlay 焦点陷阱只收集 button**：`src/ui/app/overlay.js:94-119` 不包含 input/select/textarea/summary 等可聚焦元素，
-      表单和搜索页用 Tab 时会跳过控件或逃出 overlay。
-- [ ] **R2-17 确认框 ARIA 属性挂错元素**：`src/ui/app/shell.js:116-143` 将 `aria-labelledby/aria-describedby` 设置到内部 box，
-      但 `role=alertdialog` 在外层 host；屏幕阅读器可能读不到确认标题、后果和按钮关联。
-- [ ] **R2-18 页面整体重绘不恢复焦点/不宣布页面变化**：`src/ui/app/shell.js:294-328` 销毁当前控件，
-      `src/ui/views/page.js:23-26` 使用非标题元素作为页面标题；辅助技术用户无法稳定定位新页面，也没有统一 live announcement。
-- [ ] **R2-19 移动端低视口高度与键盘存在遮挡风险**：`src/ui/app/overlay.js:121-146` 强制 `Math.max(320, room)`，
-      但窄屏键盘打开时可用高度可能小于 320，外层又限制 overflow；composer/确认按钮可能落在键盘后方。
-- [ ] **R2-20 多个触屏入口小于推荐尺寸**：模板中的主页同步入口和 Toast/FAB 使用小文本或固定 bottom 值，缺少统一 44px 触摸区及
-      safe-area 适配；手机上同步入口难点按，Toast/FAB 可能被底部安全区遮挡。
+- [x] **R2-01 表单删除后落在“新建表单”**：删除回退识别所有表单实体和联系人表单，按原导航栈回到列表。
+- [x] **R2-02 删除单条消息错误退出会话且线程摘要陈旧**：列表删除保持当前会话，Runtime 删除后重算正文、时间、anchor 和回复游标。
+- [x] **R2-03 空间切换未等待持久化结果**：空间切换等待 `setActiveSpace().saved`，失败时恢复界面并提示用户。
+- [x] **R2-04 单功能清空后主页仍显示旧同步信息**：清空每个空间分区时同步清除摘要、角色名、状态、应用记录和 issue。
+- [x] **R2-05 空间删除的二次确认会被重渲染抹掉**：首击只局部更新按钮，保留 `armed` 状态和倒计时，不立即整页重绘。
+- [x] **R2-06 联系人、消息、地图删除确认不可见且文案会溢出**：删除按钮统一确认态样式、双语 aria 文案和可换行布局。
+- [x] **R2-07 表单关闭/返回静默丢弃未保存输入**：表单、导入文本和所有离开导航均检查 dirty 状态并提供放弃确认。
+- [x] **R2-08 未读状态保存失败无反馈**：已读游标返回可等待保存结果，失败时提示并重新渲染恢复角标。
+- [x] **R2-09 空间管理开关复用危险确认样式**：开关使用普通 toggle 样式，默认空间 AI 可写开关明确禁用。
+- [x] **R2-10 物品、钱财、订单编辑行缺少统一卡片布局**：可编辑行统一包裹在 `yz-row` 卡片中并保留整行编辑入口。
+- [x] **R2-11 列表存在嵌套卡片**：消息、玉册和论坛的可编辑列表改为外层卡片加无背景主按钮。
+- [x] **R2-12 地图搜索不筛选当前所在地**：当前位置与行踪、地点目录使用同一关键词过滤。
+- [x] **R2-13 空玉册文件夹仍显示全局搜索框**：搜索入口按当前文件夹是否有条目决定，不再看全局数量。
+- [x] **R2-14 联系人没有可见编辑入口**：用户空间联系人列表增加明确的编辑入口。
+- [x] **R2-15 重新渲染会丢失普通表单焦点和草稿保护**：重绘前后保存表单/导入值、焦点和选择区间，避免旧落盘状态覆盖草稿。
+- [x] **R2-16 Overlay 焦点陷阱只收集 button**：焦点循环覆盖 button、链接、输入框、select、textarea、summary 和 tabindex 控件。
+- [x] **R2-17 确认框 ARIA 属性挂错元素**：标题/正文关联属性改挂在外层 `role=alertdialog` 宿主。
+- [x] **R2-18 页面整体重绘不恢复焦点/不宣布页面变化**：页面标题改为可聚焦 heading，并通过独立 live region 宣布页面切换。
+- [x] **R2-19 移动端低视口高度与键盘存在遮挡风险**：移除 320px 最小高度硬限制，按 visualViewport/innerHeight 可用高度适配。
+- [x] **R2-20 多个触屏入口小于推荐尺寸**：同步入口、Toast 操作、FAB 和删除/切换控件统一触摸尺寸并加入安全区偏移。
 
 #### P3：文案、入口完整性与细节
 
-- [ ] **R3-01 论坛详情没有评论搜索入口**：`src/ui/views/forum.js:12-17,31-45` 有按 `search` 过滤评论的代码，
-      但详情页未渲染 `searchBox()`，用户无法设置关键词，属于不可达功能路径。
-- [ ] **R3-02 英文界面新建帖子仍保存中文 section**：`src/ui/views/forms.js:81-95` 的 option value 硬编码中文，
-      `locales/en.json:125-130` 只翻译显示 label；英文用户发帖后列表/详情可能出现中文版块名。
-- [ ] **R3-03 订单列表可能直接显示内部状态值**：`src/ui/views/market.js:46-55` 直接输出 `order.status`，导入或 AI 数据为
-      `pending/open/completed` 时普通用户会看到技术值；列表应与表单共用本地化状态映射。
-- [ ] **R3-04 高风险确认文案与实际撤销/级联行为不一致**：`locales/*:137-142` 的“不可撤销”与删除后 6 秒 Undo 冲突，
-      文件夹删除还会级联删除备忘但未说明；应展示对象、影响范围以及可撤销窗口。
-- [ ] **R3-05 删除按钮和编辑按钮缺少对象上下文**：`src/ui/views/messages.js:14,48` 只输出 `×`，通用编辑/清空按钮也缺少
-      对象名称；屏幕阅读器和多条列表用户无法判断操作目标。
-- [ ] **R3-06 错误 Toast 容易被截断且缺少下一步**：模板 `src/ui/jade.template.html:210-215` 默认单行省略，
-      `src/ui/app/shell.js:174-193` 普通错误约 2.4 秒消失；存储/解析错误的原因和处理动作可能不可读。
-- [ ] **R3-07 长文本输入没有可见长度反馈**：`src/ui/views/messages.js:63-64`、`forum.js:27-28` 和表单设置 maxlength，
-      但用户接近上限或粘贴超长内容时没有计数器/截断提示。
-- [ ] **R3-08 管理说明仍含技术术语且首屏过长**：`manifest.json:34`、`locales/*:7,265` 直接展示“提示词、世界书、协议写入”等词汇，
-      手机上会把真正操作控件推到下方；建议首屏给结论，技术解释放入帮助区。
+- [x] **R3-01 论坛详情没有评论搜索入口**：论坛详情现在渲染评论搜索框，搜索只过滤评论展示内容。
+- [x] **R3-02 英文界面新建帖子仍保存中文 section**：帖子 section 使用稳定 canonical value，显示层按当前语言本地化。
+- [x] **R3-03 订单列表可能直接显示内部状态值**：订单状态与表单共用 canonical 状态映射和双语显示文案。
+- [x] **R3-04 高风险确认文案与实际撤销/级联行为不一致**：删除提示说明对象、文件夹级联范围、默认空间重建和 6 秒撤销窗口。
+- [x] **R3-05 删除按钮和编辑按钮缺少对象上下文**：删除/编辑/清空控件的可访问名称包含对象名称或功能名称。
+- [x] **R3-06 错误 Toast 容易被截断且缺少下一步**：错误文案补充处理建议，Toast 支持换行滚动并延长错误展示时间。
+- [x] **R3-07 长文本输入没有可见长度反馈**：消息、评论和玩家表单的受限输入显示实时长度计数器。
+- [x] **R3-08 管理说明仍含技术术语且首屏过长**：设置/管理首屏改为简短结论，技术说明移入可展开帮助区。
 
 ### 复审后需人工验证的宿主/浏览器风险
 

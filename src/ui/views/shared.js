@@ -48,10 +48,59 @@
       .trim()
       .replace(/^./, function (c) { return c.toUpperCase(); });
   }
+
+  function contextualLabel(label, name) {
+    return String(label || '') + (CORE.hasText(name) ? (/^[A-Za-z]/.test(String(label || '')) ? ': ' : '：') + String(name) : '');
+  }
   function fieldName(key) {
     var t = I18N.dict();
     var id = keyId(key);
     return (id && t.fields[id]) || humanizeKey(key);
+  }
+
+  function forumSectionKey(value) {
+    var raw = String(value == null ? '' : value).trim();
+    var aliases = {
+      general: 'general', cultivation: 'cultivation', artifact: 'artifact', bounty: 'bounty', market: 'market',
+      '闲聊': 'general', '修炼心得': 'cultivation', '法器交流': 'artifact', '悬赏委托': 'bounty', '坊市见闻': 'market',
+      'General chat': 'general', 'Cultivation insights': 'cultivation', 'Artifact exchange': 'artifact',
+      Bounties: 'bounty', 'Market tales': 'market'
+    };
+    return aliases[raw] || raw;
+  }
+
+  function forumSectionLabel(value) {
+    var t = I18N.dict();
+    var labels = {
+      general: t.playerSectionGeneral,
+      cultivation: t.playerSectionCultivation,
+      artifact: t.playerSectionArtifact,
+      bounty: t.playerSectionBounty,
+      market: t.playerSectionMarket
+    };
+    var key = forumSectionKey(value);
+    return labels[key] || String(value == null ? '' : value);
+  }
+
+  function orderStatusKey(value) {
+    var raw = String(value == null ? '' : value).trim();
+    var aliases = {
+      pending: 'pending', open: 'open', completed: 'completed', cancelled: 'cancelled',
+      '待处理': 'pending', '进行中': 'open', '已完成': 'completed', '已成交': 'completed', '已取消': 'cancelled'
+    };
+    return aliases[raw.toLowerCase()] || aliases[raw] || raw;
+  }
+
+  function orderStatusLabel(value) {
+    var t = I18N.dict();
+    var labels = {
+      pending: t.orderStatusPending,
+      open: t.orderStatusOpen,
+      completed: t.orderStatusCompleted,
+      cancelled: t.orderStatusCancelled
+    };
+    var key = orderStatusKey(value);
+    return labels[key] || humanizeKey(value);
   }
 
   function syncStatusOf(state) {

@@ -206,6 +206,7 @@
     // 关闭玉兆时记录离开位置（本会话内再打开恢复；chat:opened 换聊天后清空回主页）。
     // 空间选择持久化在 state.activeSpaceId（每聊天独立），不再需要会话内域记忆。
     var savedNav = null;
+    var lastRenderedPageKey = '';
 
     // 每轮生成只接受 prepare 时捕获的清除 epoch。匿名请求也单独保存聊天级上下文，
     // 但清除发生后没有稳定请求 ID 的 success 永远保守丢弃，不能绕过清除保护。

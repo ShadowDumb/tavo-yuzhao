@@ -2,6 +2,12 @@
       if (overlay.__yzBound) return;
       overlay.__yzBound = true;
       markBound(overlay);
+      function focusablesIn(root) {
+        return Array.prototype.filter.call(root.querySelectorAll('button, [href], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])'), function (el) {
+          if (el.disabled || el.getAttribute('aria-hidden') === 'true') return false;
+          return el.offsetParent !== null || (el.getClientRects && el.getClientRects().length > 0);
+        });
+      }
       listen(overlay, 'click', function (event) {
         if (overlay.classList.contains('loading')) {
           event.preventDefault();
@@ -29,15 +35,15 @@
           }
           if (action === 'toggle-diag') { diagOpen = !diagOpen; return render(); }
           if (action === 'clear-feature') return armOrClearFeature(target.getAttribute('data-feature'));
-          if (action === 'toggle-data-panel') {
+          if (action === 'toggle-data-panel') return withDiscardGuard(function () {
             var panel = target.getAttribute('data-panel');
             dataPanel = dataPanel === panel ? null : panel;
-            return render();
-          }
+            render();
+          });
           if (action === 'copy-export') return copyExport();
           if (action === 'import-submit') return submitImport();
           if (action === 'clear-search') { resetSearch(); return render(); }
-          if (action === 'switch-space') { nav = { app: 'manage', view: 'spaces', params: {}, stack: nav.stack || [] }; return render(); }
+          if (action === 'switch-space') return withDiscardGuard(function () { nav = { app: 'manage', view: 'spaces', params: {}, stack: nav.stack || [] }; render(); });
           if (action === 'send-thread-msg') return sendThreadMessage(target.getAttribute('data-thread-id') || '');
           if (action === 'send-comment') return sendPostComment();
           if (action === 'new-contact') return openSpaceForm('contact', '', '');
@@ -77,6 +83,11 @@
       // 纯前端过滤，不触碰任何持久化数据（交互基座第一层的只读约束）。
       listen(overlay, 'input', function (event) {
         if (overlay.classList.contains('loading')) return;
+        var lengthInput = event.target && event.target.closest ? event.target.closest('[maxlength]') : null;
+        if (lengthInput) {
+          var lengthCounter = lengthInput.parentNode && lengthInput.parentNode.querySelector ? lengthInput.parentNode.querySelector('[data-length-counter]') : null;
+          if (lengthCounter) lengthCounter.textContent = String(lengthInput.value || '').length + '/' + lengthInput.getAttribute('maxlength');
+        }
         var box = event.target.closest ? event.target.closest('[data-search-input]') : null;
         if (!box) return;
         // IME 合成期间（拼音输入法）不触发整页重渲染：每个拼音键位都重建 DOM 会腰斩
@@ -104,9 +115,7 @@
           if (event.target.getAttribute('data-comment-input') !== null) { event.preventDefault(); sendPostComment(); return; }
         }
         if (event.key !== 'Tab') return;
-        var focusables = Array.prototype.filter.call(overlay.querySelectorAll('button'), function (el) {
-          return !el.disabled && el.offsetParent !== null;
-        });
+        var focusables = focusablesIn(overlay);
         if (!focusables.length) return;
         var first = focusables[0];
         var last = focusables[focusables.length - 1];
@@ -114,14 +123,14 @@
         if (event.shiftKey && (active === first || !overlay.contains(active))) {
           event.preventDefault();
           last.focus();
-        } else if (!event.shiftKey && active === last) {
+        } else if (!event.shiftKey && (active === last || !overlay.contains(active))) {
           event.preventDefault();
           first.focus();
         }
       });
       // 移动端键盘自适应：视觉视口随键盘抬起收缩（100vh 在 iOS WebView 不跟随），
       // 玉兆高度收敛到可视区，否则底部玩家域输入框（composer）被键盘遮挡。
-       var vv = hostWindow.visualViewport;
+      var vv = hostWindow.visualViewport;
        var fitViewport = function () {
          var jade = overlay.querySelector('#' + JADE_ID);
          if (!jade) return;
@@ -130,22 +139,22 @@
          if (room <= 0) return;
          var normal = room >= 560;
          jade.style.minHeight = normal ? '' : '0px';
-         jade.style.height = normal ? '' : Math.max(320, room) + 'px';
+          jade.style.height = normal ? '' : Math.max(1, room) + 'px';
         };
         overlay.__yzFit = fitViewport;
         onCleanup(function () { if (overlay.__yzFit === fitViewport) overlay.__yzFit = null; });
         if (vv && typeof vv.addEventListener === 'function') listen(vv, 'resize', fitViewport);
         if (hostWindow && typeof hostWindow.addEventListener === 'function') listen(hostWindow, 'resize', fitViewport);
       // 输入框聚焦时把玉兆内的输入框滚动进可视区（Android WebView 键盘行为差异兜底）。
-       listen(overlay, 'focusin', function (event) {
+      listen(overlay, 'focusin', function (event) {
         var target = event.target;
         if (!target || !target.getAttribute) return;
-         if (target.getAttribute('data-thread-input') === null &&
-             target.getAttribute('data-comment-input') === null && target.getAttribute('data-search-input') === null &&
-             target.getAttribute('data-space-input') === null) return;
-          setAppTimeout(function () {
-            if (hostDocument.documentElement.contains(target) && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
-          }, 300);
+        if (target.getAttribute('data-thread-input') === null &&
+            target.getAttribute('data-comment-input') === null && target.getAttribute('data-search-input') === null &&
+            target.getAttribute('data-space-input') === null) return;
+        setAppTimeout(function () {
+          if (hostDocument.documentElement.contains(target) && typeof target.scrollIntoView === 'function') target.scrollIntoView({ block: 'nearest' });
+        }, 300);
       });
     }
 

@@ -5,6 +5,11 @@
       // 清空是跨空间操作：所有用户空间的该分区一起归零（导出/导入的整份状态同样处理）。
       CORE.safeArray(runtime.current().spaces, 6).forEach(function (sp) {
         sp[CORE.FEATURE_FIELDS[featureId]] = CORE.blankFeatureField(featureId);
+        // 清空后旧摘要/角色名/绿点仍会被主页直接展示，必须与被清空分区一起失效。
+        sp.sync = Object.assign({}, sp.sync, {
+          status: 'empty', turnId: '', roleName: '', summary: '', applied: [], appliedSeen: [],
+          issues: [], lastError: '', lastSource: '', updatedAt: Date.now()
+        });
       });
       // 强制下一轮全量重建：单功能清空后 sync 状态/旧摘要/issue 回声仍指向旧数据，
       // 不清 pendingFull 的话 meta-only diff 轮提前返回，假「complete」绿点残留。

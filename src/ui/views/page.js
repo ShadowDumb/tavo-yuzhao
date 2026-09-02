@@ -9,7 +9,7 @@
     if (nav.app === 'msg') return renderMsg(space, nav, search, flags, ui);
     if (nav.app === 'notes') return renderNotes(space, nav, search, true, ui);
     if (nav.app === 'forum') {
-      if ((nav.view && nav.view !== 'root') === 'form') return renderSpaceForm(space, nav, ui);
+      if (nav.view === 'form') return renderSpaceForm(space, nav, ui);
       return renderForum(space, nav, search, tag, true, ui);
     }
     if (nav.app === 'market') return renderMarket(space, nav, search, tag, true, ui);
@@ -20,9 +20,8 @@
     return '';
   }
 
-  function yzHeader(title, tabs, tag, showBack) {
-    return '<header class="yz-app-header">' + yzBackButton(showBack !== false) + '<b>' + (tabs ? title : String(title)) + '</b>' +
-      (tag ? '<i class="yz-header-tag">' + CORE.escapeHtml(tag) + '</i>' : '') +
+  function yzHeader(title, tabs, showBack) {
+    return '<header class="yz-app-header">' + yzBackButton(showBack !== false) + '<h2 class="yz-page-title" tabindex="-1">' + (tabs ? title : String(title)) + '</h2>' +
       '<span class="yz-spacer"></span></header>';
   }
 

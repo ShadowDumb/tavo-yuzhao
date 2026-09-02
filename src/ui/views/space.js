@@ -13,7 +13,7 @@
       body = currencies.length ? '<div class="yz-page-list">' + currencies.map(function (currency) {
         var inner = '<span class="yz-coin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(currency.kind) + '</b></span><time class="yz-amount">' + CORE.escapeHtml(formatNum(currency.amount)) + '</time>';
         var row = player
-          ? '<button type="button" class="yz-manage-main" data-action="entity-edit" data-kind="currency" data-id="' + CORE.escapeHtml(String(currency.kind)) + '">' + inner + '</button>'
+           ? '<div class="yz-row yz-static yz-manage-row"><button type="button" class="yz-manage-main yz-row-main" data-action="entity-edit" data-kind="currency" data-id="' + CORE.escapeHtml(String(currency.kind)) + '" aria-label="' + CORE.escapeHtml(playerActionLabel(t.playerEdit, 'currency', currency.kind, t)) + '">' + inner + '</button></div>'
           : '<div class="yz-row yz-static">' + inner + '</div>';
         // 整行已是 entity-edit 按钮：不再叠加行尾 ✎（双入口冗余）。
         return row;
@@ -38,4 +38,3 @@
     return '<main class="yz-page-inner" data-marker="space-' + CORE.escapeHtml(view) + '">' + yzHeader(t.features.space, true) +
       yzTabs([['items', t.tabs.items], ['currencies', t.tabs.currencies]], view) + searchBoxIf(hasRows, search) + body + cta + '</main>';
   }
-

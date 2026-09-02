@@ -1,4 +1,41 @@
+    function draftIsDirty() {
+      var overlay = hostDocument.getElementById(OVERLAY_ID);
+      if (!overlay) return false;
+      var page = overlay.querySelector('[data-page]');
+      var form = page && page.querySelector('[data-marker="player-form"]');
+      if (form) {
+        var params = nav.params || {};
+        var space = runtime.activeSpace();
+        var entity = space && CORE.playerFindEntity(space, params.kind, params.id);
+        var expected = Object.create(null);
+        playerFormFields(params.kind, entity, I18N.dict()).forEach(function (field) {
+          expected[field.key] = field.type === 'checkbox' ? !!field.value : String(field.value == null ? '' : field.value);
+        });
+        if (params.kind === 'note') expected.folderId = String(params.folderId || (entity && entity.folderId) || '');
+        var dirty = false;
+        Array.prototype.forEach.call(form.querySelectorAll('[data-form-field]'), function (field) {
+          var key = field.getAttribute('data-form-field');
+          var value = field.type === 'checkbox' ? !!field.checked : String(field.value == null ? '' : field.value);
+          if (value !== (expected[key] == null ? '' : expected[key])) dirty = true;
+        });
+        if (dirty) return true;
+      }
+      var importBox = overlay.querySelector('[data-import-input]');
+      return !!(importBox && CORE.hasText(importBox.value));
+    }
+
+    function withDiscardGuard(action) {
+      if (!draftIsDirty()) return action();
+      var t = I18N.dict();
+      showConfirm(t.playerDiscardTitle, t.playerDiscardMessage, t.playerDiscardAction, action);
+      return null;
+    }
+
     function navigateView(view, params) {
+      return withDiscardGuard(function () { navigateViewNow(view, params); });
+    }
+
+    function navigateViewNow(view, params) {
       clearToast();
       // 同行连点两次不重复压栈：栈顶已是同一页时直接复用，返回不用多按一次。
       var top = nav.stack.length ? nav.stack[nav.stack.length - 1] : null;
@@ -15,6 +52,10 @@
     }
 
     function switchView(view) {
+      return withDiscardGuard(function () { switchViewNow(view); });
+    }
+
+    function switchViewNow(view) {
       clearToast();
       nav.view = view || 'root';
       nav.params = {};
@@ -30,13 +71,20 @@
       var isDetail = ((kind === 'note') && nav.app === 'notes' && nav.view === 'note' && String(nav.params && nav.params.id) === String(id)) ||
         ((kind === 'post') && nav.app === 'forum' && nav.view === 'post' && String(nav.params && nav.params.id) === String(id)) ||
         ((kind === 'contact') && nav.app === 'msg' && nav.view === 'chat' && String(nav.params && nav.params.id) === String(id)) ||
-        ((kind === 'group') && nav.app === 'msg' && nav.view === 'gchat' && String(nav.params && nav.params.id) === String(id)) ||
-        ((kind === 'message') && nav.app === 'msg' && (nav.view === 'chat' || nav.view === 'gchat') && String(nav.params && nav.params.id) === String(parentId));
-      if (isDetail) backNav();
+        ((kind === 'group') && nav.app === 'msg' && nav.view === 'gchat' && String(nav.params && nav.params.id) === String(id));
+      var formApps = { contact: 'msg', folder: 'notes', note: 'notes', item: 'space', currency: 'space', order: 'market', post: 'forum' };
+      var formApp = formApps[kind];
+      if (formApp && nav.app === formApp && nav.view === 'form' && String(nav.params && nav.params.id) === String(id)) isDetail = true;
+      if (kind === 'contact' && nav.app === 'msg' && nav.view === 'contact-form' && String(nav.params && nav.params.id) === String(id)) isDetail = true;
+      if (isDetail) backNavNow();
       else render();
     }
 
     function backNav() {
+      return withDiscardGuard(backNavNow);
+    }
+
+    function backNavNow() {
       clearToast();
       // 离开页面时清理武装态与倒计时定时器：否则武装后返回，3 秒后定时器仍会触发
       // 一次多余的整页 render（且 armed 按钮已不在页面上）。
@@ -49,7 +97,7 @@
         nav.view = previous.view;
         nav.params = previous.params || {};
       } else {
-        goHome();
+        goHomeNow();
         return;
       }
       resetSearch();
@@ -61,17 +109,36 @@
     function clearUnread(id) {
       if (!id) return;
       var space = runtime.activeSpace();
-      if (space) runtime.markSpaceThreadSeen(space.id, id);
+      if (!space) return;
+      reportSeenPersistence(runtime.markSpaceThreadSeen(space.id, id));
     }
 
     // 帖子未读点开即清零（与聊天同语义，当前空间内）。
     function clearPostUnread(id) {
       if (!id) return;
       var space = runtime.activeSpace();
-      if (space) runtime.markSpacePostSeen(space.id, id);
+      if (!space) return;
+      reportSeenPersistence(runtime.markSpacePostSeen(space.id, id));
+    }
+
+    function reportSeenPersistence(result) {
+      if (!result || result.ok === false || !result.saved) return;
+      Promise.resolve(result.saved).then(function (saved) {
+        if (!saved || !saved.ok) {
+          showToast(I18N.dict().toast.persistenceFailed, true);
+          render();
+        }
+      }, function () {
+        showToast(I18N.dict().toast.persistenceFailed, true);
+        render();
+      });
     }
 
     function goHome() {
+      return withDiscardGuard(goHomeNow);
+    }
+
+    function goHomeNow() {
       clearToast();
       resetManagePanels();
       nav = { app: 'home', view: 'root', params: {}, stack: [] };
@@ -148,6 +215,10 @@
     }
 
     function close() {
+      return withDiscardGuard(closeNow);
+    }
+
+    function closeNow() {
       var overlay = hostDocument.getElementById(OVERLAY_ID);
       if (!overlay) return;
       ++openEpoch;

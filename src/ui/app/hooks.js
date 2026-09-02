@@ -310,7 +310,7 @@
            hideConfirm();
            return;
          }
-         close();
+         closeNow();
        }, true);
       // 从设置页等返回聊天页时刷新 FAB 显隐与 overlay 状态（配置变化无 Hook 可订阅；
       // 部分环境返回时不翻转 visibilitychange，补充 window focus 兜底）。

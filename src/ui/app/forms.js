@@ -153,6 +153,8 @@
         if (node) {
           node.classList.remove('armed');
           node.textContent = I18N.dict().playerDelete;
+          if (node.dataset && node.dataset.wipeLabel) node.setAttribute('aria-label', node.dataset.wipeLabel);
+          if (node.dataset) { delete node.dataset.wipeBase; delete node.dataset.wipeLabel; }
         } else {
           render();
         }
@@ -160,12 +162,15 @@
       startWipeCountdown();
       // 武装第一击：局部更新按钮文案，不整页重渲染（保留表单未保存的编辑）。
       var confirmKey = 'delete' + kind.charAt(0).toUpperCase() + kind.slice(1) + 'Confirm';
+      var confirmLabel = I18N.dict()[confirmKey] || I18N.dict().deleteConfirmShort || I18N.dict().playerDeleteConfirm;
       var btn = hostDocument.querySelector('#' + OVERLAY_ID + ' [data-kind="' + CORE.escapeHtml(kind) + '"][data-id="' + CORE.escapeHtml(String(id)) + '"].yz-clear-btn') ||
         hostDocument.querySelector('#' + OVERLAY_ID + ' [data-action="delete-' + CORE.escapeHtml(kind) + '"][data-id="' + CORE.escapeHtml(String(id)) + '"]');
       if (btn) {
         btn.classList.add('armed');
-        btn.setAttribute('data-wipe-base', I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm);
-        btn.textContent = I18N.dict()[confirmKey] || I18N.dict().playerDeleteConfirm;
+        if (btn.getAttribute('aria-label')) btn.setAttribute('data-wipe-label', btn.getAttribute('aria-label'));
+        btn.setAttribute('data-wipe-base', confirmLabel);
+        btn.setAttribute('aria-label', confirmLabel);
+        btn.textContent = confirmLabel;
         return;
       }
       render();
@@ -243,11 +248,16 @@
         render();
       }, VIEWS.WIPE_CONFIRM_MS + 50);
       startWipeCountdown();
-      var btn = hostDocument.querySelector('#' + OVERLAY_ID + ' [data-action="space-delete"][data-id="' + CORE.escapeHtml(id) + '"]');
-      if (btn) {
-        btn.classList.add('armed');
-        btn.setAttribute('data-wipe-base', I18N.dict().spaceDeleteConfirm);
-        btn.textContent = I18N.dict().spaceDeleteConfirm + tr('runtime.sep.count', { n: Math.ceil(VIEWS.WIPE_CONFIRM_MS / 1000) });
+       var btn = hostDocument.querySelector('#' + OVERLAY_ID + ' [data-action="space-delete"][data-id="' + CORE.escapeHtml(id) + '"]');
+       if (btn) {
+         var currentSpace = CORE.findSpaceState(runtime.current(), id);
+         var deleteConfirm = currentSpace && currentSpace.isDefault ? I18N.dict().spaceDeleteDefaultConfirm : I18N.dict().spaceDeleteConfirm;
+         var spaceName = currentSpace && CORE.spaceDisplayName(runtime.current(), currentSpace, I18N.dict().spaceDefaultName);
+         btn.classList.add('armed');
+         btn.setAttribute('data-wipe-base', deleteConfirm);
+         btn.setAttribute('aria-label', contextualLabel(deleteConfirm, spaceName));
+         btn.textContent = deleteConfirm + tr('runtime.sep.count', { n: Math.ceil(VIEWS.WIPE_CONFIRM_MS / 1000) });
+         return;
       }
       render();
     }

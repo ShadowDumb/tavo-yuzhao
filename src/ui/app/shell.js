@@ -62,7 +62,7 @@
           var btn = target && target.closest ? target.closest('.yz-confirm-actions button') : null;
           // 点在按钮之外（遮罩/空白）等同取消。
           if (!btn) { cancelConfirm(); return; }
-         if (btn.classList.contains('yz-confirm-ok') && confirmAction) {
+          if (btn.classList.contains('yz-confirm-ok') && confirmAction) {
             var fn = confirmAction;
             var lockedChat = confirmChatId;
             confirmAction = null;
@@ -71,15 +71,15 @@
             // 否则收起并丢弃——绝不能拿「确认清除」误清新聊天的数据。
             if (lockedChat !== null && lockedChat !== runtime.activeChatId) return;
             // 放微任务：先收起确认框再执行清除（与 toast 操作按钮同一防竞态约定）。
-             setAppTimeout(fn, 0);
-         } else {
-           cancelConfirm();
-         }
+            setAppTimeout(fn, 0);
+          } else {
+            cancelConfirm();
+          }
         });
         listen(confirmHost, 'keydown', function (event) {
           if (event.key !== 'Tab') return;
-          var focusables = Array.prototype.filter.call(confirmHost.querySelectorAll('button'), function (el) {
-            return !el.disabled && el.offsetParent !== null;
+          var focusables = Array.prototype.filter.call(confirmHost.querySelectorAll('button, input, select, textarea, summary, [href], [tabindex]:not([tabindex="-1"])'), function (el) {
+            return !el.disabled && (el.offsetParent !== null || (el.getClientRects && el.getClientRects().length > 0));
           });
           if (!focusables.length) return;
           var first = focusables[0];
@@ -143,8 +143,8 @@
       if (box) {
         if (titleNode) titleNode.id = titleId;
         if (msgNode) msgNode.id = msgId;
-        box.setAttribute('aria-labelledby', titleId);
-        box.setAttribute('aria-describedby', msgId);
+        host.setAttribute('aria-labelledby', titleId);
+        host.setAttribute('aria-describedby', msgId);
       }
       host.classList.add('show');
       if (cancelBtn && typeof cancelBtn.focus === 'function') cancelBtn.focus();
@@ -199,7 +199,7 @@
       toast.classList.toggle('bad', !!bad);
       toast.classList.toggle('has-action', !!(action && action.label));
       toast.classList.add('show');
-      toastTimer = setAppTimeout(clearToast, duration || 2400);
+      toastTimer = setAppTimeout(clearToast, duration || (bad ? 6000 : 2400));
     }
 
     // shell DOM 只在首次创建，语言切换不会重建：顶栏品牌与各 aria-label 属于静态节点，
@@ -234,10 +234,77 @@
       return CORE.spaceDisplayName(state, sp, sp.isDefault ? I18N.dict().spaceDefaultName : '');
     }
 
+    function renderPageKey() {
+      var space = currentSpace();
+      var params = nav.params || {};
+      return String(runtime.activeChatId || '') + '|' + String(space && space.id || '') + '|' +
+        String(nav.app || '') + '|' + String(nav.view || '') + '|' + String(params.id || '');
+    }
+
+    function capturePageDraft(pageNode) {
+      if (!pageNode || !pageNode.querySelectorAll) return null;
+      var draft = { key: renderPageKey(), fields: Object.create(null), importText: null, focus: null };
+      Array.prototype.forEach.call(pageNode.querySelectorAll('[data-form-field]'), function (field) {
+        var key = field.getAttribute('data-form-field');
+        draft.fields[key] = field.type === 'checkbox' ? !!field.checked : String(field.value == null ? '' : field.value);
+      });
+      var importBox = pageNode.querySelector('[data-import-input]');
+      if (importBox) draft.importText = String(importBox.value || '');
+      var active = hostDocument.activeElement;
+      if (active && pageNode.contains(active)) {
+        ['data-search-input', 'data-thread-input', 'data-comment-input', 'data-form-field', 'data-import-input'].some(function (attribute) {
+          if (!active.getAttribute || active.getAttribute(attribute) === null) return false;
+          draft.focus = { attribute: attribute, value: active.getAttribute(attribute) || '' };
+          draft.focus.selectionStart = typeof active.selectionStart === 'number' ? active.selectionStart : null;
+          draft.focus.selectionEnd = typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
+          return true;
+        });
+      }
+      return draft;
+    }
+
+    function restorePageDraft(pageNode, draft) {
+      if (!pageNode || !draft || draft.key !== renderPageKey()) return false;
+      Object.keys(draft.fields).forEach(function (key) {
+        var field = pageNode.querySelector('[data-form-field="' + CORE.escapeHtml(key) + '"]');
+        if (!field) return;
+        if (field.type === 'checkbox') field.checked = !!draft.fields[key];
+        else field.value = draft.fields[key];
+      });
+      if (draft.importText !== null) {
+        var importBox = pageNode.querySelector('[data-import-input]');
+        if (importBox) importBox.value = draft.importText;
+      }
+      if (!draft.focus) return false;
+      var selector = '[' + draft.focus.attribute + ']';
+      if (draft.focus.attribute === 'data-form-field') selector = '[data-form-field="' + CORE.escapeHtml(draft.focus.value) + '"]';
+      var target = pageNode.querySelector(selector);
+      if (!target || typeof target.focus !== 'function') return false;
+      target.focus();
+      if (draft.focus.selectionStart != null && typeof target.setSelectionRange === 'function') {
+        try { target.setSelectionRange(draft.focus.selectionStart, draft.focus.selectionEnd); } catch (_) {}
+      }
+      return true;
+    }
+
     // 切换空间：停留在当前页面（子页消毒后），重渲染即看到新空间数据。
     function switchSpaceTo(id) {
+      return withDiscardGuard(function () { return switchSpaceToNow(id); });
+    }
+
+    async function switchSpaceToNow(id) {
       var result = runtime.setActiveSpace(id);
-      if (!result.ok) return;
+      if (!result || !result.ok) {
+        showToast(I18N.dict().spaceMissingEntity, true);
+        return;
+      }
+      var persisted;
+      try { persisted = await Promise.resolve(result.saved); } catch (_) { persisted = null; }
+      if (!persisted || !persisted.ok) {
+        showToast(I18N.dict().toast.persistenceFailed, true);
+        render();
+        return;
+      }
       // 子页消毒：详情/表单页在新空间可能没有对应实体，回退到该 app 根视图。
       if (nav.app === 'msg' && (nav.view === 'chat' || nav.view === 'gchat' || nav.view === 'contact-form')) { nav.view = 'chats'; nav.params = {}; nav.stack = []; }
       else if (nav.app === 'notes' && (nav.view === 'note' || nav.view === 'folder' || nav.view === 'form')) { nav.view = 'folders'; nav.params = {}; nav.stack = []; }
@@ -268,10 +335,13 @@
         fab.setAttribute('aria-label', I18N.dict().fabLabel);
       }
       // 插件被禁用时收起已打开的 overlay。
-      if (!enabled() && overlay.classList.contains('open')) close();
+      if (!enabled() && overlay.classList.contains('open')) closeNow();
       var home = overlay.querySelector('[data-home]');
       var pageNode = overlay.querySelector('[data-page]');
       if (!home || !pageNode) return;
+      var pageKey = renderPageKey();
+      var changedPage = pageKey !== lastRenderedPageKey;
+      var pageDraft = capturePageDraft(pageNode);
       if (nav.app === 'home') {
         home.classList.remove('hidden');
         pageNode.hidden = true;
@@ -293,21 +363,21 @@
         // 否则发论坛评论/搜索/管理页展开诊断等任何重渲染都会把长页弹回顶部，
         // 用户每次发一条评论都要重新滚到底部。聊天详情带检索时同样要恢复位置，
         // 不能每次按键都被钉回底部。
-         var scrollNode = pageNode.querySelector('.yz-page-inner') || pageNode;
-         var savedScroll = ((nav.view === 'chat' || nav.view === 'gchat') && !search) ? null : scrollNode.scrollTop;
-         if (nav.app === 'tablet') {
-           tabletOpenGroups = Object.create(null);
-           var details = pageNode.querySelectorAll('details[data-group-id]');
-           for (var d = 0; d < details.length; d += 1) {
-             tabletOpenGroups[details[d].getAttribute('data-group-id')] = details[d].open;
-           }
-         }
+        var scrollNode = pageNode.querySelector('.yz-page-inner') || pageNode;
+        var savedScroll = ((nav.view === 'chat' || nav.view === 'gchat') && !search) ? null : scrollNode.scrollTop;
+        if (nav.app === 'tablet') {
+          tabletOpenGroups = Object.create(null);
+          var details = pageNode.querySelectorAll('details[data-group-id]');
+          for (var d = 0; d < details.length; d += 1) {
+            tabletOpenGroups[details[d].getAttribute('data-group-id')] = details[d].open;
+          }
+        }
         var focused = hostDocument.activeElement;
         var searchFocused = !!(focused && focused.getAttribute && focused.getAttribute('data-search-input') !== null);
         var threadFocused = !!(focused && focused.getAttribute && focused.getAttribute('data-thread-input') !== null);
         var commentFocused = !!(focused && focused.getAttribute && focused.getAttribute('data-comment-input') !== null);
-         pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, space: space, spaceName: spaceName, tabletOpenGroups: tabletOpenGroups });
-         syncBusyUi(pageNode);
+        pageNode.innerHTML = VIEWS.renderPage(state, nav, featureFlags, { diagOpen: diagOpen, dataPanel: dataPanel, armed: armedWipe, search: search, space: space, spaceName: spaceName, tabletOpenGroups: tabletOpenGroups });
+        syncBusyUi(pageNode);
         // 首页无导航历史时隐藏返回按钮：nav.stack 为空且当前是入口页时隐藏。
         var backBtn = pageNode.querySelector('.yz-back');
         if (backBtn) backBtn.hidden = nav.app === 'home' && nav.stack.length === 0;
@@ -316,10 +386,10 @@
         if ((nav.view === 'chat' || nav.view === 'gchat') && !search) {
           var bubbles = pageNode.querySelector('.yz-bubbles');
           if (bubbles) bubbles.scrollTop = bubbles.scrollHeight;
-         } else if (savedScroll !== null && savedScroll > 0) {
-           // 非聊天页恢复原滚动位置（发评论/搜索后不再跳顶）。
-           var freshScrollNode = pageNode.querySelector('.yz-page-inner') || pageNode;
-           freshScrollNode.scrollTop = savedScroll;
+        } else if (savedScroll !== null && savedScroll > 0) {
+          // 非聊天页恢复原滚动位置（发评论/搜索后不再跳顶）。
+          var freshScrollNode = pageNode.querySelector('.yz-page-inner') || pageNode;
+          freshScrollNode.scrollTop = savedScroll;
         }
         // 检索框每次按键都整体重渲染：焦点丢给新的输入框并恢复光标到末尾，
         // 否则输入一个字符后失去焦点、无法连续键入。
@@ -338,7 +408,19 @@
             if (freshAny) freshAny.focus();
           }
         }
+        var draftFocused = pageDraft && pageDraft.key === pageKey ? restorePageDraft(pageNode, pageDraft) : false;
+        if (!searchFocused && !threadFocused && !commentFocused && !draftFocused && changedPage) {
+          var pageTitle = pageNode.querySelector('.yz-page-title');
+          if (pageTitle && typeof pageTitle.focus === 'function') pageTitle.focus();
+        }
       }
+      var live = hostDocument.getElementById('yz1-live');
+      if (live && changedPage) {
+        var announcement = nav.app === 'home' ? (spaceName || I18N.dict().appName) :
+          ((pageNode.querySelector('.yz-page-title') || {}).textContent || I18N.dict().appName);
+        live.textContent = announcement;
+      }
+      lastRenderedPageKey = pageKey;
     }
 
     function renderHomeSync(node, space) {

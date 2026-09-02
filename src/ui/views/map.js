@@ -10,7 +10,7 @@
       return filterMatch(kw, [place.name, place.domain, place.desc]);
     });
     var hero = '';
-    if (CORE.hasText(cur.place)) {
+    if (CORE.hasText(cur.place) && (!kw || filterMatch(kw, [cur.place, cur.domain, cur.desc]))) {
       hero = '<div class="yz-map-current"><h3>' + CORE.escapeHtml(t.mapTitles.current) + '</h3>' +
         '<div class="yz-hero"><span class="yz-map-pin">◈</span><div><b>' + CORE.escapeHtml(cur.place) + '</b>' + (CORE.hasText(cur.domain) ? '<small>' + CORE.escapeHtml(cur.domain) + '</small>' : '') + '</div></div>' +
         (CORE.hasText(cur.desc) ? '<p class="yz-map-desc">' + CORE.escapeHtml(cur.desc) + '</p>' : '') + '</div>';
@@ -18,12 +18,12 @@
     // 行踪按时间逆序（最新在上，紧贴当前所在地）：数据按追加顺序存（旧→新），倒排展示。
     var timeline = tracks.length ? '<div class="yz-map-tracks"><h3>' + CORE.escapeHtml(t.mapTitles.tracks) + '</h3><div class="yz-timeline">' +
       tracks.slice().reverse().map(function (track) {
-         var trackDel = ' <button type="button" class="yz-map-delete" data-action="delete-track" data-id="' + CORE.escapeHtml(String(track.id)) + '" aria-label="' + CORE.escapeHtml(t.deleteTrack) + '">×</button>';
+         var trackDel = ' <button type="button" class="yz-map-delete" data-action="delete-track" data-id="' + CORE.escapeHtml(String(track.id)) + '" aria-label="' + CORE.escapeHtml(contextualLabel(t.deleteTrack, track.place)) + '">×</button>';
         return '<div class="yz-track" style="display:flex;align-items:center;gap:8px"><time>' + CORE.escapeHtml(track.time || '') + '</time><div><b>' + CORE.escapeHtml(track.place) + '</b>' + (CORE.hasText(track.action) ? '<p>' + CORE.escapeHtml(track.action) + '</p>' : '') + '</div>' + trackDel + '</div>';
       }).join('') + '</div></div>' : '';
     var roster = places.length ? '<div class="yz-map-places"><h3>' + CORE.escapeHtml(t.mapTitles.places) + '</h3><div class="yz-page-list">' +
       places.map(function (place) {
-         var placeDel = ' <button type="button" class="yz-map-delete" data-action="delete-place" data-id="' + CORE.escapeHtml(String(place.id)) + '" aria-label="' + CORE.escapeHtml(t.deletePlace) + '">×</button>';
+         var placeDel = ' <button type="button" class="yz-map-delete" data-action="delete-place" data-id="' + CORE.escapeHtml(String(place.id)) + '" aria-label="' + CORE.escapeHtml(contextualLabel(t.deletePlace, place.name)) + '">×</button>';
         return '<div class="yz-row yz-static" style="display:flex;align-items:center;gap:8px"><span class="yz-map-pin">◈</span><span class="yz-row-copy"><b>' + CORE.escapeHtml(place.name) + '</b>' +
           (CORE.hasText(place.domain) ? '<i>' + CORE.escapeHtml(place.domain) + '</i>' : '') +
           (CORE.hasText(place.desc) ? '<em>' + CORE.escapeHtml(place.desc) + '</em>' : '') + '</span>' + placeDel + '</div>';
@@ -38,6 +38,5 @@
     } else if (!hasData) {
       empty = '<div class="yz-empty">' + CORE.escapeHtml(t.guards.tracks) + '</div>';
     }
-    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map, false, tag) + searchBoxIf(hasData, search) + hero + timeline + roster + empty + '</main>';
+    return '<main class="yz-page-inner" data-marker="map">' + yzHeader(t.features.map, false) + searchBoxIf(hasData, search) + hero + timeline + roster + empty + '</main>';
   }
-

@@ -6,13 +6,15 @@
   // data-action="delete-contact" data-action="delete-group" data-action="delete-message" data-action="delete-track" data-action="delete-place"
   var CHARACTER_DELETE_ACTIONS = { contact: 'delete-contact', group: 'delete-group', message: 'delete-message', track: 'delete-track', place: 'delete-place' };
 
-  function chatRow(t, row, label, extra) {
+  function chatRow(t, row, label, extra, editable) {
     var hasUnread = Number(row.unread) > 0;
     var unreadLabel = hasUnread ? (Number(row.unread) > 99 ? '99+' : String(row.unread)) : '';
     var unread = hasUnread ? '<u class="yz-unread">' + CORE.escapeHtml(unreadLabel) + '</u>' : '';
     var delAction = label === 'gchat' ? 'delete-group' : 'delete-contact';
-    var delBtn = '<button type="button" class="yz-row-action" data-action="' + delAction + '" data-id="' + CORE.escapeHtml(String(row.id)) + '">×</button>';
-    return '<div class="yz-row" style="display:flex;align-items:center;gap:6px">' + button('navigate', ava(row.name) + '<span class="yz-row-copy"><b>' + CORE.escapeHtml(row.name) + '<i>' + CORE.escapeHtml(row.relation || extra || '') + '</i></b><em>' + CORE.escapeHtml(row.preview || t.awaitingSync) + '</em></span><time>' + CORE.escapeHtml(row.time || '') + unread + '</time>', { view: label, id: row.id }, 'yz-row' + (hasUnread ? ' yz-unread-row' : '')) + delBtn + '</div>';
+    var delLabel = label === 'gchat' ? t.deleteGroup : t.deleteContact;
+     var delBtn = '<button type="button" class="yz-row-action" data-action="' + delAction + '" data-id="' + CORE.escapeHtml(String(row.id)) + '" aria-label="' + CORE.escapeHtml(contextualLabel(delLabel, row.name)) + '">×</button>';
+     var editBtn = editable && label === 'chat' ? playerEditBtn('contact', row.id, row.name) : '';
+    return '<div class="yz-row' + (hasUnread ? ' yz-unread-row' : '') + '" style="display:flex;align-items:center;gap:6px">' + button('navigate', ava(row.name) + '<span class="yz-row-copy"><b>' + CORE.escapeHtml(row.name) + '<i>' + CORE.escapeHtml(row.relation || extra || '') + '</i></b><em>' + CORE.escapeHtml(row.preview || t.awaitingSync) + '</em></span><time>' + CORE.escapeHtml(row.time || '') + unread + '</time>', { view: label, id: row.id }, 'yz-row-main') + editBtn + delBtn + '</div>';
   }
 
   // 有新回复（unread > 0）的条目稳定置顶，其余保持原顺序（渲染层排序，不改数据）。
@@ -32,7 +34,7 @@
     var rows = group ? CORE.safeArray(chats.groups, 6) : CORE.safeArray(chats.contacts, 10);
     var rowItem = null;
     rows.forEach(function (item) { if (String(item.id) === String(nav.params && nav.params.id)) rowItem = item; });
-    if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false, tag) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '<br><small class="yz-archived-hint">' + CORE.escapeHtml(t.guards.chatArchived) + '</small></div></main>';
+    if (!rowItem) return '<main class="yz-page-inner" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' + yzHeader(t.features.msg, false) + '<div class="yz-empty">' + CORE.escapeHtml(group ? t.guards.gchat : t.guards.chat) + '<br><small class="yz-archived-hint">' + CORE.escapeHtml(t.guards.chatArchived) + '</small></div></main>';
     var sealed = flags && flags.msg === false;
     var isUserThread = /^c-/.test(String(rowItem.id));
     var userView = isUserThread || state.isDefault === false || ui.userSpaceView === true;
@@ -45,7 +47,7 @@
       var showSender = !mine && (group || isUserThread || userView);
       var senderName = message.sender || rowItem.name || (message.side === 'self' ? (ui.ownerName || '') : '');
       var sender = showSender ? '<b class="yz-sender">' + CORE.escapeHtml(senderName || '') + '</b>' : '';
-      var delBtn = ' <button type="button" class="yz-bubble-del" data-action="delete-message" data-id="' + CORE.escapeHtml(String(message.id)) + '" data-parent-id="' + CORE.escapeHtml(String(rowItem.id)) + '">×</button>';
+       var delBtn = ' <button type="button" class="yz-bubble-del" data-action="delete-message" data-id="' + CORE.escapeHtml(String(message.id)) + '" data-parent-id="' + CORE.escapeHtml(String(rowItem.id)) + '" aria-label="' + CORE.escapeHtml(contextualLabel(t.deleteMessage, String(message.text || '').slice(0, 80))) + '">×</button>';
       return '<div class="yz-bubble-row ' + (mine ? 'self' : 'other') + '">' +
         (!mine && group ? '<span class="yz-bubble-ava">' + ava(message.sender || '?') + '</span>' : '') +
         '<div class="yz-bubble-wrap">' + sender + '<div class="yz-bubble">' + CORE.escapeHtml(message.text) + delBtn + '</div><time>' + CORE.escapeHtml(message.time || '') + '</time></div>' +
@@ -60,11 +62,11 @@
     if (sealed) {
       composer = '<div class="yz-composer yz-composer-sealed">' + CORE.escapeHtml(t.toast.sealedMsg) + '</div>';
     } else {
-      composer = '<div class="yz-composer"><input type="text" data-thread-input data-thread-id="' + CORE.escapeHtml(String(rowItem.id)) + '" data-group="' + (group ? '1' : '0') + '" placeholder="' + CORE.escapeHtml(t.msgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.msgPlaceholder) + '" maxlength="3000">' +
+       composer = '<div class="yz-composer"><div class="yz-input-wrap"><input type="text" data-thread-input data-thread-id="' + CORE.escapeHtml(String(rowItem.id)) + '" data-group="' + (group ? '1' : '0') + '" placeholder="' + CORE.escapeHtml(t.msgPlaceholder) + '" aria-label="' + CORE.escapeHtml(t.msgPlaceholder) + '" maxlength="3000"><span class="yz-length-counter" data-length-counter="message" aria-live="polite">0/3000</span></div>' +
         '<button type="button" class="yz-send" data-action="send-thread-msg" data-thread-id="' + CORE.escapeHtml(String(rowItem.id)) + '" data-group="' + (group ? '1' : '0') + '">' + CORE.escapeHtml(t.send) + '</button></div>';
     }
     return '<main class="yz-page-inner yz-page-composer" data-marker="' + (group ? 'msg-gchat' : 'msg-chat') + '">' +
-      yzHeader(title, false, tag) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
+      yzHeader(title, false) + searchBox(search) + '<div class="yz-bubbles">' + bubbles + '</div>' + composer + '</main>';
   }
 
   function renderMsg(state, nav, search, flags, ui) {
@@ -82,17 +84,16 @@
     if (view === 'groups') {
       var gitems = unreadFirst(CORE.safeArray(chats.groups, 6).filter(function (row) {
         return filterMatch(kw, [row.name, row.preview, row.time]);
-      })).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit); });
+      })).map(function (row) { return chatRow(t, row, 'gchat', t.labels.membersUnit, state.isDefault === false || ui.userSpaceView === true); });
       body = gitems.length ? '<div class="yz-page-list">' + gitems.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.groups) + '</div>';
       return '<main class="yz-page-inner" data-marker="msg-groups">' + yzHeader(t.features.msg, true) +
         yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.groups, 6).length, search) + body + '</main>';
     }
     var items = unreadFirst(CORE.safeArray(chats.contacts, 10).filter(function (row) {
       return filterMatch(kw, [row.name, row.relation, row.preview, row.time]);
-    })).map(function (row) { return chatRow(t, row, 'chat', ''); });
+    })).map(function (row) { return chatRow(t, row, 'chat', '', state.isDefault === false || ui.userSpaceView === true); });
     body = items.length ? '<div class="yz-page-list">' + items.join('') + '</div>' : '<div class="yz-empty">' + CORE.escapeHtml(kw ? t.searchNoMatch : t.guards.contacts) + '</div>';
     var cta = '<button type="button" class="yz-add-btn" data-action="new-contact">＋ ' + CORE.escapeHtml(t.addContact) + '</button>';
     return '<main class="yz-page-inner" data-marker="msg-chats">' + yzHeader(t.features.msg, true) +
       yzTabs([['chats', t.tabs.contacts], ['groups', t.tabs.groups]], view) + searchBoxIf(CORE.safeArray(chats.contacts, 10).length, search) + body + cta + '</main>';
   }
-

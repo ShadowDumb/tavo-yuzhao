@@ -77,16 +77,17 @@
 │   ├── runtime.js   运行时 / 持久化
 │   ├── prompt.js    提示词构建
 │   └── ui/          UI 渲染、交互和 HTML 模板
-│       ├── views.js 页面渲染
-│       ├── app.js   UI 交互与生命周期
-│       └── jade.template.html UI 静态模板
+│       ├── views/   页面渲染（按功能拆分：tablet/messages/forms/notes/forum/market/space/map/sync/manage/page/shared）
+│       ├── app/     UI 交互与生命周期（entry/shell/state/data-actions/navigation/overlay/messaging/forms/fab/hooks 等）
+│       └── jade.template.html UI 静态模板（CSS 真源）
 ├── scripts/build.mjs 构建脚本（分别生成 entry.js 和 ui/jade.html）
 ├── entry.js        Hook/动作入口与共享桥
-├── ui/jade.html     Tavo HTML 片段（数据层 + 静态 UI + UI 脚本）
+├── ui/jade.html     Tavo HTML 片段（数据层 + 静态 UI + UI 脚本，生成物勿手改）
 ├── manifest.json   插件清单
 ├── locales/        中/英 i18n 字典
 ├── tests/smoke.mjs 冒烟测试（无外部依赖）
-├── DESIGN.md       设计文档
+├── DESIGN.md       设计文档（方向：概念/架构/协议）
+├── SPEC.md         UI 落地与验收标准（令牌/组件映射/验收清单）
 ├── CHANGELOG.md    变更记录（最新版本在最前）
 └── TODO.md         评审与开发待办
 ```
@@ -100,16 +101,17 @@ node --check entry.js && node tests/smoke.mjs
 
 日常修改 `src/` 下对应功能文件，不直接编辑生成的 `entry.js` 或 `ui/jade.html`。构建脚本分别生成数据层/Hook 入口和 `/chat/body/end` UI 片段；UI 脚本通过共享桥接对象访问 Core、Protocol、Runtime 和 Prompt，Hooks 仍只由 `entry.js` 注册。可用 `node scripts/build.mjs --check` 检查两个产物是否与源码一致。
 
-基线 **926 项全绿**，覆盖协议解析、diff 合并、评估矩阵、预算窗口（含五级淘汰与标识行截断）、条目级注入采样（强制包含集/活跃度加权/冷门保底/隐藏条目不出现）、帖子未读机制（启发式兼容/清零保留/置顶光效）、世界书归档、版本迁移、备份恢复链、镜像 tie-break 与并发竞态回归、检索筛选、用户空间持久化安全、恶意载荷渲染契约（XSS 守卫）、静态 UI 片段、entry/UI bridge、Runtime 启动契约、P1 并发/回滚/协议/容量契约与 fragment 重挂载契约、data-action↔路由双向守卫等。
+基线 **961 项全绿**，覆盖协议解析、diff 合并、评估矩阵、预算窗口（含五级淘汰与标识行截断）、条目级注入采样（强制包含集/活跃度加权/冷门保底/隐藏条目不出现）、帖子未读机制（启发式兼容/清零保留/置顶光效）、世界书归档、版本迁移、备份恢复链、镜像 tie-break 与并发竞态回归、检索筛选、用户空间持久化安全、恶意载荷渲染契约（XSS 守卫）、静态 UI 片段、entry/UI bridge、Runtime 启动契约、P1 并发/回滚/协议/容量契约与 fragment 重挂载契约、R2 用户流程/焦点/触控契约、R3 文案/入口/输入反馈契约、data-action↔路由双向守卫等。
 
 ### 发布门禁
 
-1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 926 项全绿
+1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 961 项全绿
 2. Tavo MCP 环境执行 `tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
 3. 真机回归：世界书归档挂接、FAB 拖拽/复位、卦位徽标、同步详情页、触屏两击确认、空间切换/新建与跨空间收发（手机/平板/桌面）
-4. `zip -r ../yu-zhao-v3.0.0.tpg manifest.json entry.js locales ui/jade.html cover.png`
+4. `V=$(node -p "require('./manifest.json').version") && rm -f "../yu-zhao-v$V.tpg" && zip -r "../yu-zhao-v$V.tpg" manifest.json entry.js locales ui/jade.html cover.png`（版本号取自 manifest，先删旧包再压，保证干净归档）
 
 ## 版本
 
-- 当前：**3.0.0**（已发布）
+- 当前：**3.0.0**（已发布）；其后累积 R2/R3 用户视角修复 + UI 一致性重设计（未单独发版，见 CHANGELOG「未发布」段）
 - 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)（最新版本在最前）
+- UI 落地与验收标准见 [SPEC.md](SPEC.md)

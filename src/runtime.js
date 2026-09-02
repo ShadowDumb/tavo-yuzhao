@@ -742,32 +742,76 @@
       return attachSaved({ ok: true, id: comment.id }, saveSpace(space));
     }
 
+    // 删除消息后重建线程摘要与用户回复游标，避免列表继续显示已删除正文/时间，
+    // 也避免删除用户最后一条发言后保留失效的 anchorId 和未读数。
+    function refreshThreadSummary(thread, deletedMessage, deletedIndex, previousAnchorIndex) {
+      if (!thread) return;
+      var messages = safeArray(thread.messages, 100);
+      var previousAnchor = cleanText(thread.anchorId, 160);
+      var previousReplyCount = nzero(thread.replyCount);
+      var deletedId = String(deletedMessage && deletedMessage.id || '');
+      var deletedUserAnchor = !!previousAnchor && deletedId === previousAnchor;
+      var deletedAfterAnchor = previousAnchorIndex == null || previousAnchorIndex < 0 || deletedIndex > previousAnchorIndex;
+      var last = messages.length ? messages[messages.length - 1] : null;
+      thread.preview = last ? cleanText(last.text, 300) : '';
+      thread.time = last ? cleanText(last.time, 80) : '';
+      var lastUser = -1;
+      messages.forEach(function (message, index) {
+        if (message && /^(pm-\d+|pmg-\d+)$/.test(String(message.id) || '')) lastUser = index;
+      });
+      if (lastUser < 0) {
+        if (!previousAnchor && !deletedUserAnchor) {
+          // 角色线程没有用户回复游标；删除消息只更新摘要，不改模型维护的未读数。
+          return;
+        }
+        if (deletedUserAnchor) {
+          thread.anchorId = '';
+          thread.replyCount = 0;
+          thread.seenReplies = 0;
+          thread.unread = 0;
+        } else if (deletedAfterAnchor) {
+          // 用户发言可能已滚出保留窗口；删除窗口内回复时仍保留累计游标。
+          thread.anchorId = previousAnchor;
+          thread.replyCount = Math.max(0, previousReplyCount - 1);
+          thread.seenReplies = Math.min(thread.replyCount, nzero(thread.seenReplies));
+          thread.unread = Math.max(0, thread.replyCount - thread.seenReplies);
+        }
+        return;
+      }
+      thread.anchorId = cleanText(messages[lastUser].id, 160);
+      thread.replyCount = deletedUserAnchor ? Math.max(0, messages.length - 1 - lastUser) : (deletedAfterAnchor ? Math.max(0, previousReplyCount - 1) : previousReplyCount);
+      thread.seenReplies = Math.min(thread.replyCount, nzero(thread.seenReplies != null ? thread.seenReplies : thread.seen));
+      thread.unread = Math.max(0, thread.replyCount - thread.seenReplies);
+    }
+
     // 打开线程/帖子 = 已读：线程 seen 游标对齐尾随回复数；帖子 unread 清零。
     function markSpaceThreadSeen(spaceId, threadId) {
       var space = CORE.findSpaceState(current(), spaceId);
       var thread = spaceThread(space, threadId);
-      if (!thread) return false;
+      if (!thread) return { ok: false, reason: 'missing' };
       thread.seen = Math.max(0, userTail(thread));
       if (thread.anchorId) thread.seenReplies = nzero(thread.replyCount);
       thread.unread = 0;
-      saveSpace(space);
-      return true;
+      return attachSaved({ ok: true }, saveSpace(space));
     }
 
     function markSpacePostSeen(spaceId, postId) {
       var space = CORE.findSpaceState(current(), spaceId);
-      if (!space) return false;
+      if (!space) return { ok: false, reason: 'space' };
+      var found = false;
       var touched = false;
       safeArray(space.forum && space.forum.posts, 20).forEach(function (p) {
         if (!p || String(p.id) !== String(postId)) return;
-       if (String(p.owner) === 'player') {
-         p.seenReplies = nzero(p.replyCount);
-         p.seen = postReplyCount(p);
-       }
+        found = true;
+        if (String(p.owner) === 'player') {
+          p.seenReplies = nzero(p.replyCount);
+          p.seen = postReplyCount(p);
+        }
         if (nzero(p.unread) > 0) { p.unread = 0; touched = true; }
       });
-      if (touched) saveSpace(space);
-      return touched;
+      if (!found) return { ok: false, reason: 'missing' };
+      // 玩家帖子即使当前 unread 已为 0，也可能需要落盘新的 seen 游标。
+      return attachSaved({ ok: true, changed: touched }, saveSpace(space));
     }
 
     // ---------- 空间实体 CRUD（folder/note/item/currency/order/post/contact，用户直写） ----------
@@ -905,9 +949,15 @@
       } else if (kind === 'message') {
         var target = spaceThread(space, extraId);
         if (!target) return { ok: false, reason: 'missing' };
-        snapshot.entity = safeArray(target.messages, 100).filter(function (m) { return String(m.id) === id; })[0] || null;
+        var targetMessages = safeArray(target.messages, 100);
+        var deletedIndex = -1;
+        targetMessages.forEach(function (message, index) { if (String(message && message.id) === id) deletedIndex = index; });
+        var previousAnchorIndex = -1;
+        targetMessages.forEach(function (message, index) { if (String(message && message.id) === String(target.anchorId || '')) previousAnchorIndex = index; });
+        snapshot.entity = targetMessages.filter(function (m) { return String(m && m.id) === id; })[0] || null;
         if (!snapshot.entity) return { ok: false, reason: 'missing' };
-        target.messages = safeArray(target.messages, 100).filter(function (m) { return String(m.id) !== id; });
+        target.messages = targetMessages.filter(function (m) { return String(m.id) !== id; });
+        refreshThreadSummary(target, snapshot.entity, deletedIndex, previousAnchorIndex);
       } else if (kind === 'track') {
         snapshot.entity = safeArray(space.map.tracks, 20).filter(function (t) { return String(t.id) === id; })[0] || null;
         if (!snapshot.entity) return { ok: false, reason: 'missing' };

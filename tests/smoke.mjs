@@ -216,7 +216,7 @@ ok(/var lockedChat = confirmChatId;/.test(source) && /lockedChat !== runtime\.ac
 ok(/hideConfirm\(\);\s*close\(\);\s*render\(\);/.test(source), 'chat:closed 时收起确认框（锁定的聊天已失效）');
 // 回归保护：玩家域表单「种类已存在」报错必须走双语文案，绝不能直出字面 undefined。
 ok(/playerFormKindClash: tr\('runtime\.player\.formKindClash'\),/.test(source), 'buildDict 接线 playerFormKindClash（防直出 undefined）');
-ok(/duration \|\| 2400/.test(source), 'showToast 保留自定义展示时长（默认 2.4s）');
+ok(/duration \|\| \(bad \? 6000 : 2400\)/.test(source), '错误 Toast 延长阅读时间并保留自定义展示时长');
 // 回归保护：showToast 必须先清空上一条——2.4s 内连续两条 toast 不串接、
 // 旧内嵌按钮（撤销等）不残留（残留按钮会触发被替换后的新动作）。
 ok(/function showToast\(text, bad, action, duration\) \{[\s\S]*?if \(!toast\) return;[\s\S]*?clearToast\(\);[\s\S]*?toastAction = action && action\.fn \? action\.fn : null;/.test(source), 'showToast 开头先 clearToast（不串接、清残留按钮）');
@@ -273,7 +273,7 @@ ok(/var lastSep = cut\.lastIndexOf\('｜'\);\s*if \(lastSep > 0\) cut = cut\.sli
 // 回归保护：玩家域主页同步行为纯展示（无手形）。
 ok(/\.yz-sync\.yz-sync-static\{cursor:default\}/.test(uiSource), '玩家域主页同步行纯展示（不伪装可点）');
 // 回归保护：确认框语言切换刷新文案 + 无障碍焦点（aria 关联 + 焦点入取消）。
-ok(/function refreshConfirmText\(\) \{/.test(source) && /box\.setAttribute\('aria-labelledby', titleId\);/.test(source), '确认框语言刷新 + aria 关联 + 焦点入取消');
+  ok(/function refreshConfirmText\(\) \{/.test(source) && /host\.setAttribute\('aria-labelledby', titleId\);/.test(source), '确认框语言刷新 + aria 关联 + 焦点入取消');
 // 回归保护：英文「New/Edit+名词」补空格（en 不粘连成 NewFolder）。
 ok(/function playerVerbNoun\(verb, noun\) \{/.test(source) && /verb \+ ' ' \+ noun : verb \+ noun;/.test(source), 'playerVerbNoun 按语言补空格（en 不粘连）');
 // 回归保护：带操作按钮的 toast（清除确认等）文案较长，nowrap+overflow 会把按钮挤出可视区，
@@ -1019,9 +1019,9 @@ console.log('# 交互基座 · 检索筛选');
   const mp = M.CORE.blankState('f7');
   mp.map = { current: { place: '青云山', domain: '东域', desc: '山门所在' }, tracks: [{ id: 't1', time: '昨日', place: '山门', action: '入门' }, { id: 't2', time: '今日', place: '演武场', action: '晨练' }] };
   const mapTracks = M.VIEWS.renderMap(mp, '演武');
-  ok(mapTracks.includes('演武场') && mapTracks.includes('青云山') && !mapTracks.includes('入门'), '舆图行踪过滤、当前位置保留');
+   ok(mapTracks.includes('演武场') && !mapTracks.includes('青云山') && !mapTracks.includes('入门'), '舆图搜索同步过滤当前位置');
   const mapNone = M.VIEWS.renderMap(mp, '荒原');
-  ok(mapNone.includes(zhCatalog['runtime.search.noMatch']) && mapNone.includes('青云山'), '舆图无命中行踪时显示空态且当前位置仍在');
+   ok(mapNone.includes(zhCatalog['runtime.search.noMatch']) && !mapNone.includes('青云山'), '舆图无命中时不保留无关当前位置');
 
   // renderPage 透传 ui.search 到各页面；无 ui 时缺省空关键词不报错。
   const pageSearch = M.VIEWS.renderPage(ms, { app: 'msg', view: 'chats', params: {}, stack: [] }, {}, { search: '林月如' });
@@ -1775,14 +1775,71 @@ console.log('# P2 · v3 评审边界回归');
   ok(/(?:confirmHost\.addEventListener\('keydown'|listen\(confirmHost, 'keydown')/.test(source) && /event\.key !== 'Tab'/.test(source) && /event\.stopImmediatePropagation\(\);\s*hideConfirm\(\);/.test(source), '确认框独立处理 Tab 循环与 Esc，避免关闭底层玉兆');
   ok(/#yz1-overlay\.loading #yz1-jade\{visibility:hidden;pointer-events:none\}/.test(uiSource) && /overlay\.classList\.contains\('loading'\)/.test(source), 'loading 期间底层玉兆控件不可交互');
   ok(/var viewportHeight = vv && Number\(vv\.height\) > 0 \? Number\(vv\.height\) : Number\(hostWindow\.innerHeight\)/.test(source), '键盘适配兼容 visualViewport 缺失的 WebView');
-  ok(/\.yz-map-delete\{[^}]*width:44px;height:44px/.test(uiSource) && /class="yz-map-delete"[^>]*aria-label=/.test(source), '地图删除按钮触屏可见且有可访问名称');
-  ok(/\.yz-space-row\{display:flex;flex-direction:column/.test(uiSource) && /\.yz-space-actions>\*\{flex:1 1 auto;min-width:44px\}/.test(uiSource), '空间管理行在窄屏纵向重排');
-  ok(/\.yz-btn\{[^}]*min-width:44px;min-height:44px/.test(uiSource) && /\.yz-row-action\{[^}]*width:44px;height:44px/.test(uiSource), '高风险控件触摸尺寸至少 44px');
+  ok(/\.yz-map-delete\{[^}]*width:44px;height:var\(--yz-h-control\)/.test(uiSource) && /--yz-h-control:44px/.test(uiSource) && /class="yz-map-delete"[^>]*aria-label=/.test(source), '地图删除按钮触屏可见且有可访问名称');
+  ok(/\.yz-space-row\{display:flex;flex-direction:column/.test(uiSource) && /\.yz-space-actions\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/.test(uiSource) && /\.yz-space-actions>\*\{min-width:0;width:100%;min-height:var\(--yz-h-control\)/.test(uiSource), '空间管理行窄屏纵向重排且操作区为等高网格');
+  ok(/\.yz-btn\{[^}]*min-width:44px;min-height:var\(--yz-h-control\)/.test(uiSource) && /\.yz-row-action\{[^}]*width:44px;height:var\(--yz-h-control\)/.test(uiSource) && /--yz-h-control:44px/.test(uiSource), '高风险控件触摸尺寸至少 44px');
   const customHome = M.CORE.normalizeState({ spaces: [{ id: 'sp1', name: '私人', isDefault: false }] }, 'p2-ui-home');
   const customHomeHtml = M.VIEWS.renderHome(customHome, {}, { space: customHome.spaces[0], spaceName: '私人' });
   ok(!customHomeHtml.includes('data-action="sync-detail"') && customHomeHtml.includes('yz-sync-static'), '自定义空间首页不显示角色同步诊断入口');
   const mapHtml = M.VIEWS.renderMap({ map: { current: {}, tracks: [{ id: 't1', place: '山门', time: '今' }], places: [{ id: 'p1', name: '山门' }] } }, '', '');
   ok(mapHtml.includes('class="yz-map-delete"') && mapHtml.includes(zhCatalog['runtime.player.deleteTrack']) && mapHtml.includes(zhCatalog['runtime.player.deletePlace']), '地图删除按钮使用双语 catalog 文案');
+}
+
+// ---------- R2 · 用户流程与可用性修复 ----------
+console.log('# R2 · 用户流程与可用性修复');
+{
+  ok(/formApps = \{ contact: 'msg', folder: 'notes', note: 'notes', item: 'space', currency: 'space', order: 'market', post: 'forum' \}/.test(source), '表单实体删除后按实体类型回退列表');
+  ok(!source.includes("((kind === 'message') && nav.app === 'msg'") && /backNavSkippingDeleted\(kind, id, parentId\)/.test(source), '删除单条消息后保持当前会话详情');
+  ok(/function refreshThreadSummary\(thread, deletedMessage/.test(runtimeSource) && /refreshThreadSummary\(target, snapshot\.entity, deletedIndex, previousAnchorIndex\);/.test(runtimeSource), '删除消息后重算线程摘要');
+  ok(/async function switchSpaceToNow\(id\)/.test(source) && /await Promise\.resolve\(result\.saved\)/.test(source), '空间切换等待持久化结果');
+  ok(/sp\.sync = Object\.assign\(\{}, sp\.sync/.test(source) && /status: 'empty'/.test(source), '单功能清空同步摘要与状态');
+  ok(/var writeLocked = !!sp\.isDefault/.test(source) && /class="yz-space-toggle/.test(source) && /disabled aria-disabled="true"/.test(source), '默认空间 AI 可写开关显示为锁定而非危险按钮');
+  ok(/function draftIsDirty\(\)/.test(source) && /function withDiscardGuard\(action\)/.test(source) && /playerDiscardTitle/.test(source), '离开表单或导入面板前保护未保存草稿');
+  ok(/function capturePageDraft\(pageNode\)/.test(source) && /function restorePageDraft\(pageNode, draft\)/.test(source), '整体重绘保留普通表单草稿与焦点');
+  ok(/querySelectorAll\('button, \[href\], input, select, textarea, summary/.test(source), 'overlay 焦点陷阱覆盖全部可聚焦控件');
+  ok(/host\.setAttribute\('aria-labelledby', titleId\);/.test(source) && /id="yz1-live"/.test(uiSource), '确认框 ARIA 关联到 alertdialog 宿主并提供页面 live 区');
+  ok(/Math\.max\(1, room\)/.test(source), '低视口高度不强制 320px 导致键盘遮挡');
+  ok(/\.yz-sync\{[^}]*min-height:var\(--yz-h-control\)/.test(uiSource) && /\.yz-toast \.yz-toast-action\{[^}]*min-height:var\(--yz-h-control\)/.test(uiSource) && /--yz-h-control:44px/.test(uiSource) && /safe-area-inset-bottom/.test(uiSource), '同步入口和 Toast/FAB 具备触摸尺寸与安全区适配');
+  ok(/\.yz-row-main\{/.test(uiSource) && /yz-manage-main yz-row-main/.test(source), '列表主内容使用单层卡片布局');
+
+  const r2Host = fakeHost();
+  const r2Rt = M.createRuntime(r2Host.api, null, () => ({}));
+  await r2Rt.switchChat('r2-flow');
+  const r2Space = r2Rt.createSpace('流程空间');
+  await r2Space.saved;
+  const r2Contact = r2Rt.spaceSaveEntity(r2Space.id, 'contact', { name: '联系人' }, '');
+  await r2Contact.saved;
+  const r2Thread = M.CORE.findSpaceState(r2Rt.current(), r2Space.id).chats.contacts[0];
+  r2Thread.messages = [
+    { id: 'pm-1', side: 'self', time: '一', text: '我的话' },
+    { id: 'reply-1', side: 'other', time: '二', text: '回复' },
+    { id: 'reply-2', side: 'other', time: '三', text: '最后回复' }
+  ];
+  r2Thread.anchorId = 'pm-1'; r2Thread.replyCount = 2; r2Thread.seenReplies = 0; r2Thread.unread = 2;
+  const deletedMessage = r2Rt.spaceDeleteEntity(r2Space.id, 'message', 'reply-2', r2Thread.id);
+  await deletedMessage.saved;
+  const refreshedThread = M.CORE.findSpaceState(r2Rt.current(), r2Space.id).chats.contacts[0];
+  eq(refreshedThread.preview, '回复', '删除最后一条消息后线程摘要正文更新');
+  eq(refreshedThread.time, '二', '删除最后一条消息后线程摘要时间更新');
+  eq(refreshedThread.replyCount, 1, '删除消息后累计回复数重算');
+  const seen = r2Rt.markSpaceThreadSeen(r2Space.id, refreshedThread.id);
+  ok(seen.ok && seen.saved && (await seen.saved).ok, '打开线程的已读游标返回并等待保存结果');
+
+  const userSpace = M.CORE.blankUserSpace('r2-view', { id: 'sp1', name: '私人' });
+  userSpace.chats = M.CORE.normalizeChats({ contacts: [{ id: 'c-1', name: '可编辑联系人', messages: [] }], groups: [] });
+  userSpace.notes = { folders: [{ id: 'f-empty', name: '空夹' }, { id: 'f-full', name: '有内容' }], notes: [{ id: 'n1', folderId: 'f-full', title: '条目', body: '正文' }] };
+  userSpace.market = { listings: [], auctions: [], requests: [], orders: [{ id: 'o1', name: '订单', status: 'pending', price: '1', side: 'buy' }] };
+  userSpace.space = { currencies: [{ kind: '灵石', amount: '1' }], items: [{ id: 'i1', name: '物品', qty: 1 }] };
+  const editableChats = M.VIEWS.renderMsg(userSpace, { app: 'msg', view: 'chats', params: {} }, '', {}, {});
+  ok(editableChats.includes('data-action="entity-edit"') && editableChats.includes(zhCatalog['runtime.player.edit']), '用户空间联系人列表提供可见编辑入口');
+  const emptyFolder = M.VIEWS.renderNotes(userSpace, { app: 'notes', view: 'folder', params: { id: 'f-empty' } }, '', true, {});
+  ok(!emptyFolder.includes('data-search-input'), '空玉册文件夹不显示全局搜索框');
+  const userMarket = M.VIEWS.renderMarket(userSpace, { app: 'market', view: 'orders', params: {} }, '', '', true, {});
+  ok(userMarket.indexOf('<div class="yz-row') >= 0 && userMarket.indexOf('<div class="yz-row') < userMarket.indexOf('yz-manage-main'), '订单编辑行有统一卡片容器');
+  const manageSpaces = M.VIEWS.renderManage({ spaces: [M.CORE.blankUserSpace('r2-manage', { id: 'sp0', isDefault: true }), userSpace], activeSpaceId: 'sp0' }, {}, {}, { view: 'spaces' });
+  ok(manageSpaces.includes('class="yz-space-toggle locked"') && manageSpaces.includes('disabled aria-disabled="true"'), '默认空间 AI 可写操作不可点击');
+  const pageTitle = M.VIEWS.renderPage(userSpace, { app: 'space', view: 'items', params: {}, stack: [] }, {}, {});
+  ok(pageTitle.includes('<h2 class="yz-page-title" tabindex="-1">'), '页面标题使用可聚焦 heading 作为重绘焦点入口');
 }
 
 // ---------- P3 · 细节与视觉优化 ----------
@@ -1825,6 +1882,42 @@ console.log('# P3 · 细节与视觉优化');
   ] }] } };
   const forumSearch = M.VIEWS.renderForum(forumP3, { app: 'forum', view: 'post', params: { id: 'p3' } }, '目标', '', false, {});
   ok(forumSearch.includes('2 ' + zhCatalog['runtime.label.commentsWord']) && !forumSearch.includes('1 ' + zhCatalog['runtime.label.commentsWord']) && forumSearch.includes('目标') && !forumSearch.includes('不相关'), '论坛评论标题显示实际总数且检索只过滤内容');
+}
+
+// ---------- R3 · 文案、入口完整性与细节 ----------
+console.log('# R3 · 文案、入口完整性与细节');
+{
+  const r3Forum = M.VIEWS.renderForum({ forum: { posts: [{ id: 'r3-post', title: '帖子', section: 'general', comments: [{ author: '甲', text: '评论' }] }] } }, { app: 'forum', view: 'post', params: { id: 'r3-post' } }, '', '', false, {});
+  ok(r3Forum.includes('data-search-input') && r3Forum.includes(zhCatalog['runtime.search.placeholder']), '论坛详情提供评论搜索入口');
+
+  const r3State = M.CORE.blankUserSpace('r3-ui', { id: 'sp-r3', name: '测试空间', isDefault: false });
+  r3State.forum.posts = [{ id: 'r3-post', owner: 'player', title: '我的帖子', body: '正文', section: 'general', comments: [] }];
+  r3State.market.orders = [{ id: 'r3-order', name: '订单', status: 'pending', side: 'buy', price: '1' }];
+  const r3PostForm = M.VIEWS.renderSpaceForm(r3State, { app: 'forum', view: 'form', params: { kind: 'post', id: 'r3-post' } }, {});
+  ok(r3PostForm.includes('<option value="general" selected>') && !r3PostForm.includes('<option value="闲聊"'), '帖子 section 使用稳定 canonical value');
+  const r3Orders = M.VIEWS.renderMarket(r3State, { app: 'market', view: 'orders', params: {} }, '', '', true, {});
+  ok(r3Orders.includes(zhCatalog['runtime.player.orderStatusPending']) && !r3Orders.includes('pending'), '订单列表把内部状态映射为本地化文案');
+
+  const r3ManageSpaces = M.VIEWS.renderManage({ spaces: [{ id: 'sp0', isDefault: true }, { id: 'sp-r3', name: '测试空间', isDefault: false }], activeSpaceId: 'sp-r3' }, {}, {}, { view: 'spaces' });
+  ok(r3ManageSpaces.includes(zhCatalog['runtime.space.deleteDefaultConfirm']) && r3ManageSpaces.includes(zhCatalog['runtime.space.deleteConfirm']), '空间删除确认说明默认空间与普通空间影响');
+  ok(zhCatalog['runtime.player.deleteConfirm'].includes('6 秒') && zhCatalog['runtime.player.deleteFolderConfirm'].includes('其中备忘'), '删除文案说明撤销窗口与文件夹级联范围');
+
+  r3State.chats = M.CORE.normalizeChats({ contacts: [{ id: 'r3-contact', name: '联系人', relation: '道友', messages: [{ id: 'r3-message', text: '消息上下文', side: 'other', time: '现在' }] }], groups: [] });
+  const r3ChatList = M.VIEWS.renderMsg(r3State, { app: 'msg', view: 'chats', params: {} }, '', {}, {});
+  const r3ChatDetail = M.VIEWS.renderMsg(r3State, { app: 'msg', view: 'chat', params: { id: r3State.chats.contacts[0].id } }, '', {}, {});
+  ok(r3ChatList.includes('删除联系人：') && r3ChatList.includes('编辑联系人：'), '联系人删除与编辑按钮包含对象上下文');
+  ok(r3ChatDetail.includes('删除消息：消息上下文'), '消息删除按钮包含消息上下文');
+
+  ok(/white-space:normal;line-height:1\.5/.test(uiSource) && /max-height:40vh;overflow:auto/.test(uiSource) && /duration \|\| \(bad \? 6000 : 2400\)/.test(source), '错误 Toast 可换行滚动且延长展示时间');
+  const r3MessageComposer = r3ChatDetail;
+  const r3CommentComposer = M.VIEWS.renderForum(r3State, { app: 'forum', view: 'post', params: { id: 'r3-post' } }, '', '', true, {});
+  const r3OrderForm = M.VIEWS.renderSpaceForm(r3State, { app: 'market', view: 'form', params: { kind: 'order', id: 'r3-order' } }, {});
+  ok(r3MessageComposer.includes('data-length-counter="message"') && r3CommentComposer.includes('data-length-counter="comment"') && r3OrderForm.includes('data-length-counter="name"'), '消息、评论和表单输入显示长度计数器');
+  ok(/lengthInput\.parentNode[\s\S]*?textContent = String\(lengthInput\.value/.test(source), '输入事件实时更新长度计数器');
+
+  const r3Manage = M.VIEWS.renderManage(r3State, {}, {}, { view: 'root' });
+  ok(r3Manage.includes('class="yz-manage-help"') && r3Manage.includes(zhCatalog['runtime.manage.helpTitle']), '管理页把技术说明收进可展开帮助区');
+  ok(zhCatalog['settings.info'].length < 200 && !zhCatalog['settings.info'].includes('世界书'), '设置页首屏说明保持简短且不暴露技术术语');
 }
 
 // ---------- P3 · 版本迁移与备份恢复 ----------
