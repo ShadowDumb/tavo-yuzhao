@@ -196,7 +196,9 @@
         if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
         var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
         var currentBox = currentOverlay && currentOverlay.querySelector('[data-space-input]');
-        if (uiContextMatches(context) && currentBox === box) {
+        // ignoreSpace：删除唯一默认空间后首个新建空间会从无到有（activeSpace ''→新 id），
+        // 该变化正是本操作的结果而非用户跳转，不应让成功路径因空间 id 漂移而被跳过。
+        if (uiContextMatches(context, { ignoreSpace: true }) && currentBox === box) {
           box.value = '';
           showToast(I18N.dict().spaceCreated);
           render();

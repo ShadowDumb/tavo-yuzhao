@@ -995,7 +995,11 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
     if (!out.spaces.length) {
       out.spaces.push(blankUserSpace(out.chatId, { id: DEFAULT_SPACE_ID, isDefault: true }));
     }
-    if (!findSpaceState(out, out.activeSpaceId)) out.activeSpaceId = out.spaces[0].id;
+    // activeSpaceId 为空 = 用户未显式选择（删除当前空间后即进入此态）：保留空值由运行时
+    // 惰性解析（findSpaceState('') 优先默认空间，缺失时回退 spaces[0]）。此处若把空值
+    // 提前钉到 spaces[0]，AI 写入随后重建并 unshift 出默认空间时，UI 会被钉在旧首位
+    // （如删除后新建的空自定义空间），看不到重建默认空间承接的数据。
+    if (out.activeSpaceId && !findSpaceState(out, out.activeSpaceId)) out.activeSpaceId = out.spaces[0].id;
     return out;
   }
 
@@ -6538,10 +6542,13 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
       };
     }
 
-    function uiContextMatches(context) {
+    function uiContextMatches(context, opts) {
       if (disposed || !context || String(runtime.activeChatId || '') !== context.chatId) return false;
       var current = captureUiContext();
-      return current.spaceId === context.spaceId && current.app === context.app && current.view === context.view && current.id === context.id;
+      // 操作本身可能改变 activeSpace（如删除唯一默认空间后新建首个空间：''→sp1），
+      // 这种由操作引发的空间变化不是导航，不能当作上下文漂移丢弃结果；忽略该维度。
+      var spaceOk = (opts && opts.ignoreSpace) || current.spaceId === context.spaceId;
+      return spaceOk && current.app === context.app && current.view === context.view && current.id === context.id;
     }
 
     function setBusyNode(node, busy) {
@@ -8086,7 +8093,9 @@ div.yz-manage-row{padding:6px 10px 6px 12px}
         if (!persisted || !persisted.ok) { showToast(I18N.dict().toast.persistenceFailed, true); return; }
         var currentOverlay = hostDocument.getElementById(OVERLAY_ID);
         var currentBox = currentOverlay && currentOverlay.querySelector('[data-space-input]');
-        if (uiContextMatches(context) && currentBox === box) {
+        // ignoreSpace：删除唯一默认空间后首个新建空间会从无到有（activeSpace ''→新 id），
+        // 该变化正是本操作的结果而非用户跳转，不应让成功路径因空间 id 漂移而被跳过。
+        if (uiContextMatches(context, { ignoreSpace: true }) && currentBox === box) {
           box.value = '';
           showToast(I18N.dict().spaceCreated);
           render();

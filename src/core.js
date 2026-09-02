@@ -690,7 +690,11 @@
     if (!out.spaces.length) {
       out.spaces.push(blankUserSpace(out.chatId, { id: DEFAULT_SPACE_ID, isDefault: true }));
     }
-    if (!findSpaceState(out, out.activeSpaceId)) out.activeSpaceId = out.spaces[0].id;
+    // activeSpaceId 为空 = 用户未显式选择（删除当前空间后即进入此态）：保留空值由运行时
+    // 惰性解析（findSpaceState('') 优先默认空间，缺失时回退 spaces[0]）。此处若把空值
+    // 提前钉到 spaces[0]，AI 写入随后重建并 unshift 出默认空间时，UI 会被钉在旧首位
+    // （如删除后新建的空自定义空间），看不到重建默认空间承接的数据。
+    if (out.activeSpaceId && !findSpaceState(out, out.activeSpaceId)) out.activeSpaceId = out.spaces[0].id;
     return out;
   }
 

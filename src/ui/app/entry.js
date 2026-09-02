@@ -307,10 +307,13 @@
       };
     }
 
-    function uiContextMatches(context) {
+    function uiContextMatches(context, opts) {
       if (disposed || !context || String(runtime.activeChatId || '') !== context.chatId) return false;
       var current = captureUiContext();
-      return current.spaceId === context.spaceId && current.app === context.app && current.view === context.view && current.id === context.id;
+      // 操作本身可能改变 activeSpace（如删除唯一默认空间后新建首个空间：''→sp1），
+      // 这种由操作引发的空间变化不是导航，不能当作上下文漂移丢弃结果；忽略该维度。
+      var spaceOk = (opts && opts.ignoreSpace) || current.spaceId === context.spaceId;
+      return spaceOk && current.app === context.app && current.view === context.view && current.id === context.id;
     }
 
     function setBusyNode(node, busy) {

@@ -2065,6 +2065,40 @@ console.log('# 用户空间 · 核心与运行时');
 }
 
 {
+  // 删除唯一默认空间 → 新建自定义空间 → AI 无空间参数写入重建默认空间：
+  // activeSpaceId 应保持「未显式选择」状态，可见空间惰性解析回重建的默认空间，
+  // 而不是被归一化钉到空的自定义空间（否则 UI 停在空空间，看不到已落盘的数据）。
+  const host = fakeHost();
+  host.current.chat = 'chat-def-rebuild';
+  const rt = M.createRuntime(host.api, null, () => ({}));
+  await rt.switchChat('chat-def-rebuild');
+  ok(M.CORE.defaultSpaceState(rt.current()), '初始存在默认空间');
+  const del = rt.deleteSpace(M.CORE.DEFAULT_SPACE_ID);
+  await del.saved;
+  ok(!M.CORE.defaultSpaceState(rt.current()) && rt.current().spaces.length === 0, '删除唯一默认空间后没有任何空间');
+  const made = rt.createSpace('用户甲');
+  await made.saved;
+  eq(rt.current().activeSpaceId, '', '删除唯一空间后 activeSpaceId 为空（未显式选择）');
+  const visibleId = () => {
+    const st = rt.current();
+    const sp = M.CORE.findSpaceState(st, st.activeSpaceId) || st.spaces[0];
+    return sp && sp.id;
+  };
+  eq(visibleId(), made.id, '无默认空间时可见空间回退到首个自定义空间');
+  await rt.applyText(jade('rebuild-1', TABLET_OK + MSG_MIN), 'chat-def-rebuild', 'test');
+  await rt.saveChat('chat-def-rebuild');
+  const def = M.CORE.defaultSpaceState(rt.current());
+  ok(def && def.tablet.name === '李逍遥', 'AI 写入重建默认空间并承接数据');
+  eq(rt.current().activeSpaceId, '', 'activeSpaceId 不被归一化改写');
+  eq(visibleId(), M.CORE.DEFAULT_SPACE_ID, '重建后可见空间解析到默认空间，不再停在空自定义空间');
+  const reload = M.createRuntime(host.api, null, () => ({}));
+  await reload.switchChat('chat-def-rebuild');
+  const defR = M.CORE.defaultSpaceState(reload.current());
+  const visibleR = M.CORE.findSpaceState(reload.current(), reload.current().activeSpaceId) || reload.current().spaces[0];
+  ok(defR && defR.tablet.name === '李逍遥' && visibleR && visibleR.id === M.CORE.DEFAULT_SPACE_ID, '权威快照重载后仍看到重建的默认空间数据');
+}
+
+{
   // 写入路由：按空间名路由；未知/只读/全量轮三种拒写；空间间数据隔离
   const host = fakeHost();
   const rt = M.createRuntime(host.api, null, () => ({}));
