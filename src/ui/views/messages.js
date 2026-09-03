@@ -43,10 +43,7 @@
           VIEWS_SHARED.renderHeader({
             title: title,
             icon: '☱',
-            subtitle: isGroup ? ('群友 ' + (threadObj.memberCount || 0) + ' 位') : '万里传音',
-            actions: [
-              { id: 'yz-btn-thread-back', label: '返回列表' }
-            ]
+            subtitle: isGroup ? ('群友 ' + (threadObj.memberCount || 0) + ' 位') : '万里传音'
           }) +
           '<div class="yz-chat-stream" id="yz-chat-stream">' + bubblesHtml + '</div>' +
           '<div class="yz-chat-input-bar">' +
@@ -168,19 +165,6 @@
       var stream = el.querySelector('#yz-chat-stream');
       if (stream) {
         stream.scrollTop = stream.scrollHeight;
-      }
-
-      var backBtn = el.querySelector('#yz-btn-thread-back');
-      if (backBtn) {
-        backBtn.addEventListener('click', function () {
-          if (runtime && state.selectedId) {
-            var isGroup = state.selectedId.indexOf('group-') === 0;
-            var tType = isGroup ? 'group' : 'contact';
-            var tId = isGroup ? state.selectedId.slice(6) : state.selectedId;
-            runtime.markSpaceThreadSeen(tType, tId);
-          }
-          navigation.selectItem(null);
-        });
       }
 
       var sendBtn = el.querySelector('#yz-msg-send');
