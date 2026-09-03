@@ -104,11 +104,11 @@ node --check entry.js && node tests/smoke.mjs
 
 日常修改 `src/` 下对应功能文件，不直接编辑生成的 `entry.js` 与 `ui/jade.html`。构建脚本打包 Hook 入口与 UI Fragment。可用 `node scripts/build.mjs --check` 检查产物是否与源码一致。
 
-基线 **727 项全绿**，覆盖数据层（协议解析、diff 合并、评估矩阵、预算窗口、世界书归档、版本迁移、用户空间持久化安全等）与 UI 层（太极八卦盘与 8 卦位视图渲染、传音符对话流、记事/坊市/论坛/空间/舆图/管理交互、表单与真实发帖/传音/撤销、Hook 生命周期桥接等）。
+基线 **729 项全绿**，覆盖数据层（协议解析、diff 合并、评估矩阵、预算窗口、世界书归档、版本迁移、用户空间持久化安全等）与 UI 层（太极八卦盘八等分空心圆环形扇面与 8 卦位视图渲染、传音符对话流、记事/坊市/论坛/空间/舆图/管理交互、表单与真实发帖/传音/撤销、Hook 生命周期桥接等）。
 
 ### 发布门禁
 
-1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 727 项全绿
+1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 729 项全绿
 2. Tavo MCP 环境执行 `tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
 3. 真机回归（世界书归档挂接、太极八卦盘布局、空间切换/新建与跨空间收发）
 4. `V=$(node -p "require('./manifest.json').version") && rm -f "../yu-zhao-v$V.tpg" && zip -r "../yu-zhao-v$V.tpg" manifest.json entry.js ui/jade.html locales cover.png`（版本号取自 manifest，先删旧包再压，保证干净归档）

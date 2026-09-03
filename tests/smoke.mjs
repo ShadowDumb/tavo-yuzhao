@@ -2517,9 +2517,11 @@ console.log('# UI 视图渲染与交互系统');
     getFlags: () => ({ enabled: true, auto_strip: true, lang: 'zh' })
   };
 
-  // 2. 8 卦位主盘渲染
+  // 2. 8 卦位主盘渲染 (八等分空心圆环形扇面)
   const wheelHtml = M.VIEWS_WHEEL.render(mockCtx);
   ok(wheelHtml.includes('yz-taiji-svg'), '八卦盘渲染中央太极 SVG');
+  ok(wheelHtml.includes('yz-bagua-annulus-svg'), '八卦盘渲染八等分空心圆 SVG');
+  ok(wheelHtml.includes('yz-gua-sector') && (wheelHtml.match(/yz-gua-sector/g) || []).length === 8, '八卦盘包含恰好 8 个环形扇面功能入口');
   ok(wheelHtml.includes('☰') && wheelHtml.includes('☷') && wheelHtml.includes('☵') && wheelHtml.includes('☲'), '八卦盘包含乾坤坎离卦象');
   ok(wheelHtml.includes('☳') && wheelHtml.includes('☴') && wheelHtml.includes('☶') && wheelHtml.includes('☱'), '八卦盘包含震巽艮兑卦象');
   ok(wheelHtml.includes('data-view="tablet"'), '八卦盘包含乾·本命玉牌入口');

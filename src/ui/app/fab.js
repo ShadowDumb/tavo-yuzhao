@@ -23,16 +23,17 @@
     var lastOpenTime = 0;
 
     var DEFAULT_BOTTOM = 96;
-    var DEFAULT_RIGHT = 16;
+    var DEFAULT_RIGHT = 22;
     var POS_KEY = 'yz_fab_pos';
 
     function clampFab(fab, left, top) {
       var vw = (window && window.innerWidth) || 800;
       var vh = (window && window.innerHeight) || 600;
       var size = (fab && fab.offsetWidth) || 54;
+      var edgeMargin = 18; // 留出曲面屏边缘缓冲，防止悬浮球贴到弧面死角
       return {
-        x: Math.max(8, Math.min(vw - size - 8, Number(left) || 8)),
-        y: Math.max(8, Math.min(vh - size - 8, Number(top) || 8))
+        x: Math.max(edgeMargin, Math.min(vw - size - edgeMargin, Number(left) || edgeMargin)),
+        y: Math.max(edgeMargin, Math.min(vh - size - edgeMargin, Number(top) || edgeMargin))
       };
     }
 

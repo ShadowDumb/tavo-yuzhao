@@ -74,8 +74,9 @@
     transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease, border-color 0.2s ease;
     touch-action: none;
     z-index: var(--yz-z-index);
-    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
-    right: calc(16px + env(safe-area-inset-right, 0px));
+    /* 预留曲面屏侧边缓冲与系统导航条底边缓冲 */
+    bottom: max(96px, calc(80px + env(safe-area-inset-bottom, 0px)));
+    right: max(22px, calc(18px + env(safe-area-inset-right, 0px)));
     box-sizing: border-box;
     font-family: var(--yz-font-sans);
   }
@@ -146,14 +147,15 @@
   #yu-zhao-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(4, 12, 14, 0.76);
+    background: rgba(4, 12, 14, 0.78);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     pointer-events: auto;
     display: none;
     align-items: center;
     justify-content: center;
-    padding: 16px;
+    /* 预留曲面屏与状态栏安全区内边距，杜绝贴边变形与误触 */
+    padding: max(16px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px));
     z-index: var(--yz-z-index);
     box-sizing: border-box;
     font-family: var(--yz-font-sans);
@@ -173,7 +175,7 @@
     height: 88vh;
     max-height: 860px;
     background: radial-gradient(circle at 50% 0%, #0d282a, var(--yz-bg-deep) 75%);
-    border: 1px solid var(--yz-border-bright);
+    border: 1.5px solid var(--yz-border-bright);
     border-radius: 18px;
     box-shadow: var(--yz-shadow-main);
     display: flex;
@@ -190,7 +192,7 @@
 
   /* 顶栏 Header */
   .yz-header {
-    padding: 12px 20px;
+    padding: max(12px, calc(8px + env(safe-area-inset-top, 0px))) max(22px, calc(18px + env(safe-area-inset-right, 0px))) 12px max(22px, calc(18px + env(safe-area-inset-left, 0px)));
     background: rgba(8, 24, 26, 0.85);
     border-bottom: 1px solid var(--yz-border-subtle);
     display: flex;
@@ -278,7 +280,7 @@
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 20px;
+    padding: 18px max(24px, calc(18px + env(safe-area-inset-right, 0px))) max(22px, calc(16px + env(safe-area-inset-bottom, 0px))) max(24px, calc(18px + env(safe-area-inset-left, 0px)));
     position: relative;
     scrollbar-width: thin;
     scrollbar-color: rgba(52, 211, 153, 0.3) transparent;
@@ -301,17 +303,18 @@
     justify-content: center;
     min-height: 100%;
     padding: 10px 0;
-    gap: 24px;
+    gap: 20px;
   }
   .yz-wheel-stage {
     position: relative;
     width: 440px;
     height: 440px;
-    max-width: 90vw;
-    max-height: 90vw;
+    max-width: min(440px, calc(100vw - 64px));
+    max-height: min(440px, calc(100vw - 64px));
     display: flex;
     align-items: center;
     justify-content: center;
+    margin: 0 auto;
   }
   
   /* 盘面外环符文光圈 */
@@ -319,15 +322,16 @@
     position: absolute;
     inset: 0;
     border-radius: 50%;
-    border: 1.5px dashed rgba(52, 211, 153, 0.25);
+    border: 1.5px dashed rgba(52, 211, 153, 0.22);
     animation: yz-ring-rotate 120s linear infinite reverse;
     pointer-events: none;
   }
   .yz-wheel-ring-inner {
     position: absolute;
-    inset: 24px;
+    inset: 154px;
     border-radius: 50%;
-    border: 1px solid rgba(74, 222, 128, 0.15);
+    border: 1px dotted rgba(74, 222, 128, 0.2);
+    animation: yz-ring-rotate 60s linear infinite;
     pointer-events: none;
   }
   @keyframes yz-ring-rotate {
@@ -335,11 +339,11 @@
     to { transform: rotate(360deg); }
   }
 
-  /* 太极中枢 (Taiji Core) */
+  /* 太极中枢 (Taiji Core - 悬浮于空心圆中央) */
   .yz-taiji-hub {
     position: absolute;
-    width: 110px;
-    height: 110px;
+    width: 96px;
+    height: 96px;
     border-radius: 50%;
     background: radial-gradient(circle, #0e3032, #041012);
     border: 2px solid var(--yz-border-bright);
@@ -352,13 +356,13 @@
     transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
   }
   .yz-taiji-hub:hover {
-    transform: scale(1.1);
+    transform: scale(1.08);
     box-shadow: 0 0 36px var(--yz-sync-glow), inset 0 0 10px rgba(52, 211, 153, 0.4);
     border-color: #6ee7b7;
   }
   .yz-taiji-svg {
-    width: 74px;
-    height: 74px;
+    width: 66px;
+    height: 66px;
     animation: yz-taiji-spin 30s linear infinite;
     filter: drop-shadow(0 0 8px rgba(52, 211, 153, 0.5));
   }
@@ -368,112 +372,158 @@
   }
   .yz-taiji-label {
     position: absolute;
-    bottom: -22px;
+    bottom: -13px;
     font-family: var(--yz-font-serif);
-    font-size: 11px;
+    font-size: 10px;
     color: var(--yz-text-secondary);
-    background: rgba(6, 18, 20, 0.85);
-    padding: 1px 8px;
+    background: rgba(6, 18, 20, 0.92);
+    padding: 1px 7px;
     border-radius: 10px;
     border: 1px solid var(--yz-border-subtle);
     white-space: nowrap;
     pointer-events: none;
   }
 
-  /* 8 卦位卡片 (Trigram Positions) */
-  .yz-gua-card {
+  /* ==========================================================================
+     八等分空心圆八卦盘扇面 (8 Annular Sectors Feature Entrances)
+     ========================================================================== */
+  .yz-bagua-annulus-svg {
     position: absolute;
-    width: 88px;
-    height: 88px;
-    border-radius: 14px;
-    background: var(--yz-bg-card);
-    border: 1.5px solid var(--yz-border-jade);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 5;
+    overflow: visible;
+  }
+  .yz-gua-sector {
     cursor: pointer;
     user-select: none;
+    outline: none;
+    transition: transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .yz-gua-sector:hover,
+  .yz-gua-sector:focus-visible {
+    transform: translate(var(--shift-x, 0), var(--shift-y, 0));
+  }
+  .yz-sector-path {
+    fill: rgba(8, 26, 28, 0.78);
+    stroke: var(--yz-border-jade, rgba(52, 211, 153, 0.28));
+    stroke-width: 1.5;
+    stroke-linejoin: round;
     transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(8px);
-    z-index: 5;
+    filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
   }
-  .yz-gua-card:hover {
-    transform: translate(var(--gua-x, 0), var(--gua-y, 0)) scale(1.14) !important;
-    background: var(--yz-bg-card-hover);
-    border-color: var(--gua-accent, var(--yz-border-bright));
-    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6), 0 0 16px var(--gua-accent, rgba(52, 211, 153, 0.4));
-    z-index: 20;
+  .yz-sector-inner-rim {
+    fill: none;
+    stroke: rgba(255, 255, 255, 0.06);
+    stroke-width: 1;
+    pointer-events: none;
+    transition: stroke 0.22s ease;
   }
-  .yz-gua-symbol {
+  .yz-gua-sector:hover .yz-sector-path,
+  .yz-gua-sector:focus-visible .yz-sector-path {
+    fill: rgba(14, 46, 50, 0.95);
+    stroke: var(--gua-accent, #34d399);
+    stroke-width: 2.2;
+    filter: drop-shadow(0 0 14px var(--gua-accent, rgba(52, 211, 153, 0.55)));
+  }
+  .yz-gua-sector:hover .yz-sector-inner-rim {
+    stroke: var(--gua-accent, rgba(52, 211, 153, 0.3));
+  }
+  .yz-sector-symbol {
     font-family: var(--yz-font-serif);
     font-size: 22px;
     line-height: 1;
-    color: var(--gua-accent, var(--yz-text-primary));
-    text-shadow: 0 0 8px var(--gua-accent, rgba(52, 211, 153, 0.6));
+    fill: var(--gua-accent, var(--yz-text-primary));
+    text-anchor: middle;
+    dominant-baseline: central;
+    filter: drop-shadow(0 0 6px var(--gua-accent, rgba(52, 211, 153, 0.5)));
+    pointer-events: none;
+    transition: all 0.22s ease;
   }
-  .yz-gua-name {
+  .yz-gua-sector:hover .yz-sector-symbol {
+    transform: scale(1.14);
+    filter: drop-shadow(0 0 10px var(--gua-accent, rgba(52, 211, 153, 0.85)));
+  }
+  .yz-sector-name {
     font-family: var(--yz-font-serif);
     font-size: 13px;
     font-weight: 600;
-    letter-spacing: 1px;
-    color: var(--yz-text-primary);
+    letter-spacing: 1.5px;
+    fill: var(--yz-text-primary);
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+    transition: all 0.22s ease;
   }
-  .yz-gua-feature {
-    font-size: 10px;
-    color: var(--yz-text-secondary);
+  .yz-gua-sector:hover .yz-sector-name {
+    fill: #ffffff;
   }
-  .yz-gua-badge {
-    position: absolute;
-    top: -5px;
-    right: -5px;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 4px;
-    border-radius: 9px;
-    background: linear-gradient(135deg, #ef4444, #b91c1c);
-    color: #fff;
-    font-size: 10px;
+  .yz-sector-feature {
+    font-size: 10.5px;
+    letter-spacing: 0.5px;
+    fill: var(--yz-text-secondary);
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+    transition: all 0.22s ease;
+  }
+  .yz-gua-sector:hover .yz-sector-feature {
+    fill: var(--gua-accent, #a7f3d0);
+  }
+  .yz-sector-badge-bg {
+    fill: #ef4444;
+    stroke: #061514;
+    stroke-width: 1.5;
+    filter: drop-shadow(0 0 6px rgba(239, 68, 68, 0.6));
+  }
+  .yz-sector-badge.yz-new .yz-sector-badge-bg {
+    fill: #10b981;
+    filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.6));
+  }
+  .yz-sector-badge-text {
+    font-size: 9.5px;
     font-weight: 700;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1.5px solid #061514;
-  }
-  .yz-gua-badge.yz-new {
-    background: linear-gradient(135deg, #10b981, #059669);
-    box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+    fill: #ffffff;
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
   }
   .yz-gua-sealed {
-    opacity: 0.45;
+    opacity: 0.42;
     filter: grayscale(0.85);
-    border-color: rgba(255, 255, 255, 0.08) !important;
   }
-  .yz-gua-seal-tag {
-    position: absolute;
-    top: 4px;
-    left: 4px;
+  .yz-gua-sealed:hover {
+    transform: none !important;
+  }
+  .yz-sector-seal-bg {
+    fill: rgba(6, 18, 20, 0.88);
+    stroke: rgba(255, 255, 255, 0.16);
+    stroke-width: 1;
+  }
+  .yz-sector-seal-text {
     font-size: 9px;
-    padding: 1px 4px;
-    border-radius: 4px;
-    background: rgba(0,0,0,0.6);
-    color: var(--yz-text-muted);
-    border: 1px solid rgba(255,255,255,0.1);
+    fill: var(--yz-text-muted);
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
   }
 
   /* 同步信息与底部状态条 */
   .yz-wheel-footer {
     display: flex;
     align-items: center;
-    gap: 16px;
+    justify-content: center;
+    gap: 14px;
     padding: 8px 18px;
     border-radius: 24px;
-    background: rgba(10, 26, 28, 0.6);
+    background: rgba(10, 26, 28, 0.65);
     border: 1px solid var(--yz-border-subtle);
     font-size: 12px;
     color: var(--yz-text-secondary);
+    max-width: min(420px, calc(100% - 24px));
+    margin: 0 auto;
+    box-sizing: border-box;
   }
   .yz-sync-dot {
     width: 8px;
@@ -486,13 +536,14 @@
   .yz-sync-dot.yz-invalid { background: var(--yz-danger); box-shadow: 0 0 8px var(--yz-danger); }
 
   /* ==========================================================================
-     通用子页面卡片与布局系统
+     通用子页面卡片与布局系统 (防贴边曲面屏友好)
      ========================================================================== */
   .yz-subview {
     display: flex;
     flex-direction: column;
     gap: 16px;
     animation: yz-view-in 0.2s ease-out;
+    padding: 2px 2px 8px 2px;
   }
   @keyframes yz-view-in {
     from { opacity: 0; transform: translateY(8px); }
@@ -504,6 +555,7 @@
     justify-content: space-between;
     gap: 12px;
     flex-wrap: wrap;
+    padding: 2px 4px;
   }
   .yz-subview-title-group {
     display: flex;
@@ -531,10 +583,15 @@
   /* 选项卡 Tabs */
   .yz-tabs {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     border-bottom: 1px solid var(--yz-border-subtle);
-    padding-bottom: 8px;
+    padding: 2px 4px 10px 4px;
     overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .yz-tabs::-webkit-scrollbar {
+    display: none;
   }
   .yz-tab-btn {
     padding: 6px 14px;
@@ -566,7 +623,8 @@
     background: rgba(8, 22, 24, 0.7);
     border: 1px solid var(--yz-border-jade);
     border-radius: 10px;
-    padding: 6px 12px;
+    padding: 8px 14px;
+    margin: 0 2px;
   }
   .yz-search-input {
     flex: 1;
@@ -580,11 +638,12 @@
     color: var(--yz-text-muted);
   }
 
-  /* 卡片 Grid & 容器 */
+  /* 卡片 Grid & 容器 (预留防贴边边距) */
   .yz-card-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
     gap: 14px;
+    padding: 2px 2px;
   }
   .yz-card {
     background: var(--yz-bg-card);
@@ -645,16 +704,17 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding-right: 4px;
+    padding: 4px 6px;
   }
   .yz-msg-bubble {
-    max-width: 82%;
+    max-width: 80%;
     padding: 10px 14px;
     border-radius: 14px;
     font-size: 13px;
-    line-height: 1.5;
+    line-height: 1.55;
     position: relative;
     word-break: break-word;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   }
   .yz-msg-bubble.yz-self {
     align-self: flex-end;
@@ -680,10 +740,11 @@
   .yz-chat-input-bar {
     display: flex;
     gap: 8px;
-    padding: 10px;
+    padding: 8px 12px;
     background: rgba(10, 26, 28, 0.85);
     border: 1px solid var(--yz-border-jade);
     border-radius: 12px;
+    margin: 4px 2px 4px 2px;
   }
   .yz-input {
     flex: 1;
@@ -723,9 +784,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 20px;
+    padding: max(20px, env(safe-area-inset-top, 0px)) max(22px, env(safe-area-inset-right, 0px)) max(20px, env(safe-area-inset-bottom, 0px)) max(22px, env(safe-area-inset-left, 0px));
     z-index: 2147483648;
     animation: yz-modal-in 0.18s ease-out;
+    box-sizing: border-box;
   }
   @keyframes yz-modal-in {
     from { opacity: 0; transform: scale(0.96); }
@@ -734,11 +796,13 @@
   .yz-modal-card {
     width: 100%;
     max-width: 480px;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
     background: radial-gradient(circle at 50% 0%, #133438, #071719);
     border: 1.5px solid var(--yz-border-bright);
     border-radius: 16px;
     box-shadow: var(--yz-shadow-main);
-    padding: 20px;
+    padding: 20px 22px;
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -750,20 +814,23 @@
     color: var(--yz-text-primary);
   }
 
-  /* Toast 通知 Stack */
+  /* Toast 通知 Stack (底栏安全区抬高) */
   .yz-toast-stack {
     position: fixed;
-    bottom: 24px;
+    bottom: max(24px, calc(16px + env(safe-area-inset-bottom, 0px)));
     left: 50%;
     transform: translateX(-50%);
     display: flex;
     flex-direction: column;
+    align-items: center;
     gap: 8px;
     z-index: 2147483647;
     pointer-events: none;
+    width: max-content;
+    max-width: calc(100vw - 48px);
   }
   .yz-toast {
-    padding: 8px 18px;
+    padding: 9px 20px;
     border-radius: 20px;
     background: rgba(8, 26, 28, 0.95);
     border: 1px solid var(--yz-border-bright);
@@ -775,6 +842,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    max-width: 100%;
+    word-break: break-word;
   }
   @keyframes yz-toast-in {
     from { opacity: 0; transform: translateY(12px) scale(0.9); }
@@ -792,6 +861,7 @@
     color: var(--yz-text-muted);
     font-family: var(--yz-font-serif);
     font-size: 14px;
+    padding: 16px 20px;
   }
   .yz-empty-icon {
     font-size: 36px;
@@ -799,36 +869,72 @@
     opacity: 0.6;
   }
 
-  /* 响应式移动端适配 */
+  /* ==========================================================================
+     响应式移动端与曲面屏适配 (Curved / Notch / Bezel Safe Area)
+     ========================================================================== */
   @media (max-width: 640px) {
     #yu-zhao-overlay {
-      padding: 0;
+      /* 预留安全外边距，避免窗口贴死屏幕四周边框与弧面 */
+      padding: max(10px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(14px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
     }
     .yz-window {
-      height: 100vh;
+      height: calc(100vh - max(24px, calc(env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px))));
       max-height: 100vh;
-      border-radius: 0;
-      border: none;
+      border-radius: 16px;
+      border: 1px solid var(--yz-border-bright);
+    }
+    .yz-header {
+      padding: 10px 14px;
+      gap: 8px;
+    }
+    .yz-logo-title {
+      font-size: 15px;
+      letter-spacing: 1px;
+    }
+    .yz-space-capsule {
+      padding: 3px 8px;
+      font-size: 11px;
+    }
+    .yz-body {
+      padding: 14px 14px 18px 14px;
     }
     .yz-wheel-stage {
-      width: 320px;
-      height: 320px;
+      width: min(290px, calc(100vw - 44px));
+      height: min(290px, calc(100vw - 44px));
+      margin: 0 auto;
+    }
+    .yz-wheel-ring-inner {
+      inset: 102px;
     }
     .yz-taiji-hub {
-      width: 86px;
-      height: 86px;
+      width: 66px;
+      height: 66px;
     }
     .yz-taiji-svg {
-      width: 56px;
-      height: 56px;
+      width: 44px;
+      height: 44px;
     }
-    .yz-gua-card {
-      width: 72px;
-      height: 72px;
+    .yz-taiji-label {
+      bottom: -9px;
+      font-size: 8.5px;
+      padding: 0 4px;
     }
-    .yz-gua-symbol { font-size: 18px; }
-    .yz-gua-name { font-size: 11px; }
-    .yz-gua-feature { display: none; }
+    .yz-sector-symbol { font-size: 17px; }
+    .yz-sector-name { font-size: 10.5px; }
+    .yz-sector-feature { font-size: 8.5px; }
+    .yz-card-grid {
+      grid-template-columns: 1fr;
+      gap: 10px;
+      padding: 2px 0;
+    }
+    .yz-modal-card {
+      max-width: calc(100vw - 28px);
+      padding: 16px 18px;
+      border-radius: 14px;
+    }
+    .yz-msg-bubble {
+      max-width: 86%;
+    }
   }
 </style>
 </head>
