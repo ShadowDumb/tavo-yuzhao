@@ -15,7 +15,7 @@
         var post = allPosts.find(function (p) { return String(p.id) === String(state.selectedId); });
         if (!post) {
           return '<div class="yz-subview">' +
-            VIEWS_SHARED.renderHeader({ title: '帖子详情', icon: '☴', actions: [{ id: 'yz-btn-forum-back', label: '返回论坛' }] }) +
+            VIEWS_SHARED.renderHeader({ title: '帖子详情', icon: '☴' }) +
             VIEWS_SHARED.renderEmpty('该帖已被天道法则抹去') +
           '</div>';
         }
@@ -41,10 +41,7 @@
           VIEWS_SHARED.renderHeader({
             title: post.title || '帖子详情',
             icon: '☴',
-            subtitle: (post.section || '修仙茶馆') + ' · ' + (post.author || '无名修士'),
-            actions: [
-              { id: 'yz-btn-forum-back', label: '返回论坛' }
-            ]
+            subtitle: (post.section || '修仙茶馆') + ' · ' + (post.author || '无名修士')
           }) +
           '<div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 4px;">' +
             /* 主帖卡片 */
@@ -161,16 +158,6 @@
       var forms = ctx.forms;
       var dataActions = ctx.dataActions;
       var runtime = ctx.runtime;
-
-      var backBtn = el.querySelector('#yz-btn-forum-back');
-      if (backBtn) {
-        backBtn.addEventListener('click', function () {
-          if (runtime && state.selectedId) {
-            runtime.markSpacePostSeen(state.selectedId);
-          }
-          navigation.selectItem(null);
-        });
-      }
 
       var commentSend = el.querySelector('#yz-comment-send');
       var commentInput = el.querySelector('#yz-comment-input');
