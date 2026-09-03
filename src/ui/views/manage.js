@@ -29,7 +29,7 @@
         return '<div class="yz-card" style="flex-direction: row; align-items: center; justify-content: space-between; padding: 10px 14px;">' +
           '<div>' +
             '<div style="display: flex; align-items: center; gap: 8px;">' +
-              '<span style="font-family: var(--yz-font-serif); font-weight: 700; color: var(--yz-jade-light);">' + f.symbol + '</span>' +
+              '<span style="font-family: var(--yz-font-serif); font-size: 16px; font-weight: 700; color: var(--yz-jade-light);">' + f.symbol + '</span>' +
               '<span style="font-weight: 600; color: var(--yz-text-primary);">' + CORE.escapeHtml(f.name) + '</span>' +
               (isSealed ? '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(248, 113, 113, 0.2); color: var(--yz-danger); border: 1px solid var(--yz-danger);">' + (tr('runtime.seal.glyph') || '封印中') + '</span>' : '') +
             '</div>' +

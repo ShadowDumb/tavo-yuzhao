@@ -270,8 +270,6 @@
       var values = row(line, 11);
       var id = cleanText(values[1], 160);
       if (!id) return;
-      // unread（第 10 字段）与 owner（第 11 字段）启发式兼容旧格式：
-      // 旧格式第 10 字段是 owner（'player'）；新格式第 10 字段是数字（未读新回复数）。
       var v9 = String(values[9] || '').trim();
       var unread;
       var owner;
@@ -416,8 +414,7 @@
     var turn = metaBody == null ? null : parseMeta(metaBody);
     // 分区三态：出现（有数据）/ skip（单行 skip｜原因）/ 缺省（整块省略）。
     var bodies = { tablet: tabletBody, msg: msgBody, forum: forumBody, notes: notesBody, market: marketBody, space: spaceBody, map: mapBody };
-    // diff 快照：meta 声明 diff，或任一分区出现 +/- 操作行（声明缺失时以行形态为准，
-    // 防止模型只输出变化行却被当全量整块替换——那会清掉未提及的数据）。
+    // 当 meta 声明为 diff 或任一分区包含增删操作行时按 diff 模式解析
     var anyDiffRows = DATA_SECTIONS.some(function (pair) { return sectionHasDiffRows(bodies[pair[0]]); });
     var diffMode = anyDiffRows || (turn != null && turn.mode === 'diff');
     if (diffMode) {

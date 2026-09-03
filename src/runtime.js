@@ -1,15 +1,7 @@
   var LOCAL_PREFIX = 'yz-jade-v1:';
-  // 本地镜像只是启动加速缓存：权威数据在世界书（玉兆档案·<chatId> 的分片快照条目），
-  // 缓存可随时丢弃（宿主存储不再参与持久化，世界书恢复链见 load）。
-  // 玩家域存储：与角色域完全独立的键（本地镜像 + 世界书分片快照）。
   var PLAYER_LOCAL_PREFIX = 'yz-jade-player-v1:';
-  // 世界书快照分片：单片内容上限（字符）与单域最多片数。整本世界书 update 原子替换，
-  // 快照拆片保证单条目不超宿主单条上限；超出总片数上限时放弃快照（仅诊断提示）。
   var SNAP_SHARD_CHARS = 90000;
   var MAX_SNAP_SHARDS = 5;
-  // 插件版本：状态里记录生成时的版本，版本变化置持久化强制全量标记（见 doSwitchChat），
-  // 让更新后的第一轮生成按新提示词重写全部数据——旧格式数据不再粘滞。
-  // 发布时必须与 manifest.json 的 version 保持一致（冒烟契约测试校验）。
   var PLUGIN_VERSION = '3.0.0';
 
   function createRuntime() {
@@ -269,9 +261,7 @@
       return result;
     }
 
-    // 世界书快照读取：玉兆档案·<chatId> 书里的分片快照条目（yz-snap-N / yz-psnap-N，
-    // enabled:false 永不注入）按 index 拼接还原整份 v3 状态。片序缺失、包装损坏或
-    // body 不是当前 schema 时返回 corrupt，不能把损坏快照误判为空白。
+    // 世界书分片快照读取与校验还原
     async function lorebookSnapshotState(chatId, kind) {
       kind = kind === 'player' ? 'player' : 'role';
       var lore = tavoApi.lorebook;
@@ -314,10 +304,7 @@
       }
     }
 
-    // 存储恢复链：世界书（权威）→ 本地镜像（缓存）→ 空白。
-    // 镜像与世界书同源同内容时取最新：save 先写镜像后排队写世界书（还可能被 busy 合并），
-    // 所以镜像的 updatedAt 恒不早于世界书；revision 严格更高或平局时更新者胜。
-    // 任何非世界书来源读到的数据都回写世界书（首次使用自动迁移）；世界书读到则回写镜像。
+    // 存储恢复回退：世界书（权威）→ 本地镜像（缓存）→ 空白状态
     async function load(chatId) {
       var worldResult = await lorebookSnapshotState(chatId);
       var world = worldResult.state;

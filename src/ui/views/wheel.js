@@ -79,11 +79,6 @@
             '<circle cx="' + badgeX + '" cy="' + badgeY + '" r="9.5" class="yz-sector-badge-bg" />' +
             '<text x="' + badgeX + '" y="' + badgeY + '" class="yz-sector-badge-text">' + (unread > 99 ? '99+' : unread) + '</text>' +
           '</g>';
-        } else if (isNew) {
-          badgeSvg = '<g class="yz-sector-badge yz-new">' +
-            '<rect x="' + (Number(badgeX) - 12).toFixed(1) + '" y="' + (Number(badgeY) - 8).toFixed(1) + '" width="24" height="16" rx="8" class="yz-sector-badge-bg" />' +
-            '<text x="' + badgeX + '" y="' + badgeY + '" class="yz-sector-badge-text">' + CORE.escapeHtml(tr('runtime.badge.new') || '新') + '</text>' +
-          '</g>';
         }
 
         var sealSvg = isSealed ? (
@@ -93,7 +88,7 @@
           '</g>'
         ) : '';
 
-        return '<g class="yz-gua-card yz-gua-sector' + (isSealed ? ' yz-gua-sealed' : '') + '" data-view="' + g.id + '" role="button" tabindex="0" aria-label="' + CORE.escapeHtml(g.name + ' · ' + g.feat) + '" style="--gua-accent: ' + g.color + '; --shift-x: ' + shiftX + 'px; --shift-y: ' + shiftY + 'px;">' +
+        return '<g class="yz-gua-card yz-gua-sector' + (isSealed ? ' yz-gua-sealed' : '') + (isNew ? ' yz-gua-new' : '') + '" data-view="' + g.id + '" role="button" tabindex="0" aria-label="' + CORE.escapeHtml(g.name + ' · ' + g.feat) + '" style="--gua-accent: ' + g.color + '; --shift-x: ' + shiftX + 'px; --shift-y: ' + shiftY + 'px;">' +
           '<path class="yz-sector-path" d="' + pathD + '" />' +
           '<path class="yz-sector-inner-rim" d="' + rimD + '" />' +
           '<text class="yz-sector-symbol" x="' + xm + '" y="' + (Number(ym) - 16).toFixed(1) + '">' + g.symbol + '</text>' +

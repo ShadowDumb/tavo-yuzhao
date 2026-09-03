@@ -2528,6 +2528,19 @@ console.log('# UI 视图渲染与交互系统');
   ok(wheelHtml.includes('data-view="msg"'), '八卦盘包含兑·交流讯息入口');
   ok(wheelHtml.includes('data-view="manage"'), '八卦盘包含艮·玉兆管理入口');
 
+  // 2.1 新同步扇面呼吸式高亮与角标删除
+  const activeSpace = rt.activeSpace();
+  activeSpace.sync.applied = ['msg'];
+  activeSpace.sync.appliedSeen = [];
+  const wheelNewHtml = M.VIEWS_WHEEL.render(mockCtx);
+  ok(wheelNewHtml.includes('yz-gua-sector yz-gua-new') && wheelNewHtml.includes('data-view="msg"'), '新同步分区按钮包含 yz-gua-new 呼吸高亮类');
+  ok(!wheelNewHtml.includes('有新同步') && !wheelNewHtml.includes('yz-sector-badge yz-new'), '有新同步角标已被移除');
+  activeSpace.sync.appliedSeen = ['msg'];
+  const wheelSeenHtml = M.VIEWS_WHEEL.render(mockCtx);
+  ok(!wheelSeenHtml.includes('yz-gua-new'), '已查看分区解除呼吸高亮');
+  activeSpace.sync.applied = [];
+  activeSpace.sync.appliedSeen = [];
+
   // 3. 乾 · 本命玉牌
   const tabletHtml = M.VIEWS_TABLET.render(mockCtx);
   ok(tabletHtml.includes('本命玉牌') && tabletHtml.includes('基本') && tabletHtml.includes('仪容') && tabletHtml.includes('修为'), '本命玉牌渲染分组字段');
@@ -2682,6 +2695,35 @@ console.log('# UI 视图渲染与交互系统');
   const successEvent = { text: fullText };
   hooks.generationSuccess(successEvent);
   ok(!successEvent.text.includes('<yz_jade>') && successEvent.text.includes('这是正文内容。'), 'generationSuccess 同步剥离协议块');
+
+  // 18.3 悬浮窗水波纹特效与红点角标移除
+  const mockFabEl = {
+    classList: {
+      _classes: new Set(),
+      add: function (c) { this._classes.add(c); },
+      remove: function (c) { this._classes.delete(c); },
+      contains: function (c) { return this._classes.has(c); }
+    },
+    style: {},
+    addEventListener: () => {}
+  };
+  const mockDoc = {
+    getElementById: (id) => (id === 'yu-zhao-fab' ? mockFabEl : null),
+    addEventListener: () => {}
+  };
+  const fabInstance = M.createFab({ document: mockDoc, window: globalThis });
+  fabInstance.updateBadge(2);
+  ok(mockFabEl.classList.contains('yz-has-notice'), '有未读消息时悬浮窗增加 yz-has-notice 触发水波纹');
+  fabInstance.updateBadge(0);
+  ok(!mockFabEl.classList.contains('yz-has-notice'), '未读清零时悬浮窗移除 yz-has-notice 停止水波纹');
+  fabInstance.updateNotice(true);
+  ok(mockFabEl.classList.contains('yz-has-notice'), 'updateNotice(true) 激活水波纹');
+  fabInstance.updateNotice(false);
+  ok(!mockFabEl.classList.contains('yz-has-notice'), 'updateNotice(false) 停止水波纹');
+
+  const templateHtml = read('src/ui/jade.template.html');
+  ok(!templateHtml.includes('yu-zhao-fab-badge'), '悬浮窗红点角标元素已从模板中彻底移除');
+  ok(templateHtml.includes('#yu-zhao-fab.yz-has-notice .yz-fab-pulse'), '水波纹特效改为仅在 yz-has-notice 时出现');
 
   // 19. APP.create 与 shared.attachUI 契约
   const appInstance = M.APP.create({

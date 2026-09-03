@@ -120,7 +120,7 @@
     text-shadow: 0 0 6px rgba(52, 211, 153, 0.8);
     margin-top: 1px;
   }
-  /* 悬浮玉佩水波纹涟漪效果 (严格正圆双层同心水波) */
+  /* 悬浮玉佩水波纹涟漪效果 (严格正圆双层同心水波，仅有新通知时显现) */
   .yz-fab-pulse {
     position: absolute;
     inset: -2px;
@@ -128,6 +128,13 @@
     border-radius: 50%;
     pointer-events: none;
     box-sizing: border-box;
+    display: none;
+  }
+  #yu-zhao-fab.yz-has-notice .yz-fab-pulse {
+    display: block;
+  }
+  #yu-zhao-fab.yz-has-notice {
+    filter: drop-shadow(0 0 12px rgba(52, 211, 153, 0.45)) drop-shadow(0 6px 16px rgba(0, 0, 0, 0.55));
   }
   .yz-fab-pulse::before,
   .yz-fab-pulse::after {
@@ -463,9 +470,48 @@
   .yz-gua-sector:hover .yz-sector-inner-rim {
     stroke: var(--gua-accent, rgba(52, 211, 153, 0.3));
   }
+  /* 扇面边框呼吸式高亮 */
+  @keyframes yz-sector-breathe {
+    0%, 100% {
+      stroke: var(--yz-border-jade, rgba(52, 211, 153, 0.28));
+      stroke-width: 1.5;
+      filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
+    }
+    50% {
+      stroke: var(--gua-accent, #34d399);
+      stroke-width: 2.2;
+      filter: drop-shadow(0 0 14px var(--gua-accent, rgba(52, 211, 153, 0.8)));
+    }
+  }
+  @keyframes yz-rim-breathe {
+    0%, 100% {
+      stroke: rgba(255, 255, 255, 0.06);
+    }
+    50% {
+      stroke: var(--gua-accent, rgba(52, 211, 153, 0.4));
+    }
+  }
+  .yz-gua-sector.yz-gua-new .yz-sector-path {
+    animation: yz-sector-breathe 2.4s ease-in-out infinite;
+  }
+  .yz-gua-sector.yz-gua-new .yz-sector-inner-rim {
+    animation: yz-rim-breathe 2.4s ease-in-out infinite;
+  }
+  .yz-gua-sector.yz-gua-new:hover .yz-sector-path,
+  .yz-gua-sector.yz-gua-new:focus-visible .yz-sector-path {
+    animation: none;
+    fill: rgba(14, 46, 50, 0.95);
+    stroke: var(--gua-accent, #34d399);
+    stroke-width: 2.2;
+    filter: drop-shadow(0 0 14px var(--gua-accent, rgba(52, 211, 153, 0.55)));
+  }
+  .yz-gua-sector.yz-gua-new:hover .yz-sector-inner-rim {
+    animation: none;
+    stroke: var(--gua-accent, rgba(52, 211, 153, 0.3));
+  }
   .yz-sector-symbol {
     font-family: var(--yz-font-serif);
-    font-size: 22px;
+    font-size: 24px;
     line-height: 1;
     fill: var(--gua-accent, var(--yz-text-primary));
     text-anchor: middle;
@@ -509,10 +555,6 @@
     stroke: #061514;
     stroke-width: 1.5;
     filter: drop-shadow(0 0 6px rgba(239, 68, 68, 0.6));
-  }
-  .yz-sector-badge.yz-new .yz-sector-badge-bg {
-    fill: #10b981;
-    filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.6));
   }
   .yz-sector-badge-text {
     font-size: 9.5px;
@@ -597,7 +639,8 @@
   }
   .yz-subview-icon {
     font-family: var(--yz-font-serif);
-    font-size: 24px;
+    font-size: 32px;
+    line-height: 1;
     color: var(--yz-jade-light);
   }
   .yz-subview-title {
@@ -979,7 +1022,6 @@
     <div class="yz-fab-pulse"></div>
     <div class="yz-fab-icon">☯</div>
     <div class="yz-fab-glyph">玉兆</div>
-    <div id="yu-zhao-fab-badge" class="yz-fab-badge" style="display:none;">0</div>
   </div>
 </button>
 
@@ -3087,8 +3129,6 @@
       var values = row(line, 11);
       var id = cleanText(values[1], 160);
       if (!id) return;
-      // unread（第 10 字段）与 owner（第 11 字段）启发式兼容旧格式：
-      // 旧格式第 10 字段是 owner（'player'）；新格式第 10 字段是数字（未读新回复数）。
       var v9 = String(values[9] || '').trim();
       var unread;
       var owner;
@@ -3233,8 +3273,7 @@
     var turn = metaBody == null ? null : parseMeta(metaBody);
     // 分区三态：出现（有数据）/ skip（单行 skip｜原因）/ 缺省（整块省略）。
     var bodies = { tablet: tabletBody, msg: msgBody, forum: forumBody, notes: notesBody, market: marketBody, space: spaceBody, map: mapBody };
-    // diff 快照：meta 声明 diff，或任一分区出现 +/- 操作行（声明缺失时以行形态为准，
-    // 防止模型只输出变化行却被当全量整块替换——那会清掉未提及的数据）。
+    // 当 meta 声明为 diff 或任一分区包含增删操作行时按 diff 模式解析
     var anyDiffRows = DATA_SECTIONS.some(function (pair) { return sectionHasDiffRows(bodies[pair[0]]); });
     var diffMode = anyDiffRows || (turn != null && turn.mode === 'diff');
     if (diffMode) {
@@ -3419,7 +3458,6 @@
         exported: tr('runtime.manage.exportDone'),
         exportFailed: tr('runtime.manage.exportFailed')
       },
-      badge: { new: tr('runtime.badge.new'), alert: tr('runtime.badge.alert') },
       coreAria: tr('runtime.core.aria'),
       diag: {
         title: tr('runtime.diag.title'),
@@ -3664,17 +3702,9 @@
 
   /* ---------- Runtime / persistence ---------- */
   var LOCAL_PREFIX = 'yz-jade-v1:';
-  // 本地镜像只是启动加速缓存：权威数据在世界书（玉兆档案·<chatId> 的分片快照条目），
-  // 缓存可随时丢弃（宿主存储不再参与持久化，世界书恢复链见 load）。
-  // 玩家域存储：与角色域完全独立的键（本地镜像 + 世界书分片快照）。
   var PLAYER_LOCAL_PREFIX = 'yz-jade-player-v1:';
-  // 世界书快照分片：单片内容上限（字符）与单域最多片数。整本世界书 update 原子替换，
-  // 快照拆片保证单条目不超宿主单条上限；超出总片数上限时放弃快照（仅诊断提示）。
   var SNAP_SHARD_CHARS = 90000;
   var MAX_SNAP_SHARDS = 5;
-  // 插件版本：状态里记录生成时的版本，版本变化置持久化强制全量标记（见 doSwitchChat），
-  // 让更新后的第一轮生成按新提示词重写全部数据——旧格式数据不再粘滞。
-  // 发布时必须与 manifest.json 的 version 保持一致（冒烟契约测试校验）。
   var PLUGIN_VERSION = '3.0.0';
 
   function createRuntime() {
@@ -3934,9 +3964,7 @@
       return result;
     }
 
-    // 世界书快照读取：玉兆档案·<chatId> 书里的分片快照条目（yz-snap-N / yz-psnap-N，
-    // enabled:false 永不注入）按 index 拼接还原整份 v3 状态。片序缺失、包装损坏或
-    // body 不是当前 schema 时返回 corrupt，不能把损坏快照误判为空白。
+    // 世界书分片快照读取与校验还原
     async function lorebookSnapshotState(chatId, kind) {
       kind = kind === 'player' ? 'player' : 'role';
       var lore = tavoApi.lorebook;
@@ -3979,10 +4007,7 @@
       }
     }
 
-    // 存储恢复链：世界书（权威）→ 本地镜像（缓存）→ 空白。
-    // 镜像与世界书同源同内容时取最新：save 先写镜像后排队写世界书（还可能被 busy 合并），
-    // 所以镜像的 updatedAt 恒不早于世界书；revision 严格更高或平局时更新者胜。
-    // 任何非世界书来源读到的数据都回写世界书（首次使用自动迁移）；世界书读到则回写镜像。
+    // 存储恢复回退：世界书（权威）→ 本地镜像（缓存）→ 空白状态
     async function load(chatId) {
       var worldResult = await lorebookSnapshotState(chatId);
       var world = worldResult.state;
@@ -5253,8 +5278,7 @@
     }
   ];
 
-  // 基线注入预算：每轮只发「采样子集 + 最近窗口 + 归档摘要」，消息与地点名录历史正文走世界书关键词召回。
-  // 窗口值同时是世界书归档的切分点（archived = 消息去掉最近窗口），两处必须一致。
+  // 基线注入窗口配置（超出部分移入世界书归档）
   var RECENT_MSG_ROWS = 6;
   var RECENT_NOTE_ROWS = 3;
   var RECENT_COMMENT_ROWS = 6;
@@ -5262,29 +5286,15 @@
   var RECENT_AUCTION_ROWS = 6;
   var RECENT_ITEM_ROWS = 10;
   var RECENT_REQUEST_ROWS = 6;
-  // 地点名录窗口：窗口之外的地点正文不进基线，完整名录在世界书关键词条目中召回。
   var RECENT_PLACE_ROWS = 6;
-  // 基线总字符上限：超限时按五级顺序淘汰——① 其它功能明细行（消息/笔记/帖子等，
-  // 世界书对消息有召回）→ ② tablet 字段行（角色设定最重要，明细行中最后丢）→ ③ 归档摘要行
-  // → ④ last 标记行（玩家传讯未读行与玩家帖子，真实事件，仅极端场景让位）→
-  // ⑤ 超长标识行截断到短上限（保留行首 id/name 供 diff 定位，丢 preview/time 长尾）。
-  // 这是每轮注入量的硬上限——数据再大也不会随轮次滚雪球。
   var MAX_BASELINE_CHARS = 9000;
-  // 第五轮截断后的单行硬上限：标识行以存在性与 diff 定位为主，长尾字段可弃。
   var ROW_HARD_CAP = 160;
 
-  // 当前数据基线按「发送空间」分组：sendToAI 的空间各出一份 yzc_ 容器组。
-  // 默认空间（角色本人空间）的容器不带属性；自定义空间容器带 space="路由 token"，
-  // 模型回写该空间时在 turn 行第 6 字段填同一路由 token（缺省 = 默认空间）。
-  // 多空间并发注入时条目采样上限按空间数均摊（保底 1），注入总量不随空间数膨胀。
-  // 超预算五级淘汰共用同一条池子（见 MAX_BASELINE_CHARS 注释）。
   function spaceBaselineLabel(space, fallback) {
     var name = CORE.spaceDisplayName(null, space, fallback || '');
     return encodeSpaceRoute(name);
   }
 
-  // 单个空间的基线行：与旧版逐分区同构（去掉双域通道特殊注入——用户发言 pm/pmg/pmc
-  // 现在就是空间内的普通受保护行，采样强保 + last 标记保证不被预算淘汰）。
   function buildSpaceSections(space, flags, rng, caps, visibility) {
     function on(id) { return !flags || flags[id] !== false; }
     function v(value, cap) {
@@ -6986,7 +6996,7 @@
         return '<div class="yz-card" style="flex-direction: row; align-items: center; justify-content: space-between; padding: 10px 14px;">' +
           '<div>' +
             '<div style="display: flex; align-items: center; gap: 8px;">' +
-              '<span style="font-family: var(--yz-font-serif); font-weight: 700; color: var(--yz-jade-light);">' + f.symbol + '</span>' +
+              '<span style="font-family: var(--yz-font-serif); font-size: 16px; font-weight: 700; color: var(--yz-jade-light);">' + f.symbol + '</span>' +
               '<span style="font-weight: 600; color: var(--yz-text-primary);">' + CORE.escapeHtml(f.name) + '</span>' +
               (isSealed ? '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(248, 113, 113, 0.2); color: var(--yz-danger); border: 1px solid var(--yz-danger);">' + (tr('runtime.seal.glyph') || '封印中') + '</span>' : '') +
             '</div>' +
@@ -7358,11 +7368,6 @@
             '<circle cx="' + badgeX + '" cy="' + badgeY + '" r="9.5" class="yz-sector-badge-bg" />' +
             '<text x="' + badgeX + '" y="' + badgeY + '" class="yz-sector-badge-text">' + (unread > 99 ? '99+' : unread) + '</text>' +
           '</g>';
-        } else if (isNew) {
-          badgeSvg = '<g class="yz-sector-badge yz-new">' +
-            '<rect x="' + (Number(badgeX) - 12).toFixed(1) + '" y="' + (Number(badgeY) - 8).toFixed(1) + '" width="24" height="16" rx="8" class="yz-sector-badge-bg" />' +
-            '<text x="' + badgeX + '" y="' + badgeY + '" class="yz-sector-badge-text">' + CORE.escapeHtml(tr('runtime.badge.new') || '新') + '</text>' +
-          '</g>';
         }
 
         var sealSvg = isSealed ? (
@@ -7372,7 +7377,7 @@
           '</g>'
         ) : '';
 
-        return '<g class="yz-gua-card yz-gua-sector' + (isSealed ? ' yz-gua-sealed' : '') + '" data-view="' + g.id + '" role="button" tabindex="0" aria-label="' + CORE.escapeHtml(g.name + ' · ' + g.feat) + '" style="--gua-accent: ' + g.color + '; --shift-x: ' + shiftX + 'px; --shift-y: ' + shiftY + 'px;">' +
+        return '<g class="yz-gua-card yz-gua-sector' + (isSealed ? ' yz-gua-sealed' : '') + (isNew ? ' yz-gua-new' : '') + '" data-view="' + g.id + '" role="button" tabindex="0" aria-label="' + CORE.escapeHtml(g.name + ' · ' + g.feat) + '" style="--gua-accent: ' + g.color + '; --shift-x: ' + shiftX + 'px; --shift-y: ' + shiftY + 'px;">' +
           '<path class="yz-sector-path" d="' + pathD + '" />' +
           '<path class="yz-sector-inner-rim" d="' + rimD + '" />' +
           '<text class="yz-sector-symbol" x="' + xm + '" y="' + (Number(ym) - 16).toFixed(1) + '">' + g.symbol + '</text>' +
@@ -7919,9 +7924,6 @@
     function getFabEl() {
       return document ? document.getElementById('yu-zhao-fab') : null;
     }
-    function getBadgeEl() {
-      return document ? document.getElementById('yu-zhao-fab-badge') : null;
-    }
 
     var isDragging = false;
     var moved = false;
@@ -7996,16 +7998,18 @@
       } catch (_) {}
     }
 
-    function updateBadge(count) {
-      var badge = getBadgeEl();
-      if (!badge) return;
-      var num = Number(count) || 0;
-      if (num > 0) {
-        badge.textContent = num > 99 ? '99+' : String(num);
-        badge.style.display = 'flex';
+    function updateNotice(hasNotice) {
+      var fab = getFabEl();
+      if (!fab) return;
+      if (hasNotice) {
+        fab.classList.add('yz-has-notice');
       } else {
-        badge.style.display = 'none';
+        fab.classList.remove('yz-has-notice');
       }
+    }
+
+    function updateBadge(count) {
+      updateNotice(Number(count) > 0);
     }
 
     function triggerOpen() {
@@ -8115,7 +8119,8 @@
 
     return {
       resetPosition: resetPosition,
-      updateBadge: updateBadge
+      updateBadge: updateBadge,
+      updateNotice: updateNotice
     };
   }
 
@@ -8140,6 +8145,9 @@
       state.open = false;
       state.modal = null;
       shell.updateVisibility();
+      if (ctx.hooks && typeof ctx.hooks.updateBadges === 'function') {
+        ctx.hooks.updateBadges();
+      }
     }
 
     function toggle() {
@@ -8168,6 +8176,10 @@
             space.sync.appliedSeen.push(view);
           }
         }
+      }
+
+      if (ctx.hooks && typeof ctx.hooks.updateBadges === 'function') {
+        ctx.hooks.updateBadges();
       }
 
       shell.render();
@@ -8210,6 +8222,9 @@
     function selectItem(id, item) {
       state.selectedId = id;
       state.selectedItem = item || null;
+      if (ctx.hooks && typeof ctx.hooks.updateBadges === 'function') {
+        ctx.hooks.updateBadges();
+      }
       shell.render();
     }
 
@@ -8498,7 +8513,17 @@
       if (space.forum) {
         CORE.safeArray(space.forum.posts).forEach(function (p) { unread += Number(p.unread) || 0; });
       }
-      fab.updateBadge(unread);
+      var hasNewSync = false;
+      if (space.sync && Array.isArray(space.sync.applied)) {
+        var seen = Array.isArray(space.sync.appliedSeen) ? space.sync.appliedSeen : [];
+        hasNewSync = space.sync.applied.some(function (id) { return seen.indexOf(id) < 0; });
+      }
+      var hasNotice = unread > 0 || hasNewSync;
+      if (typeof fab.updateNotice === 'function') {
+        fab.updateNotice(hasNotice);
+      } else if (typeof fab.updateBadge === 'function') {
+        fab.updateBadge(hasNotice ? 1 : 0);
+      }
     }
 
     return {
@@ -8887,6 +8912,7 @@
           if (startChat && startChat.id != null && CORE.hasText(startChat.id)) {
             state.chatActive = true;
             await runtime.switchChat(startChat.id);
+            if (hooks && typeof hooks.updateBadges === 'function') hooks.updateBadges();
           }
         } catch (_) {}
         if (shell) {

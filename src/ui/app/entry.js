@@ -115,6 +115,7 @@
           if (startChat && startChat.id != null && CORE.hasText(startChat.id)) {
             state.chatActive = true;
             await runtime.switchChat(startChat.id);
+            if (hooks && typeof hooks.updateBadges === 'function') hooks.updateBadges();
           }
         } catch (_) {}
         if (shell) {

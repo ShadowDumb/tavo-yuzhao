@@ -53,8 +53,6 @@
   "runtime.toast.clearConfirmAction": "Confirm clear",
   "runtime.toast.cleared": "Artifact data for this chat cleared",
   "runtime.badge.unread": "{n} unread",
-  "runtime.badge.new": "Newly synced",
-  "runtime.badge.alert": "Sync incomplete",
   "runtime.sep.badge": ", ",
   "runtime.sep.list": ", ",
   "runtime.sep.count": " ({n})",

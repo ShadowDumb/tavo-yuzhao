@@ -18,6 +18,9 @@
       state.open = false;
       state.modal = null;
       shell.updateVisibility();
+      if (ctx.hooks && typeof ctx.hooks.updateBadges === 'function') {
+        ctx.hooks.updateBadges();
+      }
     }
 
     function toggle() {
@@ -46,6 +49,10 @@
             space.sync.appliedSeen.push(view);
           }
         }
+      }
+
+      if (ctx.hooks && typeof ctx.hooks.updateBadges === 'function') {
+        ctx.hooks.updateBadges();
       }
 
       shell.render();
@@ -88,6 +95,9 @@
     function selectItem(id, item) {
       state.selectedId = id;
       state.selectedItem = item || null;
+      if (ctx.hooks && typeof ctx.hooks.updateBadges === 'function') {
+        ctx.hooks.updateBadges();
+      }
       shell.render();
     }
 

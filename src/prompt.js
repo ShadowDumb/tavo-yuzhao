@@ -92,8 +92,7 @@
     }
   ];
 
-  // 基线注入预算：每轮只发「采样子集 + 最近窗口 + 归档摘要」，消息与地点名录历史正文走世界书关键词召回。
-  // 窗口值同时是世界书归档的切分点（archived = 消息去掉最近窗口），两处必须一致。
+  // 基线注入窗口配置（超出部分移入世界书归档）
   var RECENT_MSG_ROWS = 6;
   var RECENT_NOTE_ROWS = 3;
   var RECENT_COMMENT_ROWS = 6;
@@ -101,29 +100,15 @@
   var RECENT_AUCTION_ROWS = 6;
   var RECENT_ITEM_ROWS = 10;
   var RECENT_REQUEST_ROWS = 6;
-  // 地点名录窗口：窗口之外的地点正文不进基线，完整名录在世界书关键词条目中召回。
   var RECENT_PLACE_ROWS = 6;
-  // 基线总字符上限：超限时按五级顺序淘汰——① 其它功能明细行（消息/笔记/帖子等，
-  // 世界书对消息有召回）→ ② tablet 字段行（角色设定最重要，明细行中最后丢）→ ③ 归档摘要行
-  // → ④ last 标记行（玩家传讯未读行与玩家帖子，真实事件，仅极端场景让位）→
-  // ⑤ 超长标识行截断到短上限（保留行首 id/name 供 diff 定位，丢 preview/time 长尾）。
-  // 这是每轮注入量的硬上限——数据再大也不会随轮次滚雪球。
   var MAX_BASELINE_CHARS = 9000;
-  // 第五轮截断后的单行硬上限：标识行以存在性与 diff 定位为主，长尾字段可弃。
   var ROW_HARD_CAP = 160;
 
-  // 当前数据基线按「发送空间」分组：sendToAI 的空间各出一份 yzc_ 容器组。
-  // 默认空间（角色本人空间）的容器不带属性；自定义空间容器带 space="路由 token"，
-  // 模型回写该空间时在 turn 行第 6 字段填同一路由 token（缺省 = 默认空间）。
-  // 多空间并发注入时条目采样上限按空间数均摊（保底 1），注入总量不随空间数膨胀。
-  // 超预算五级淘汰共用同一条池子（见 MAX_BASELINE_CHARS 注释）。
   function spaceBaselineLabel(space, fallback) {
     var name = CORE.spaceDisplayName(null, space, fallback || '');
     return encodeSpaceRoute(name);
   }
 
-  // 单个空间的基线行：与旧版逐分区同构（去掉双域通道特殊注入——用户发言 pm/pmg/pmc
-  // 现在就是空间内的普通受保护行，采样强保 + last 标记保证不被预算淘汰）。
   function buildSpaceSections(space, flags, rng, caps, visibility) {
     function on(id) { return !flags || flags[id] !== false; }
     function v(value, cap) {

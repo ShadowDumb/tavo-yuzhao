@@ -211,7 +211,17 @@
       if (space.forum) {
         CORE.safeArray(space.forum.posts).forEach(function (p) { unread += Number(p.unread) || 0; });
       }
-      fab.updateBadge(unread);
+      var hasNewSync = false;
+      if (space.sync && Array.isArray(space.sync.applied)) {
+        var seen = Array.isArray(space.sync.appliedSeen) ? space.sync.appliedSeen : [];
+        hasNewSync = space.sync.applied.some(function (id) { return seen.indexOf(id) < 0; });
+      }
+      var hasNotice = unread > 0 || hasNewSync;
+      if (typeof fab.updateNotice === 'function') {
+        fab.updateNotice(hasNotice);
+      } else if (typeof fab.updateBadge === 'function') {
+        fab.updateBadge(hasNotice ? 1 : 0);
+      }
     }
 
     return {

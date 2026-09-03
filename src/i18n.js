@@ -62,7 +62,6 @@
         exported: tr('runtime.manage.exportDone'),
         exportFailed: tr('runtime.manage.exportFailed')
       },
-      badge: { new: tr('runtime.badge.new'), alert: tr('runtime.badge.alert') },
       coreAria: tr('runtime.core.aria'),
       diag: {
         title: tr('runtime.diag.title'),

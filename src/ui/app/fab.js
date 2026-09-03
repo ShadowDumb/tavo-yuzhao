@@ -8,9 +8,6 @@
     function getFabEl() {
       return document ? document.getElementById('yu-zhao-fab') : null;
     }
-    function getBadgeEl() {
-      return document ? document.getElementById('yu-zhao-fab-badge') : null;
-    }
 
     var isDragging = false;
     var moved = false;
@@ -85,16 +82,18 @@
       } catch (_) {}
     }
 
-    function updateBadge(count) {
-      var badge = getBadgeEl();
-      if (!badge) return;
-      var num = Number(count) || 0;
-      if (num > 0) {
-        badge.textContent = num > 99 ? '99+' : String(num);
-        badge.style.display = 'flex';
+    function updateNotice(hasNotice) {
+      var fab = getFabEl();
+      if (!fab) return;
+      if (hasNotice) {
+        fab.classList.add('yz-has-notice');
       } else {
-        badge.style.display = 'none';
+        fab.classList.remove('yz-has-notice');
       }
+    }
+
+    function updateBadge(count) {
+      updateNotice(Number(count) > 0);
     }
 
     function triggerOpen() {
@@ -204,6 +203,7 @@
 
     return {
       resetPosition: resetPosition,
-      updateBadge: updateBadge
+      updateBadge: updateBadge,
+      updateNotice: updateNotice
     };
   }

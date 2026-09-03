@@ -53,8 +53,6 @@
   "runtime.toast.clearConfirmAction": "确认清除",
   "runtime.toast.cleared": "已清除当前聊天的玉兆数据",
   "runtime.badge.unread": "{n} 条未读",
-  "runtime.badge.new": "有新同步",
-  "runtime.badge.alert": "同步未达标",
   "runtime.sep.badge": "，",
   "runtime.sep.list": "、",
   "runtime.sep.count": "（{n}）",

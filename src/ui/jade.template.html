@@ -120,7 +120,7 @@
     text-shadow: 0 0 6px rgba(52, 211, 153, 0.8);
     margin-top: 1px;
   }
-  /* 悬浮玉佩水波纹涟漪效果 (严格正圆双层同心水波) */
+  /* 悬浮玉佩水波纹涟漪效果 (严格正圆双层同心水波，仅有新通知时显现) */
   .yz-fab-pulse {
     position: absolute;
     inset: -2px;
@@ -128,6 +128,13 @@
     border-radius: 50%;
     pointer-events: none;
     box-sizing: border-box;
+    display: none;
+  }
+  #yu-zhao-fab.yz-has-notice .yz-fab-pulse {
+    display: block;
+  }
+  #yu-zhao-fab.yz-has-notice {
+    filter: drop-shadow(0 0 12px rgba(52, 211, 153, 0.45)) drop-shadow(0 6px 16px rgba(0, 0, 0, 0.55));
   }
   .yz-fab-pulse::before,
   .yz-fab-pulse::after {
@@ -463,9 +470,48 @@
   .yz-gua-sector:hover .yz-sector-inner-rim {
     stroke: var(--gua-accent, rgba(52, 211, 153, 0.3));
   }
+  /* 扇面边框呼吸式高亮 */
+  @keyframes yz-sector-breathe {
+    0%, 100% {
+      stroke: var(--yz-border-jade, rgba(52, 211, 153, 0.28));
+      stroke-width: 1.5;
+      filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5));
+    }
+    50% {
+      stroke: var(--gua-accent, #34d399);
+      stroke-width: 2.2;
+      filter: drop-shadow(0 0 14px var(--gua-accent, rgba(52, 211, 153, 0.8)));
+    }
+  }
+  @keyframes yz-rim-breathe {
+    0%, 100% {
+      stroke: rgba(255, 255, 255, 0.06);
+    }
+    50% {
+      stroke: var(--gua-accent, rgba(52, 211, 153, 0.4));
+    }
+  }
+  .yz-gua-sector.yz-gua-new .yz-sector-path {
+    animation: yz-sector-breathe 2.4s ease-in-out infinite;
+  }
+  .yz-gua-sector.yz-gua-new .yz-sector-inner-rim {
+    animation: yz-rim-breathe 2.4s ease-in-out infinite;
+  }
+  .yz-gua-sector.yz-gua-new:hover .yz-sector-path,
+  .yz-gua-sector.yz-gua-new:focus-visible .yz-sector-path {
+    animation: none;
+    fill: rgba(14, 46, 50, 0.95);
+    stroke: var(--gua-accent, #34d399);
+    stroke-width: 2.2;
+    filter: drop-shadow(0 0 14px var(--gua-accent, rgba(52, 211, 153, 0.55)));
+  }
+  .yz-gua-sector.yz-gua-new:hover .yz-sector-inner-rim {
+    animation: none;
+    stroke: var(--gua-accent, rgba(52, 211, 153, 0.3));
+  }
   .yz-sector-symbol {
     font-family: var(--yz-font-serif);
-    font-size: 22px;
+    font-size: 24px;
     line-height: 1;
     fill: var(--gua-accent, var(--yz-text-primary));
     text-anchor: middle;
@@ -509,10 +555,6 @@
     stroke: #061514;
     stroke-width: 1.5;
     filter: drop-shadow(0 0 6px rgba(239, 68, 68, 0.6));
-  }
-  .yz-sector-badge.yz-new .yz-sector-badge-bg {
-    fill: #10b981;
-    filter: drop-shadow(0 0 6px rgba(16, 185, 129, 0.6));
   }
   .yz-sector-badge-text {
     font-size: 9.5px;
@@ -597,7 +639,8 @@
   }
   .yz-subview-icon {
     font-family: var(--yz-font-serif);
-    font-size: 24px;
+    font-size: 32px;
+    line-height: 1;
     color: var(--yz-jade-light);
   }
   .yz-subview-title {
@@ -979,7 +1022,6 @@
     <div class="yz-fab-pulse"></div>
     <div class="yz-fab-icon">☯</div>
     <div class="yz-fab-glyph">玉兆</div>
-    <div id="yu-zhao-fab-badge" class="yz-fab-badge" style="display:none;">0</div>
   </div>
 </button>
 
