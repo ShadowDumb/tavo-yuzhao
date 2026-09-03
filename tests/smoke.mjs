@@ -1,13 +1,12 @@
 /*
  * 玉兆冒烟测试（node tests/smoke.mjs，无外部依赖）
  *
- * 覆盖面（数据层）：Core 消毒/校验/应用、Protocol 解析/剥离、Prompt 注入与封印、
- * Runtime 状态机（去重/水化签名/切聊竞态/重建/空间生命周期）、持久化队列与缓存淘汰、
- * manifest 与 catalog 结构校验。
- *
- * 实现说明：UI 层（src/ui、ui/jade.html）已删除，本测试只加载 src/ 中的数据层模块
- * （core/protocol/i18n/runtime/prompt）运行断言；对 runtime.js 源码的引用仅作
- * 持久化队列与销毁契约的文本级校验。
+ * 覆盖面：
+ * 1. 数据层：Core 消毒/校验/应用、Protocol 解析/剥离、Prompt 注入与封印、
+ *    Runtime 状态机（去重/水化签名/切聊竞态/重建/空间生命周期）、持久化队列与缓存淘汰、
+ *    manifest 与 catalog 结构校验。
+ * 2. UI 层：太极八卦盘与 8 卦位视图渲染、传音符对话流、记事/坊市/论坛/空间/舆图/管理交互、
+ *    UI 导航与状态机、表单与数据操作（真实发帖/传音/撤销恢复）、Tavo Hook 生命周期桥接。
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -36,9 +35,34 @@ function eq(actual, expected, name) {
 // ---------- 加载插件内部模块 ----------
 const runtimeSource = read('src/runtime.js');
 const dataSource = readMany(['src/core.js', 'src/protocol.js', 'src/i18n.js', 'src/runtime.js', 'src/prompt.js']);
-// 数据层源码片段共享同一测试闭包。
+const uiSource = readMany([
+  'src/ui/views/shared.js',
+  'src/ui/views/wheel.js',
+  'src/ui/views/tablet.js',
+  'src/ui/views/messages.js',
+  'src/ui/views/notes.js',
+  'src/ui/views/market.js',
+  'src/ui/views/forum.js',
+  'src/ui/views/space.js',
+  'src/ui/views/map.js',
+  'src/ui/views/manage.js',
+  'src/ui/views/sync.js',
+  'src/ui/views/page.js',
+  'src/ui/app/state.js',
+  'src/ui/app/dialogs.js',
+  'src/ui/app/data-actions.js',
+  'src/ui/app/forms.js',
+  'src/ui/app/fab.js',
+  'src/ui/app/navigation.js',
+  'src/ui/app/dom-strip.js',
+  'src/ui/app/hooks.js',
+  'src/ui/app/shell.js',
+  'src/ui/app/entry.js'
+]);
+// 源码片段共享同一测试闭包。
 const probe = `(function () {
 ${dataSource}
+${uiSource}
   globalThis.__YZ_SMOKE__ = {
     CORE, PROTOCOL, PROMPT,
     createRuntime: RUNTIME.createRuntime,
@@ -46,7 +70,11 @@ ${dataSource}
     setTranslator: function (t) { TRANSLATE = t; },
     i18n: I18N,
     MAX_SNAPSHOT_BYTES: MAX_SNAPSHOT_BYTES,
-    PLUGIN_VERSION: PLUGIN_VERSION
+    PLUGIN_VERSION: PLUGIN_VERSION,
+    VIEWS_SHARED, VIEWS_WHEEL, VIEWS_TABLET, VIEWS_MESSAGES, VIEWS_NOTES,
+    VIEWS_MARKET, VIEWS_FORUM, VIEWS_SPACE, VIEWS_MAP, VIEWS_MANAGE, VIEWS_SYNC,
+    PAGE, createUiState, createDialogs, createDataActions, createForms, createFab,
+    createNavigation, createDomStrip, createHooks, createShell, APP
   };
 })();
 `;
@@ -87,6 +115,18 @@ const manifest = JSON.parse(read('manifest.json'));
 ok(manifest.specVersion === 2, 'specVersion 为 2');
 ok(/^\d+\.\d+\.\d+$/.test(manifest.version), 'version 是合法 SemVer');
 eq(manifest.permissions.slice().sort(), ['generate', 'message', 'variable'], 'permissions 仅含实际使用的能力');
+
+// 构建产物完整性回归：build 用模板 String.replace 时会把替换文本里的 `$&` 当引用展开，
+// 破坏 core.js 的 regex 转义（'\\$&' 被替换成整段 marker，产生 SyntaxError，UI 脚本不执行）。
+// 回归点：产物必须不残留 marker 文本，且 core.js 的 regex 转义保持字面 `'\\$&'`。
+{
+  const jade = read('ui/jade.html');
+  const corrupted = "'\\\\<!-- yu-zhao-ui-script -->'";
+  ok(!jade.includes(corrupted) && !jade.includes('yu-zhao-ui-script -->'), 'ui/jade.html 无 String.replace $& 展开污染');
+  const opens = (jade.match(/<script[\s>]/gi) || []).length;
+  const closes = (jade.match(/<\/script>/gi) || []).length;
+  ok(opens === 1 && closes === 1, `ui/jade.html 恰含一个可执行脚本块 (open=${opens} close=${closes})`);
+}
 ok(existsSync(path.join(ROOT, manifest.entry)), 'entry 文件存在');
 ok(existsSync(path.join(ROOT, manifest.cover)), 'cover 文件存在');
 
@@ -2457,6 +2497,199 @@ console.log('# P1 · v3 数据安全与持久化回归');
   disposable.dispose();
   disposable.dispose();
   ok(removed === 1 && /syncChannel\.close\(\)/.test(runtimeSource), 'runtime dispose 幂等关闭 BroadcastChannel 并移除 storage 监听');
+}
+
+// ---------- UI 与视图系统冒烟 ----------
+console.log('# UI 视图渲染与交互系统');
+{
+  const mockHost = fakeHost();
+  const rt = M.createRuntime(mockHost.api, null, () => ({ enabled: true, auto_strip: true, lang: 'zh' }));
+  await rt.switchChat('ui-smoke-chat');
+
+  // 1. 初始化 Mock UI 状态
+  const uiState = M.createUiState();
+  ok(uiState.open === false && uiState.activeView === 'wheel', 'UI 初始为关闭态且主视图为 wheel');
+
+  const mockCtx = {
+    runtime: rt,
+    state: uiState,
+    tr: (k) => zhCatalog[k] || k,
+    getFlags: () => ({ enabled: true, auto_strip: true, lang: 'zh' })
+  };
+
+  // 2. 8 卦位主盘渲染
+  const wheelHtml = M.VIEWS_WHEEL.render(mockCtx);
+  ok(wheelHtml.includes('yz-taiji-svg'), '八卦盘渲染中央太极 SVG');
+  ok(wheelHtml.includes('☰') && wheelHtml.includes('☷') && wheelHtml.includes('☵') && wheelHtml.includes('☲'), '八卦盘包含乾坤坎离卦象');
+  ok(wheelHtml.includes('☳') && wheelHtml.includes('☴') && wheelHtml.includes('☶') && wheelHtml.includes('☱'), '八卦盘包含震巽艮兑卦象');
+  ok(wheelHtml.includes('data-view="tablet"'), '八卦盘包含乾·本命玉牌入口');
+  ok(wheelHtml.includes('data-view="msg"'), '八卦盘包含兑·交流讯息入口');
+  ok(wheelHtml.includes('data-view="manage"'), '八卦盘包含艮·玉兆管理入口');
+
+  // 3. 乾 · 本命玉牌
+  const tabletHtml = M.VIEWS_TABLET.render(mockCtx);
+  ok(tabletHtml.includes('本命玉牌') && tabletHtml.includes('基本') && tabletHtml.includes('仪容') && tabletHtml.includes('修为'), '本命玉牌渲染分组字段');
+  ok(tabletHtml.includes('功法') && tabletHtml.includes('羁绊') && tabletHtml.includes('隐秘'), '本命玉牌包含功法/羁绊/隐秘分组');
+
+  // 4. 兑 · 交流讯息
+  const msgHtml = M.VIEWS_MESSAGES.render(mockCtx);
+  ok(msgHtml.includes('交流讯息') && msgHtml.includes('联系人') && msgHtml.includes('群聊'), '交流讯息渲染联系人与群聊选项卡');
+
+  // 4.1 传音符对话流
+  const sp = rt.activeSpace();
+  sp.chats.contacts = [{ id: 'c-1', name: '韩立', relation: '道友', messages: [{ id: 'm-1', direction: 'other', text: '厉飞雨道友在否？', time: '午时' }, { id: 'm-2', direction: 'self', text: '在下正是。', time: '未时' }] }];
+  uiState.selectedId = 'c-1';
+  const threadHtml = M.VIEWS_MESSAGES.render(mockCtx);
+  ok(threadHtml.includes('yz-msg-bubble yz-other') && threadHtml.includes('厉飞雨道友在否？'), '对话流渲染对方气泡');
+  ok(threadHtml.includes('yz-msg-bubble yz-self') && threadHtml.includes('在下正是。'), '对话流渲染自身气泡');
+  uiState.selectedId = null;
+
+  // 5. 离 · 记事玉册
+  sp.notes.folders = [{ id: 'f-1', name: '丹方心得' }];
+  sp.notes.notes = [{ id: 'n-1', folderId: 'f-1', title: '筑基丹配方', body: '千年灵草三钱', locked: true }];
+  const notesHtml = M.VIEWS_NOTES.render(mockCtx);
+  ok(notesHtml.includes('记事玉册') && notesHtml.includes('丹方心得') && notesHtml.includes('筑基丹配方'), '记事玉册渲染分类与备忘卡片');
+  ok(notesHtml.includes('🔒'), '禁制备忘渲染加锁图标');
+
+  // 6. 震 · 交易坊市
+  sp.market.listings = [{ id: 'l-1', name: '青竹蜂云剑', grade: '仙宝', price: '十万上品灵石', seller: '韩立', desc: '七十二口辟邪神竹飞剑' }];
+  const marketHtml = M.VIEWS_MARKET.render(mockCtx);
+  ok(marketHtml.includes('交易坊市') && marketHtml.includes('青竹蜂云剑') && marketHtml.includes('十万上品灵石'), '交易坊市渲染在售法宝与品阶');
+
+  // 7. 巽 · 天下论坛
+  sp.forum.posts = [{ id: 'p-1', title: '论青元剑诀修炼关窍', body: '第三层需以辟邪神雷辅之', author: '厉飞雨', section: '修炼心得', echo: 42, unread: 1, owner: 'player' }];
+  const forumHtml = M.VIEWS_FORUM.render(mockCtx);
+  ok(forumHtml.includes('天下论坛') && forumHtml.includes('论青元剑诀修炼关窍') && forumHtml.includes('共鸣 42'), '天下论坛渲染帖子与共鸣');
+  ok(forumHtml.includes('本尊发帖') || forumHtml.includes('我'), '玩家发帖渲染专属标识');
+
+  // 8. 坎 · 芥子空间
+  sp.space.items = [{ id: 'i-1', name: '掌天瓶', grade: '绝品', count: 1, desc: '夺天地造化' }];
+  sp.space.currencies = [{ id: 'cur-1', kind: '极品灵石', amount: '8888' }];
+  uiState.activeTab = 'items';
+  const spaceItemsHtml = M.VIEWS_SPACE.render(mockCtx);
+  ok(spaceItemsHtml.includes('芥子空间') && spaceItemsHtml.includes('掌天瓶'), '芥子空间储物页渲染法宝');
+  uiState.activeTab = 'currencies';
+  const spaceCursHtml = M.VIEWS_SPACE.render(mockCtx);
+  ok(spaceCursHtml.includes('极品灵石') && spaceCursHtml.includes('8888'), '芥子空间钱财页渲染灵石数额');
+  uiState.activeTab = '';
+
+  // 9. 坤 · 天下舆图
+  sp.map.current = { name: '天南·越国', region: '黄枫谷', desc: '青翠群山，灵气浓郁' };
+  sp.map.tracks = [{ time: '甲子年', location: '太岳山脉', action: '开辟洞府' }];
+  const mapHtml = M.VIEWS_MAP.render(mockCtx);
+  ok(mapHtml.includes('天下舆图') && mapHtml.includes('天南·越国') && mapHtml.includes('太岳山脉'), '天下舆图渲染当前所在与云游轨迹');
+
+  // 10. 艮 · 玉兆管理
+  const manageHtml = M.VIEWS_MANAGE.render(mockCtx);
+  ok(manageHtml.includes('玉兆管理') && manageHtml.includes('八卦功能启闭封印') && manageHtml.includes('九幽诸天 · 空间管理'), '管理页渲染功能封印与多空间管理');
+
+  // 11. 同步诊断面板
+  const syncHtml = M.VIEWS_SYNC.render(mockCtx);
+  ok(syncHtml.includes('同步诊断') && syncHtml.includes('同步状态'), '同步诊断页渲染状态指标');
+
+  // 12. PAGE 视图路由器调度分发
+  const viewsToTest = ['wheel', 'tablet', 'msg', 'notes', 'market', 'forum', 'space', 'map', 'manage', 'sync'];
+  for (const v of viewsToTest) {
+    uiState.activeView = v;
+    const rendered = M.PAGE.render(mockCtx);
+    ok(typeof rendered === 'string' && rendered.length > 50, `PAGE 调度分发视图「${v}」渲染正常`);
+  }
+
+  // 13. 导航状态机 (Navigation State Machine)
+  let renderedCount = 0;
+  const mockShell = {
+    render: () => { renderedCount += 1; },
+    updateVisibility: () => {},
+    renderDialogs: () => {}
+  };
+  const nav = M.createNavigation({ state: uiState, shell: mockShell, runtime: rt });
+  nav.open('notes');
+  eq(uiState.open, true, 'nav.open 打开 UI');
+  eq(uiState.activeView, 'notes', 'nav.open 切换到 notes 视图');
+  nav.navigate('forum', { tab: '修炼心得' });
+  eq(uiState.activeView, 'forum', 'nav.navigate 进入 forum');
+  eq(uiState.activeTab, '修炼心得', 'nav.navigate 设置 tab');
+  nav.back();
+  eq(uiState.activeView, 'notes', 'nav.back 返回上一个视图');
+  nav.close();
+  eq(uiState.open, false, 'nav.close 关闭 UI');
+
+  // 14. 实体表单构建 (Entity Forms)
+  const forms = M.createForms({ state: uiState, shell: mockShell, tr: mockCtx.tr, dialogs: {}, dataActions: {} });
+  forms.openNoteForm({ id: 'n-1', title: '炼丹记', body: '丹成九品' });
+  ok(uiState.modal && uiState.modal.type === 'entity-form', 'forms.openNoteForm 唤出模态表单');
+  eq(uiState.modal.kind, 'note', '表单类型为 note');
+  eq(uiState.modal.initialData.title, '炼丹记', '表单回填初始数据');
+  uiState.modal = null;
+
+  // 15. 数据操作分发与撤销 (Data Actions & Undo)
+  let undoCalled = false;
+  const mockDialogs = {
+    toast: () => {},
+    confirm: (opts) => { if (opts.onConfirm) opts.onConfirm(); },
+    showUndo: (msg, onUndo) => { if (onUndo) { onUndo(); undoCalled = true; } },
+    closeModal: () => {}
+  };
+  const dataActions = M.createDataActions({ runtime: rt, shell: mockShell, dialogs: mockDialogs, tr: mockCtx.tr });
+  dataActions.saveEntity('item', { name: '洗髓丹', qty: 5, grade: '灵品' });
+  const savedItem = sp.space.items.find((it) => it.name === '洗髓丹');
+  ok(!!savedItem && savedItem.qty === 5, 'dataActions.saveEntity 成功写入实体');
+
+  dataActions.deleteEntity('item', savedItem.id, null, '洗髓丹');
+  ok(undoCalled, 'dataActions.deleteEntity 触发可撤销回调');
+  ok(sp.space.items.some((it) => it.name === '洗髓丹'), '撤销恢复已删除实体');
+
+  // 16. 用户真实发言与评论分发
+  dataActions.sendMessage('contact', 'c-1', '道友速来天都峰！');
+  const lastMsg = sp.chats.contacts[0].messages.slice(-1)[0];
+  ok(lastMsg && lastMsg.text === '道友速来天都峰！' && (lastMsg.side === 'self' || lastMsg.direction === 'self'), 'sendMessage 成功追加自身真实传音');
+
+  dataActions.sendComment('p-1', '道友所言极是！');
+  const targetPost = sp.forum.posts.find((p) => p.id === 'p-1');
+  const lastComment = targetPost && targetPost.comments && targetPost.comments.slice(-1)[0];
+  ok(lastComment && lastComment.text === '道友所言极是！', 'sendComment 成功追加帖子共鸣');
+
+  // 17. 空间生命周期操作
+  dataActions.createSpace('蓬莱仙岛');
+  ok(rt.current().spaces.some((s) => s.name === '蓬莱仙岛'), 'createSpace 成功新建用户空间');
+  const penglai = rt.current().spaces.find((s) => s.name === '蓬莱仙岛');
+  dataActions.renameSpace(penglai.id, '蓬莱秘境');
+  eq(penglai.name, '蓬莱秘境', 'renameSpace 成功重命名空间');
+  dataActions.setSpaceFlag(penglai.id, 'allowAIWrite', false);
+  eq(penglai.allowAIWrite, false, 'setSpaceFlag 成功调整 AI 读写开关');
+
+  // 18. Tavo Hook 生命周期桥接
+  const hooks = M.createHooks({
+    runtime: rt,
+    state: uiState,
+    shell: mockShell,
+    fab: { updateBadge: () => {}, resetPosition: () => {} },
+    navigation: nav,
+    dialogs: mockDialogs,
+    domStrip: { scanNow: () => {} },
+    getFlags: () => ({ enabled: true, auto_strip: true, lang: 'zh' })
+  });
+
+  // 18.1 generation:prepare 提示词注入
+  const genEvent = { text: '师兄安好' };
+  await hooks.generationPrepare(genEvent);
+  ok(genEvent.text.includes('玉兆') && genEvent.text.includes('<yz_jade>'), 'generationPrepare 成功注入基线提示词');
+
+  // 18.2 generation:success 协议同步剥离与快照应用
+  const fullText = '这是正文内容。\n<yz_jade><yz_meta>\nturn|t-ui-1|云中子|更新玉牌|full\n</yz_meta><yz_tablet>\nfield|基本|境界|结丹初期\n</yz_tablet></yz_jade>';
+  const successEvent = { text: fullText };
+  hooks.generationSuccess(successEvent);
+  ok(!successEvent.text.includes('<yz_jade>') && successEvent.text.includes('这是正文内容。'), 'generationSuccess 同步剥离协议块');
+
+  // 19. APP.create 与 shared.attachUI 契约
+  const appInstance = M.APP.create({
+    tavo: mockHost.api,
+    document: null,
+    window: globalThis
+  });
+  ok(appInstance && typeof appInstance.hooks === 'function' && appInstance.state && appInstance.navigation, 'APP.create 成功组装 UI 实例');
+  ok(typeof appInstance.dispose === 'function', 'APP 实例具备 dispose 方法');
+  appInstance.dispose();
 }
 
 // ---------- 结果 ----------

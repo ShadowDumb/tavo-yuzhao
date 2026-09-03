@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  /* ==========================================================================
+     玉兆 · 仙侠沉浸风设计系统 (Yu Zhao Xianxia Design System)
+     ========================================================================== */
+  :root {
+    --yz-font-serif: "LXGW WenKai", "STKaiti", "KaiTi", "Songti SC", "SimSun", serif, system-ui;
+    --yz-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --yz-z-index: 2147483646;
+
+    /* 玉质与背景基调 */
+    --yz-bg-deep: #060e10;
+    --yz-bg-card: rgba(12, 28, 30, 0.78);
+    --yz-bg-card-hover: rgba(18, 42, 45, 0.9);
+    --yz-bg-glass: rgba(8, 20, 22, 0.88);
+    --yz-bg-subtle: rgba(40, 90, 85, 0.15);
+    
+    /* 边框与光晕 */
+    --yz-border-jade: rgba(74, 222, 128, 0.22);
+    --yz-border-bright: rgba(130, 240, 200, 0.45);
+    --yz-border-subtle: rgba(255, 255, 255, 0.08);
+    --yz-shadow-main: 0 16px 48px rgba(0, 0, 0, 0.65), 0 0 24px rgba(22, 101, 80, 0.25);
+    --yz-shadow-glow: 0 0 16px rgba(56, 239, 125, 0.35);
+
+    /* 玉色文字体系 */
+    --yz-text-primary: #e6f7f4;
+    --yz-text-secondary: #9ecac3;
+    --yz-text-muted: #5e8f87;
+    --yz-text-gold: #f6d365;
+
+    /* 核心灵玉色彩 */
+    --yz-jade-emerald: #10b981;
+    --yz-jade-light: #34d399;
+    --yz-jade-dark: #064e3b;
+    --yz-gold-accent: #fbbf24;
+    --yz-danger: #f87171;
+    --yz-danger-bg: rgba(220, 38, 38, 0.18);
+    --yz-warn: #fbbf24;
+    --yz-info: #38bdf8;
+
+    /* 八卦五行强调色 */
+    --yz-gua-qian: #93c5fd; /* 乾·天 金白 */
+    --yz-gua-kun: #fbbf24;  /* 坤·地 土黄 */
+    --yz-gua-zhen: #2dd4bf; /* 震·雷 苍碧 */
+    --yz-gua-xun: #4ade80;  /* 巽·风 青绿 */
+    --yz-gua-kan: #38bdf8;  /* 坎·水 玄蓝 */
+    --yz-gua-li: #f87171;   /* 离·火 赤红 */
+    --yz-gua-gen: #94a3b8;  /* 艮·山 岩灰 */
+    --yz-gua-dui: #cbd5e1;  /* 兑·泽 银泽 */
+
+    --yz-sync-glow: rgba(56, 239, 125, 0.4);
+    --yz-fab-size: 52px;
+  }
+
+  /* 悬浮玉佩入口 (Floating Jade Amulet) */
+  #yu-zhao-fab {
+    position: fixed;
+    width: var(--yz-fab-size);
+    height: var(--yz-fab-size);
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #2a6358, #0d2826 70%, #061514);
+    border: 1.5px solid var(--yz-border-bright);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 14px rgba(52, 211, 153, 0.35);
+    cursor: pointer;
+    pointer-events: auto;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+    touch-action: none;
+    z-index: var(--yz-z-index);
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    right: calc(16px + env(safe-area-inset-right, 0px));
+    box-sizing: border-box;
+    font-family: var(--yz-font-sans);
+  }
+  #yu-zhao-fab:hover {
+    transform: scale(1.08);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6), 0 0 22px rgba(52, 211, 153, 0.55);
+    border-color: #6ee7b7;
+  }
+  #yu-zhao-fab:active {
+    transform: scale(0.95);
+  }
+  .yz-fab-inner {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .yz-fab-icon {
+    font-size: 20px;
+    line-height: 1;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6));
+  }
+  .yz-fab-glyph {
+    font-family: var(--yz-font-serif);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: #e2fdf7;
+    text-shadow: 0 0 6px rgba(52, 211, 153, 0.8);
+    margin-top: 1px;
+  }
+  .yz-fab-pulse {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 1px solid rgba(52, 211, 153, 0.4);
+    animation: yz-fab-ripple 3s infinite ease-out;
+    pointer-events: none;
+  }
+  @keyframes yz-fab-ripple {
+    0% { transform: scale(1); opacity: 0.8; }
+    100% { transform: scale(1.35); opacity: 0; }
+  }
+  .yz-fab-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #ef4444, #b91c1c);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid #061514;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+  }
+
+  /* 主模态遮罩与视窗 (Overlay Window) */
+  #yu-zhao-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 12, 14, 0.76);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    pointer-events: auto;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: var(--yz-z-index);
+    box-sizing: border-box;
+    font-family: var(--yz-font-sans);
+    color: var(--yz-text-primary);
+  }
+  #yu-zhao-overlay.yz-open {
+    display: flex;
+  }
+  #yu-zhao-overlay *, #yu-zhao-overlay *::before, #yu-zhao-overlay *::after {
+    box-sizing: border-box;
+    margin: 0; padding: 0;
+  }
+
+  .yz-window {
+    width: 100%;
+    max-width: 960px;
+    height: 88vh;
+    max-height: 860px;
+    background: radial-gradient(circle at 50% 0%, #0d282a, var(--yz-bg-deep) 75%);
+    border: 1px solid var(--yz-border-bright);
+    border-radius: 18px;
+    box-shadow: var(--yz-shadow-main);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    transform: scale(1) translateY(0);
+    animation: yz-win-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes yz-win-in {
+    from { transform: scale(0.96) translateY(12px); opacity: 0; }
+    to { transform: scale(1) translateY(0); opacity: 1; }
+  }
+
+  /* 顶栏 Header */
+  .yz-header {
+    padding: 12px 20px;
+    background: rgba(8, 24, 26, 0.85);
+    border-bottom: 1px solid var(--yz-border-subtle);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .yz-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .yz-logo-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+  }
+  .yz-logo-icon {
+    font-size: 20px;
+    color: var(--yz-jade-light);
+    filter: drop-shadow(0 0 6px rgba(52, 211, 153, 0.6));
+  }
+  .yz-logo-title {
+    font-family: var(--yz-font-serif);
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--yz-text-primary);
+    text-shadow: 0 0 10px rgba(52, 211, 153, 0.3);
+  }
+  .yz-space-capsule {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    background: rgba(20, 50, 52, 0.6);
+    border: 1px solid var(--yz-border-jade);
+    font-size: 12px;
+    color: var(--yz-text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .yz-space-capsule:hover {
+    background: rgba(30, 75, 78, 0.8);
+    border-color: var(--yz-border-bright);
+    color: var(--yz-text-primary);
+  }
+  .yz-space-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--yz-jade-light);
+    box-shadow: 0 0 6px var(--yz-jade-light);
+  }
+
+  .yz-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .yz-btn-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    border: 1px solid var(--yz-border-subtle);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--yz-text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .yz-btn-icon:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--yz-text-primary);
+    border-color: var(--yz-border-bright);
+  }
+
+  /* 视图主体 Container */
+  .yz-body {
+    flex: 1;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 20px;
+    position: relative;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(52, 211, 153, 0.3) transparent;
+  }
+  .yz-body::-webkit-scrollbar {
+    width: 6px;
+  }
+  .yz-body::-webkit-scrollbar-thumb {
+    background: rgba(52, 211, 153, 0.25);
+    border-radius: 3px;
+  }
+
+  /* ==========================================================================
+     太极八卦盘主界面视图 (Taiji Bagua Wheel View)
+     ========================================================================== */
+  .yz-wheel-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100%;
+    padding: 10px 0;
+    gap: 24px;
+  }
+  .yz-wheel-stage {
+    position: relative;
+    width: 440px;
+    height: 440px;
+    max-width: 90vw;
+    max-height: 90vw;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  /* 盘面外环符文光圈 */
+  .yz-wheel-ring {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 1.5px dashed rgba(52, 211, 153, 0.25);
+    animation: yz-ring-rotate 120s linear infinite reverse;
+    pointer-events: none;
+  }
+  .yz-wheel-ring-inner {
+    position: absolute;
+    inset: 24px;
+    border-radius: 50%;
+    border: 1px solid rgba(74, 222, 128, 0.15);
+    pointer-events: none;
+  }
+  @keyframes yz-ring-rotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  /* 太极中枢 (Taiji Core) */
+  .yz-taiji-hub {
+    position: absolute;
+    width: 110px;
+    height: 110px;
+    border-radius: 50%;
+    background: radial-gradient(circle, #0e3032, #041012);
+    border: 2px solid var(--yz-border-bright);
+    box-shadow: 0 0 24px var(--yz-sync-glow), inset 0 0 16px rgba(0,0,0,0.8);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .yz-taiji-hub:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 36px var(--yz-sync-glow), inset 0 0 10px rgba(52, 211, 153, 0.4);
+    border-color: #6ee7b7;
+  }
+  .yz-taiji-svg {
+    width: 74px;
+    height: 74px;
+    animation: yz-taiji-spin 30s linear infinite;
+    filter: drop-shadow(0 0 8px rgba(52, 211, 153, 0.5));
+  }
+  @keyframes yz-taiji-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .yz-taiji-label {
+    position: absolute;
+    bottom: -22px;
+    font-family: var(--yz-font-serif);
+    font-size: 11px;
+    color: var(--yz-text-secondary);
+    background: rgba(6, 18, 20, 0.85);
+    padding: 1px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--yz-border-subtle);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  /* 8 卦位卡片 (Trigram Positions) */
+  .yz-gua-card {
+    position: absolute;
+    width: 88px;
+    height: 88px;
+    border-radius: 14px;
+    background: var(--yz-bg-card);
+    border: 1.5px solid var(--yz-border-jade);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(8px);
+    z-index: 5;
+  }
+  .yz-gua-card:hover {
+    transform: translate(var(--gua-x, 0), var(--gua-y, 0)) scale(1.14) !important;
+    background: var(--yz-bg-card-hover);
+    border-color: var(--gua-accent, var(--yz-border-bright));
+    box-shadow: 0 10px 24px rgba(0, 0, 0, 0.6), 0 0 16px var(--gua-accent, rgba(52, 211, 153, 0.4));
+    z-index: 20;
+  }
+  .yz-gua-symbol {
+    font-family: var(--yz-font-serif);
+    font-size: 22px;
+    line-height: 1;
+    color: var(--gua-accent, var(--yz-text-primary));
+    text-shadow: 0 0 8px var(--gua-accent, rgba(52, 211, 153, 0.6));
+  }
+  .yz-gua-name {
+    font-family: var(--yz-font-serif);
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    color: var(--yz-text-primary);
+  }
+  .yz-gua-feature {
+    font-size: 10px;
+    color: var(--yz-text-secondary);
+  }
+  .yz-gua-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #ef4444, #b91c1c);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid #061514;
+  }
+  .yz-gua-badge.yz-new {
+    background: linear-gradient(135deg, #10b981, #059669);
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  }
+  .yz-gua-sealed {
+    opacity: 0.45;
+    filter: grayscale(0.85);
+    border-color: rgba(255, 255, 255, 0.08) !important;
+  }
+  .yz-gua-seal-tag {
+    position: absolute;
+    top: 4px;
+    left: 4px;
+    font-size: 9px;
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: rgba(0,0,0,0.6);
+    color: var(--yz-text-muted);
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+
+  /* 同步信息与底部状态条 */
+  .yz-wheel-footer {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 18px;
+    border-radius: 24px;
+    background: rgba(10, 26, 28, 0.6);
+    border: 1px solid var(--yz-border-subtle);
+    font-size: 12px;
+    color: var(--yz-text-secondary);
+  }
+  .yz-sync-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--yz-jade-light);
+    box-shadow: 0 0 8px var(--yz-jade-light);
+  }
+  .yz-sync-dot.yz-partial { background: var(--yz-warn); box-shadow: 0 0 8px var(--yz-warn); }
+  .yz-sync-dot.yz-invalid { background: var(--yz-danger); box-shadow: 0 0 8px var(--yz-danger); }
+
+  /* ==========================================================================
+     通用子页面卡片与布局系统
+     ========================================================================== */
+  .yz-subview {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    animation: yz-view-in 0.2s ease-out;
+  }
+  @keyframes yz-view-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .yz-subview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .yz-subview-title-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .yz-subview-icon {
+    font-family: var(--yz-font-serif);
+    font-size: 24px;
+    color: var(--yz-jade-light);
+  }
+  .yz-subview-title {
+    font-family: var(--yz-font-serif);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--yz-text-primary);
+    letter-spacing: 1px;
+  }
+  .yz-subview-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* 选项卡 Tabs */
+  .yz-tabs {
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid var(--yz-border-subtle);
+    padding-bottom: 8px;
+    overflow-x: auto;
+  }
+  .yz-tab-btn {
+    padding: 6px 14px;
+    border-radius: 12px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--yz-text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+  .yz-tab-btn:hover {
+    color: var(--yz-text-primary);
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .yz-tab-btn.yz-active {
+    color: #061514;
+    background: linear-gradient(135deg, #34d399, #10b981);
+    font-weight: 600;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.35);
+  }
+
+  /* 搜索栏与输入 */
+  .yz-search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(8, 22, 24, 0.7);
+    border: 1px solid var(--yz-border-jade);
+    border-radius: 10px;
+    padding: 6px 12px;
+  }
+  .yz-search-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--yz-text-primary);
+    font-size: 13px;
+  }
+  .yz-search-input::placeholder {
+    color: var(--yz-text-muted);
+  }
+
+  /* 卡片 Grid & 容器 */
+  .yz-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 14px;
+  }
+  .yz-card {
+    background: var(--yz-bg-card);
+    border: 1px solid var(--yz-border-jade);
+    border-radius: 12px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    position: relative;
+    transition: all 0.18s ease;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  }
+  .yz-card:hover {
+    border-color: var(--yz-border-bright);
+    background: var(--yz-bg-card-hover);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  }
+  .yz-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .yz-card-title {
+    font-family: var(--yz-font-serif);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--yz-text-primary);
+  }
+  .yz-card-body {
+    font-size: 13px;
+    color: var(--yz-text-secondary);
+    line-height: 1.5;
+  }
+  .yz-card-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--yz-text-muted);
+    border-top: 1px solid rgba(255,255,255,0.05);
+    padding-top: 8px;
+    margin-top: 4px;
+  }
+
+  /* 传音符与消息流 (Messages) */
+  .yz-msg-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 480px;
+    gap: 12px;
+  }
+  .yz-chat-stream {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding-right: 4px;
+  }
+  .yz-msg-bubble {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    position: relative;
+    word-break: break-word;
+  }
+  .yz-msg-bubble.yz-self {
+    align-self: flex-end;
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(5, 150, 105, 0.35));
+    border: 1px solid rgba(52, 211, 153, 0.4);
+    color: #e6fdf7;
+    border-bottom-right-radius: 3px;
+  }
+  .yz-msg-bubble.yz-other {
+    align-self: flex-start;
+    background: rgba(18, 42, 45, 0.7);
+    border: 1px solid var(--yz-border-subtle);
+    color: var(--yz-text-primary);
+    border-bottom-left-radius: 3px;
+  }
+  .yz-msg-meta {
+    font-size: 10px;
+    color: var(--yz-text-muted);
+    margin-top: 4px;
+    text-align: right;
+  }
+
+  .yz-chat-input-bar {
+    display: flex;
+    gap: 8px;
+    padding: 10px;
+    background: rgba(10, 26, 28, 0.85);
+    border: 1px solid var(--yz-border-jade);
+    border-radius: 12px;
+  }
+  .yz-input {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid var(--yz-border-subtle);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--yz-text-primary);
+    font-size: 13px;
+    outline: none;
+  }
+  .yz-input:focus {
+    border-color: var(--yz-border-bright);
+  }
+  .yz-btn-primary {
+    padding: 8px 18px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #10b981, #059669);
+    border: none;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .yz-btn-primary:hover {
+    background: linear-gradient(135deg, #34d399, #10b981);
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.5);
+  }
+
+  /* 对话框与表单 Modal */
+  .yz-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(2, 6, 8, 0.75);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 2147483648;
+    animation: yz-modal-in 0.18s ease-out;
+  }
+  @keyframes yz-modal-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .yz-modal-card {
+    width: 100%;
+    max-width: 480px;
+    background: radial-gradient(circle at 50% 0%, #133438, #071719);
+    border: 1.5px solid var(--yz-border-bright);
+    border-radius: 16px;
+    box-shadow: var(--yz-shadow-main);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .yz-modal-title {
+    font-family: var(--yz-font-serif);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--yz-text-primary);
+  }
+
+  /* Toast 通知 Stack */
+  .yz-toast-stack {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 2147483647;
+    pointer-events: none;
+  }
+  .yz-toast {
+    padding: 8px 18px;
+    border-radius: 20px;
+    background: rgba(8, 26, 28, 0.95);
+    border: 1px solid var(--yz-border-bright);
+    color: var(--yz-text-primary);
+    font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    animation: yz-toast-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  @keyframes yz-toast-in {
+    from { opacity: 0; transform: translateY(12px) scale(0.9); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  /* 空状态 */
+  .yz-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 240px;
+    gap: 12px;
+    color: var(--yz-text-muted);
+    font-family: var(--yz-font-serif);
+    font-size: 14px;
+  }
+  .yz-empty-icon {
+    font-size: 36px;
+    color: var(--yz-text-muted);
+    opacity: 0.6;
+  }
+
+  /* 响应式移动端适配 */
+  @media (max-width: 640px) {
+    #yu-zhao-overlay {
+      padding: 0;
+    }
+    .yz-window {
+      height: 100vh;
+      max-height: 100vh;
+      border-radius: 0;
+      border: none;
+    }
+    .yz-wheel-stage {
+      width: 320px;
+      height: 320px;
+    }
+    .yz-taiji-hub {
+      width: 86px;
+      height: 86px;
+    }
+    .yz-taiji-svg {
+      width: 56px;
+      height: 56px;
+    }
+    .yz-gua-card {
+      width: 72px;
+      height: 72px;
+    }
+    .yz-gua-symbol { font-size: 18px; }
+    .yz-gua-name { font-size: 11px; }
+    .yz-gua-feature { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 悬浮玉佩入口 (Floating Jade Amulet) -->
+<button id="yu-zhao-fab" class="yz-fab" type="button" title="玉兆 · 展开卦盘" aria-label="展开玉兆卦盘">
+  <div class="yz-fab-inner">
+    <div class="yz-fab-pulse"></div>
+    <div class="yz-fab-icon">☯</div>
+    <div class="yz-fab-glyph">玉兆</div>
+    <div id="yu-zhao-fab-badge" class="yz-fab-badge" style="display:none;">0</div>
+  </div>
+</button>
+
+<!-- 主界面遮罩视窗 (Modal Window) -->
+<div id="yu-zhao-overlay" class="yz-overlay" role="dialog" aria-modal="true">
+  <div class="yz-window">
+    <!-- 顶栏 Header -->
+    <header class="yz-header">
+      <div class="yz-header-left">
+        <div id="yu-zhao-logo-btn" class="yz-logo-badge" title="回到卦盘主界面">
+          <span class="yz-logo-icon">☯</span>
+          <span class="yz-logo-title">玉兆</span>
+        </div>
+        <div id="yu-zhao-space-btn" class="yz-space-capsule" title="切换或管理空间">
+          <span class="yz-space-dot"></span>
+          <span id="yu-zhao-space-name">默认空间</span>
+        </div>
+      </div>
+      <div class="yz-header-right">
+        <button id="yu-zhao-back-btn" class="yz-btn-icon" title="返回上一步" style="display:none;" aria-label="返回">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        </button>
+        <button id="yu-zhao-sync-btn" class="yz-btn-icon" title="查看同步诊断" aria-label="同步诊断">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        </button>
+        <button id="yu-zhao-close-btn" class="yz-btn-icon" title="收起玉兆" aria-label="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- 视图主体容器 -->
+    <main id="yu-zhao-body" class="yz-body"></main>
+  </div>
+</div>
+
+<!-- 弹窗模态宿主容器 -->
+<div id="yu-zhao-dialogs"></div>
+
+<!-- 全局 Toast 提示容器 -->
+<div id="yu-zhao-toasts" class="yz-toast-stack"></div>
+
+<!-- yu-zhao-ui-script -->
+</body>
+</html>

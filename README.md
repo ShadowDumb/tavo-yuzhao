@@ -73,25 +73,27 @@
 
 ```
 玉兆/
-├── src/             开发源码（按职责拆分，数据层）
+├── src/             开发源码（按职责拆分）
 │   ├── core.js      Core / 状态模型
 │   ├── protocol.js  协议解析
 │   ├── i18n.js      多语言
 │   ├── runtime.js   运行时 / 持久化
 │   ├── prompt.js    提示词构建
-│   └── entry-hooks.js Hook 入口（共享桥，UI 层待重建）
-├── scripts/build.mjs 构建脚本（生成 entry.js）
+│   ├── entry-hooks.js Hook 入口与共享桥
+│   └── ui/          UI 源码
+│       ├── jade.template.html HTML 宿主模板与样式系统
+│       ├── views/   8 大卦位功能视图与太极八卦盘
+│       └── app/     UI 状态机、导航、表单、FAB、Hook 桥与 DOM 剥离
+├── scripts/build.mjs 构建脚本（生成 entry.js 与 ui/jade.html）
 ├── entry.js        Hook 入口与共享桥（生成物勿手改）
+├── ui/jade.html    一体化 UI Fragment（生成物勿手改）
 ├── manifest.json   插件清单
 ├── locales/        中/英 i18n 字典
-├── tests/smoke.mjs 冒烟测试（无外部依赖，数据层）
-├── DESIGN.md       设计文档（方向：概念/架构/协议/UI 设计说明）
-├── CHANGELOG.md    变更记录（最新版本在最前）
-└── TODO.md         评审与开发待办
+├── tests/smoke.mjs 冒烟测试（无外部依赖）
+├── DESIGN.md       设计文档
+├── CHANGELOG.md    变更记录
+└── TODO.md         开发待办
 ```
-
-> **UI 重构中**：原卦盘 UI 层（`src/ui/`、`ui/jade.html`）已整体移除待重建，仅保留数据层；
-> 设计方向见 DESIGN.md（含太极八卦布局说明），重建前插件暂不注入界面。
 
 ### 冒烟测试
 
@@ -100,19 +102,19 @@ node scripts/build.mjs
 node --check entry.js && node tests/smoke.mjs
 ```
 
-日常修改 `src/` 下对应数据层功能文件，不直接编辑生成的 `entry.js`。构建脚本从 `src/entry-hooks.js` 生成 Hook 入口。可用 `node scripts/build.mjs --check` 检查产物是否与源码一致。
+日常修改 `src/` 下对应功能文件，不直接编辑生成的 `entry.js` 与 `ui/jade.html`。构建脚本打包 Hook 入口与 UI Fragment。可用 `node scripts/build.mjs --check` 检查产物是否与源码一致。
 
-基线 **672 项全绿**，覆盖协议解析、diff 合并、评估矩阵、预算窗口（含五级淘汰与标识行截断）、条目级注入采样（强制包含集/活跃度加权/冷门保底/隐藏条目不出现）、帖子未读机制、世界书归档、版本迁移、备份恢复链、镜像 tie-break 与并发竞态回归、用户空间持久化安全、恶意载荷解析守卫、Runtime 启动契约、P1 并发/回滚/协议/容量契约与 v3 数据安全回归等。
+基线 **727 项全绿**，覆盖数据层（协议解析、diff 合并、评估矩阵、预算窗口、世界书归档、版本迁移、用户空间持久化安全等）与 UI 层（太极八卦盘与 8 卦位视图渲染、传音符对话流、记事/坊市/论坛/空间/舆图/管理交互、表单与真实发帖/传音/撤销、Hook 生命周期桥接等）。
 
 ### 发布门禁
 
-1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 672 项全绿
+1. `node scripts/build.mjs --check && node --check entry.js && node tests/smoke.mjs` 727 项全绿
 2. Tavo MCP 环境执行 `tavo_plugin_validate_manifest` → `tavo_plugin_audit` → `tavo_plugin_package`
-3. UI 重建完成后补充真机回归（世界书归档挂接、卦盘布局、空间切换/新建与跨空间收发）
-4. `V=$(node -p "require('./manifest.json').version") && rm -f "../yu-zhao-v$V.tpg" && zip -r "../yu-zhao-v$V.tpg" manifest.json entry.js locales cover.png`（版本号取自 manifest，先删旧包再压，保证干净归档）
+3. 真机回归（世界书归档挂接、太极八卦盘布局、空间切换/新建与跨空间收发）
+4. `V=$(node -p "require('./manifest.json').version") && rm -f "../yu-zhao-v$V.tpg" && zip -r "../yu-zhao-v$V.tpg" manifest.json entry.js ui/jade.html locales cover.png`（版本号取自 manifest，先删旧包再压，保证干净归档）
 
 ## 版本
 
 - 当前：**3.0.0**（已发布）；其后续累积修复见 CHANGELOG「未发布」段
 - 完整变更记录见 [CHANGELOG.md](CHANGELOG.md)（最新版本在最前）
-- 设计方向（含 UI 设计说明）见 [DESIGN.md](DESIGN.md)
+- 完整架构与协议设计见 [DESIGN.md](DESIGN.md)
