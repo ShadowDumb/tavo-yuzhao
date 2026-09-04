@@ -10,8 +10,14 @@
     renderHeader: function (options) {
       options = options || {};
       var actionsHtml = (options.actions || []).map(function (act) {
-        return '<button id="' + act.id + '" class="' + (act.primary ? 'yz-btn-primary' : 'yz-btn-icon') + '" style="' + (act.primary ? 'padding: 6px 14px; font-size: 12px;' : '') + '" title="' + CORE.escapeHtml(act.title || '') + '">' +
-          (act.icon ? act.icon : '') + (act.label ? (' ' + CORE.escapeHtml(act.label)) : '') +
+        var style = act.primary
+          ? 'padding: 6px 14px; font-size: 12px;'
+          : (act.label ? 'width: auto; padding: 6px 12px; font-size: 12px; white-space: nowrap;' : '');
+        if (act.danger) {
+          style += (style ? ' ' : '') + 'color: var(--yz-danger); border-color: var(--yz-danger);';
+        }
+        return '<button id="' + act.id + '" class="' + (act.primary ? 'yz-btn-primary' : 'yz-btn-icon') + '" style="' + style + '" title="' + CORE.escapeHtml(act.title || '') + '">' +
+          (act.icon ? act.icon : '') + (act.label ? ((act.icon ? ' ' : '') + CORE.escapeHtml(act.label)) : '') +
         '</button>';
       }).join('');
 

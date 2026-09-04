@@ -22,6 +22,33 @@ adb shell dumpsys activity activities | grep -i "topResumedActivity"
 adb push ../yu-zhao-v3.0.0.tpg /sdcard/Download/
 ```
 
+### scrcpy 屏幕捕获与模拟点击
+
+捕获真实设备画面与模拟点击操控，用于视觉走查与交互验证。
+
+```bash
+# 窗口会话：显示真实设备画面（另开终端，需图形环境）
+scrcpy --no-audio --max-fps=15
+# 无头录制：把实时画面录屏为 mp4 用于回看（--no-window 下必须用 --record，而非 --video-file）
+scrcpy --no-window --record=/tmp/opencode/capture.mp4 --max-fps=12
+# 截取当前屏幕供查看
+adb exec-out screencap -p > /tmp/opencode/current.png
+```
+
+- 设备识别：`INFO: ADB device found (usb) 900af430 OPD2401`（OPPO OPD2401 / Android 16）
+- 退出窗口会话用 `kill <PID>` 或窗口内 Ctrl+C；确认无残留：`pgrep -f scrcpy`
+
+#### 模拟点击要点
+
+1. **控件坐标获取**：通过 `uiautomator dump` 获取目标控件 bounds 计算中心坐标：
+   ```bash
+   adb shell uiautomator dump /sdcard/window_dump.xml
+   adb pull /sdcard/window_dump.xml /tmp/opencode/window_dump.xml
+   # 解析目标 node 的 bounds="[x1,y1][x2,y2]"，中心坐标为 ((x1+x2)/2, (y1+y2)/2)
+   ```
+2. **点击方式**：执行 `adb shell input tap <x> <y>` 即可，无需长按延时。
+3. **结果校验**：截图前后比对目标区域控件状态，排除状态栏等非目标区域波动。
+
 ### Tavo MCP
 
 - 端点：`http://192.168.0.194:7347/mcp`

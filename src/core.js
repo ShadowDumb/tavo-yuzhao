@@ -733,7 +733,7 @@
   }
 
   // 空间显示名：默认空间跟随角色名（sync.roleName 由 AI 轮写入），自定义空间用自身 name。
-  function spaceDisplayName(state, space, fallback) {
+  function spaceDisplayName(space, fallback) {
     if (!space) return fallback || '';
     if (!space.isDefault && hasText(space.name)) return space.name;
     return hasText(space.sync && space.sync.roleName) ? space.sync.roleName : (fallback || '');

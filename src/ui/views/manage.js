@@ -45,7 +45,7 @@
       var spacesHtml = spaces.map(function (sp) {
         var isActive = String(sp.id) === String(activeSpaceId);
         var isDefault = !!sp.isDefault;
-        var name = CORE.spaceDisplayName(sp);
+        var name = CORE.spaceDisplayName(sp, isDefault ? (tr('runtime.space.defaultName') || '默认空间') : '');
 
         return '<div class="yz-card" style="padding: 12px; border-left: 3px solid ' + (isActive ? 'var(--yz-jade-light)' : 'var(--yz-border-jade)') + ';">' +
           '<div class="yz-card-header">' +

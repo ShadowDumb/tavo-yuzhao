@@ -105,7 +105,7 @@
   var ROW_HARD_CAP = 160;
 
   function spaceBaselineLabel(space, fallback) {
-    var name = CORE.spaceDisplayName(null, space, fallback || '');
+    var name = CORE.spaceDisplayName(space, fallback || '');
     return encodeSpaceRoute(name);
   }
 

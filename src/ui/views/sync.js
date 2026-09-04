@@ -14,7 +14,7 @@
         icon: '☯',
         actions: [
           { id: 'yz-btn-resync', label: '从历史重修', primary: true },
-          { id: 'yz-btn-clear', label: '清空重置' }
+          { id: 'yz-btn-clear', label: '清空重置', danger: true }
         ]
       });
 

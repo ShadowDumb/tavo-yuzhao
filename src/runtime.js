@@ -912,6 +912,31 @@
           space.forum.posts = safeArray(space.forum.posts, 20).concat([{ id: CORE.playerNextId(space.forum.posts, 'fp-'), owner: 'player', author: cleanText(spaceOwnerName(space), 120), role: '', section: cleanText(raw.section, 60), time: formatDateTime(Date.now()), title: ptitle, body: cleanText(raw.body, 3000), resonance: 0, unread: 0, seen: 0, comments: [] }]);
         }
         space.forum = CORE.normalizeForum(space.forum);
+      } else if (kind === 'tablet-field') {
+        var group = cleanText(raw.group, 40) || 'basic';
+        var key = cleanText(raw.key, 60);
+        var val = cleanText(raw.value, 3000);
+        if (!hasText(key)) reason = 'name';
+        if (reason) return fail();
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        var targetGroup = safeArray(space.tablet.groups, 10).filter(function (g) { return g.id === group; })[0];
+        if (!targetGroup) {
+          targetGroup = { id: group, fields: [] };
+          space.tablet.groups.push(targetGroup);
+        }
+        var targetKey = existingId || key;
+        var existingField = targetGroup.fields.filter(function (f) { return String(f.key) === targetKey; })[0];
+        if (existingField) {
+          existingField.key = key;
+          existingField.value = val;
+        } else {
+          if (targetGroup.fields.length >= 30) return { ok: false, reason: 'full' };
+          targetGroup.fields.push({ key: key, value: val });
+        }
+        if (group === 'basic' && CORE.keyId(key) === 'name' && !space.tablet.name) {
+          space.tablet.name = val;
+        }
+        space.tablet = CORE.normalizeTablet(space.tablet);
       } else {
         return { ok: false, reason: 'kind' };
       }
@@ -983,6 +1008,16 @@
         if (!snapshot.entity) return { ok: false, reason: 'missing' };
         space.forum.posts = safeArray(space.forum.posts, 20).filter(function (p) { return String(p.id) !== id; });
         space.forum = CORE.normalizeForum(space.forum);
+      } else if (kind === 'tablet-field') {
+        var group = cleanText(extraId, 40) || 'basic';
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        var targetGroup = safeArray(space.tablet.groups, 10).filter(function (g) { return g.id === group; })[0];
+        if (!targetGroup) return { ok: false, reason: 'missing' };
+        var field = targetGroup.fields.filter(function (f) { return String(f.key) === id; })[0];
+        if (!field) return { ok: false, reason: 'missing' };
+        snapshot.entity = Object.assign({ group: group }, field);
+        targetGroup.fields = targetGroup.fields.filter(function (f) { return String(f.key) !== id; });
+        space.tablet = CORE.normalizeTablet(space.tablet);
       } else {
         return { ok: false, reason: 'kind' };
       }
@@ -997,6 +1032,20 @@
       if (!space) return { ok: false, reason: 'space' };
       var kind = snap.kind;
       var entity = snap.entity;
+      if (kind === 'tablet-field') {
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        var group = cleanText(entity.group, 40) || 'basic';
+        var targetGroup = safeArray(space.tablet.groups, 10).filter(function (g) { return g.id === group; })[0];
+        if (!targetGroup) {
+          targetGroup = { id: group, fields: [] };
+          space.tablet.groups.push(targetGroup);
+        }
+        if (targetGroup.fields.some(function (f) { return String(f.key) === String(entity.key); })) return { ok: false, reason: 'exists' };
+        if (targetGroup.fields.length >= 30) return { ok: false, reason: 'full' };
+        targetGroup.fields.push({ key: cleanText(entity.key, 60), value: cleanText(entity.value, 3000) });
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        return attachSaved({ ok: true }, saveSpace(space));
+      }
       var limits = { contact: 10, group: 6, message: 20, track: 20, place: 20, folder: 10, note: 30, item: 30, currency: 10, order: 12, post: 20 };
       function keyOf(item) { return kind === 'currency' ? String(item && item.kind) : String(item && item.id); }
       function canInsert(list, value, limit) {

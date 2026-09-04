@@ -29,7 +29,8 @@
       var totalFields = 0;
 
       var groupsHtml = groups.map(function (g) {
-        var fields = CORE.safeArray(tablet[g.key], 50);
+        var groupObj = CORE.safeArray(tablet.groups, 10).find(function (item) { return item && item.id === g.key; });
+        var fields = CORE.safeArray(groupObj ? groupObj.fields : tablet[g.key], 50);
         if (search) {
           fields = fields.filter(function (f) {
             return (f.key && f.key.toLowerCase().indexOf(search) >= 0) ||
@@ -41,7 +42,7 @@
         var itemsHtml = fields.length === 0
           ? '<div style="font-size: 12px; color: var(--yz-text-muted); padding: 6px 0;">暂无刻录</div>'
           : fields.map(function (f) {
-              return '<div class="yz-field-item" data-id="' + CORE.escapeHtml(f.id || '') + '" data-group="' + g.key + '" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.04); font-size: 13px;">' +
+              return '<div class="yz-field-item" data-key="' + CORE.escapeHtml(f.key || '') + '" data-group="' + g.key + '" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.04); font-size: 13px; cursor: pointer;">' +
                 '<span style="color: var(--yz-text-secondary); font-weight: 500;">' + CORE.escapeHtml(f.key) + '</span>' +
                 '<span style="color: var(--yz-text-primary); text-align: right; max-width: 60%; word-break: break-word;">' + CORE.escapeHtml(f.value) + '</span>' +
               '</div>';
@@ -87,12 +88,13 @@
       var items = el.querySelectorAll('.yz-field-item');
       items.forEach(function (item) {
         item.addEventListener('click', function () {
-          var id = item.getAttribute('data-id');
+          var key = item.getAttribute('data-key');
           var group = item.getAttribute('data-group');
           var space = runtime ? runtime.activeSpace() : null;
           var tablet = (space && space.tablet) || {};
-          var list = tablet[group] || [];
-          var target = list.find(function (f) { return String(f.id) === String(id); });
+          var groupObj = CORE.safeArray(tablet.groups, 10).find(function (item) { return item && item.id === group; });
+          var list = (groupObj ? groupObj.fields : tablet[group]) || [];
+          var target = list.find(function (f) { return String(f.key) === String(key); });
           if (target && forms) {
             forms.openTabletFieldForm(Object.assign({ group: group }, target));
           }

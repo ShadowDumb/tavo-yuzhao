@@ -40,8 +40,8 @@
       var spaceNameEl = $('yu-zhao-space-name');
       if (spaceNameEl) {
         var space = runtime ? runtime.activeSpace() : null;
-        var name = space ? CORE.spaceDisplayName(space) : (tr('runtime.space.defaultName') || '默认空间');
-        spaceNameEl.textContent = name;
+        var fallback = tr('runtime.space.defaultName') || '默认空间';
+        spaceNameEl.textContent = CORE.spaceDisplayName(space, fallback);
       }
 
       var backBtn = $('yu-zhao-back-btn');

@@ -1805,7 +1805,7 @@
   }
 
   // 空间显示名：默认空间跟随角色名（sync.roleName 由 AI 轮写入），自定义空间用自身 name。
-  function spaceDisplayName(state, space, fallback) {
+  function spaceDisplayName(space, fallback) {
     if (!space) return fallback || '';
     if (!space.isDefault && hasText(space.name)) return space.name;
     return hasText(space.sync && space.sync.roleName) ? space.sync.roleName : (fallback || '');
@@ -4615,6 +4615,31 @@
           space.forum.posts = safeArray(space.forum.posts, 20).concat([{ id: CORE.playerNextId(space.forum.posts, 'fp-'), owner: 'player', author: cleanText(spaceOwnerName(space), 120), role: '', section: cleanText(raw.section, 60), time: formatDateTime(Date.now()), title: ptitle, body: cleanText(raw.body, 3000), resonance: 0, unread: 0, seen: 0, comments: [] }]);
         }
         space.forum = CORE.normalizeForum(space.forum);
+      } else if (kind === 'tablet-field') {
+        var group = cleanText(raw.group, 40) || 'basic';
+        var key = cleanText(raw.key, 60);
+        var val = cleanText(raw.value, 3000);
+        if (!hasText(key)) reason = 'name';
+        if (reason) return fail();
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        var targetGroup = safeArray(space.tablet.groups, 10).filter(function (g) { return g.id === group; })[0];
+        if (!targetGroup) {
+          targetGroup = { id: group, fields: [] };
+          space.tablet.groups.push(targetGroup);
+        }
+        var targetKey = existingId || key;
+        var existingField = targetGroup.fields.filter(function (f) { return String(f.key) === targetKey; })[0];
+        if (existingField) {
+          existingField.key = key;
+          existingField.value = val;
+        } else {
+          if (targetGroup.fields.length >= 30) return { ok: false, reason: 'full' };
+          targetGroup.fields.push({ key: key, value: val });
+        }
+        if (group === 'basic' && CORE.keyId(key) === 'name' && !space.tablet.name) {
+          space.tablet.name = val;
+        }
+        space.tablet = CORE.normalizeTablet(space.tablet);
       } else {
         return { ok: false, reason: 'kind' };
       }
@@ -4686,6 +4711,16 @@
         if (!snapshot.entity) return { ok: false, reason: 'missing' };
         space.forum.posts = safeArray(space.forum.posts, 20).filter(function (p) { return String(p.id) !== id; });
         space.forum = CORE.normalizeForum(space.forum);
+      } else if (kind === 'tablet-field') {
+        var group = cleanText(extraId, 40) || 'basic';
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        var targetGroup = safeArray(space.tablet.groups, 10).filter(function (g) { return g.id === group; })[0];
+        if (!targetGroup) return { ok: false, reason: 'missing' };
+        var field = targetGroup.fields.filter(function (f) { return String(f.key) === id; })[0];
+        if (!field) return { ok: false, reason: 'missing' };
+        snapshot.entity = Object.assign({ group: group }, field);
+        targetGroup.fields = targetGroup.fields.filter(function (f) { return String(f.key) !== id; });
+        space.tablet = CORE.normalizeTablet(space.tablet);
       } else {
         return { ok: false, reason: 'kind' };
       }
@@ -4700,6 +4735,20 @@
       if (!space) return { ok: false, reason: 'space' };
       var kind = snap.kind;
       var entity = snap.entity;
+      if (kind === 'tablet-field') {
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        var group = cleanText(entity.group, 40) || 'basic';
+        var targetGroup = safeArray(space.tablet.groups, 10).filter(function (g) { return g.id === group; })[0];
+        if (!targetGroup) {
+          targetGroup = { id: group, fields: [] };
+          space.tablet.groups.push(targetGroup);
+        }
+        if (targetGroup.fields.some(function (f) { return String(f.key) === String(entity.key); })) return { ok: false, reason: 'exists' };
+        if (targetGroup.fields.length >= 30) return { ok: false, reason: 'full' };
+        targetGroup.fields.push({ key: cleanText(entity.key, 60), value: cleanText(entity.value, 3000) });
+        space.tablet = CORE.normalizeTablet(space.tablet);
+        return attachSaved({ ok: true }, saveSpace(space));
+      }
       var limits = { contact: 10, group: 6, message: 20, track: 20, place: 20, folder: 10, note: 30, item: 30, currency: 10, order: 12, post: 20 };
       function keyOf(item) { return kind === 'currency' ? String(item && item.kind) : String(item && item.id); }
       function canInsert(list, value, limit) {
@@ -5291,7 +5340,7 @@
   var ROW_HARD_CAP = 160;
 
   function spaceBaselineLabel(space, fallback) {
-    var name = CORE.spaceDisplayName(null, space, fallback || '');
+    var name = CORE.spaceDisplayName(space, fallback || '');
     return encodeSpaceRoute(name);
   }
 
@@ -5883,8 +5932,14 @@
     renderHeader: function (options) {
       options = options || {};
       var actionsHtml = (options.actions || []).map(function (act) {
-        return '<button id="' + act.id + '" class="' + (act.primary ? 'yz-btn-primary' : 'yz-btn-icon') + '" style="' + (act.primary ? 'padding: 6px 14px; font-size: 12px;' : '') + '" title="' + CORE.escapeHtml(act.title || '') + '">' +
-          (act.icon ? act.icon : '') + (act.label ? (' ' + CORE.escapeHtml(act.label)) : '') +
+        var style = act.primary
+          ? 'padding: 6px 14px; font-size: 12px;'
+          : (act.label ? 'width: auto; padding: 6px 12px; font-size: 12px; white-space: nowrap;' : '');
+        if (act.danger) {
+          style += (style ? ' ' : '') + 'color: var(--yz-danger); border-color: var(--yz-danger);';
+        }
+        return '<button id="' + act.id + '" class="' + (act.primary ? 'yz-btn-primary' : 'yz-btn-icon') + '" style="' + style + '" title="' + CORE.escapeHtml(act.title || '') + '">' +
+          (act.icon ? act.icon : '') + (act.label ? ((act.icon ? ' ' : '') + CORE.escapeHtml(act.label)) : '') +
         '</button>';
       }).join('');
 
@@ -5960,7 +6015,8 @@
       var totalFields = 0;
 
       var groupsHtml = groups.map(function (g) {
-        var fields = CORE.safeArray(tablet[g.key], 50);
+        var groupObj = CORE.safeArray(tablet.groups, 10).find(function (item) { return item && item.id === g.key; });
+        var fields = CORE.safeArray(groupObj ? groupObj.fields : tablet[g.key], 50);
         if (search) {
           fields = fields.filter(function (f) {
             return (f.key && f.key.toLowerCase().indexOf(search) >= 0) ||
@@ -5972,7 +6028,7 @@
         var itemsHtml = fields.length === 0
           ? '<div style="font-size: 12px; color: var(--yz-text-muted); padding: 6px 0;">暂无刻录</div>'
           : fields.map(function (f) {
-              return '<div class="yz-field-item" data-id="' + CORE.escapeHtml(f.id || '') + '" data-group="' + g.key + '" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.04); font-size: 13px;">' +
+              return '<div class="yz-field-item" data-key="' + CORE.escapeHtml(f.key || '') + '" data-group="' + g.key + '" style="display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.04); font-size: 13px; cursor: pointer;">' +
                 '<span style="color: var(--yz-text-secondary); font-weight: 500;">' + CORE.escapeHtml(f.key) + '</span>' +
                 '<span style="color: var(--yz-text-primary); text-align: right; max-width: 60%; word-break: break-word;">' + CORE.escapeHtml(f.value) + '</span>' +
               '</div>';
@@ -6018,12 +6074,13 @@
       var items = el.querySelectorAll('.yz-field-item');
       items.forEach(function (item) {
         item.addEventListener('click', function () {
-          var id = item.getAttribute('data-id');
+          var key = item.getAttribute('data-key');
           var group = item.getAttribute('data-group');
           var space = runtime ? runtime.activeSpace() : null;
           var tablet = (space && space.tablet) || {};
-          var list = tablet[group] || [];
-          var target = list.find(function (f) { return String(f.id) === String(id); });
+          var groupObj = CORE.safeArray(tablet.groups, 10).find(function (item) { return item && item.id === group; });
+          var list = (groupObj ? groupObj.fields : tablet[group]) || [];
+          var target = list.find(function (f) { return String(f.key) === String(key); });
           if (target && forms) {
             forms.openTabletFieldForm(Object.assign({ group: group }, target));
           }
@@ -7012,7 +7069,7 @@
       var spacesHtml = spaces.map(function (sp) {
         var isActive = String(sp.id) === String(activeSpaceId);
         var isDefault = !!sp.isDefault;
-        var name = CORE.spaceDisplayName(sp);
+        var name = CORE.spaceDisplayName(sp, isDefault ? (tr('runtime.space.defaultName') || '默认空间') : '');
 
         return '<div class="yz-card" style="padding: 12px; border-left: 3px solid ' + (isActive ? 'var(--yz-jade-light)' : 'var(--yz-border-jade)') + ';">' +
           '<div class="yz-card-header">' +
@@ -7217,7 +7274,7 @@
         icon: '☯',
         actions: [
           { id: 'yz-btn-resync', label: '从历史重修', primary: true },
-          { id: 'yz-btn-clear', label: '清空重置' }
+          { id: 'yz-btn-clear', label: '清空重置', danger: true }
         ]
       });
 
@@ -7876,7 +7933,7 @@
     }
 
     function openTabletFieldForm(initial) {
-      var isEdit = !!(initial && initial.id);
+      var isEdit = !!(initial && (initial.key || initial.id));
       openEntityForm({
         kind: 'tablet-field',
         title: isEdit ? '编辑玉牌属性' : '新增玉牌属性',
@@ -7897,7 +7954,8 @@
           { name: 'value', label: '属性值', type: 'text', required: true }
         ],
         onSubmit: function (data) {
-          dataActions.saveEntity('tablet-field', Object.assign({}, initial, data));
+          var payload = Object.assign({}, initial, data);
+          dataActions.saveEntity('tablet-field', payload, null, initial && (initial.key || initial.id));
         }
       });
     }
@@ -8587,8 +8645,8 @@
       var spaceNameEl = $('yu-zhao-space-name');
       if (spaceNameEl) {
         var space = runtime ? runtime.activeSpace() : null;
-        var name = space ? CORE.spaceDisplayName(space) : (tr('runtime.space.defaultName') || '默认空间');
-        spaceNameEl.textContent = name;
+        var fallback = tr('runtime.space.defaultName') || '默认空间';
+        spaceNameEl.textContent = CORE.spaceDisplayName(space, fallback);
       }
 
       var backBtn = $('yu-zhao-back-btn');

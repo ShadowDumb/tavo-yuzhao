@@ -195,6 +195,10 @@ console.log('# Core 消毒与状态规范化');
   ok(new Set(dupName.spaces.map((s) => s.id)).size === dupName.spaces.length, '重复 id 重发后保持唯一');
   const defLock = M.CORE.normalizeState({ spaces: [{ id: 'sp0', isDefault: true, allowAIWrite: false, name: '强行改名' }] }, 'c');
   ok(defLock.spaces[0].allowAIWrite === true && defLock.spaces[0].name === '', '默认空间强制 AI 可写且名字恒空');
+  eq(M.CORE.spaceDisplayName({ id: 'sp0', isDefault: true, sync: { roleName: '白茯苓' } }), '白茯苓', '默认空间显示名跟随 roleName');
+  eq(M.CORE.spaceDisplayName({ id: 'sp0', isDefault: true, sync: { roleName: '' } }, '默认空间'), '默认空间', '默认空间 roleName 为空时返回 fallback');
+  eq(M.CORE.spaceDisplayName({ id: 'sp1', isDefault: false, name: '分身历练空间' }), '分身历练空间', '自定义空间显示名取自身 name');
+  eq(M.CORE.spaceDisplayName(null, '默认空间'), '默认空间', 'space 为空时返回 fallback');
 
   // 用户线程未读重算：pm 发言后的尾随回复数 − seen；无用户发言的线程不触碰。
   const legacyCh = M.CORE.normalizeState({ spaces: [{ id: 'sp1', name: '甲', chats: { contacts: [{ id: 'yz-character', name: '李逍遥', messages: [{ id: 'pm-1', side: 'self', text: '旧信' }] }], groups: [] } }] }, 'lc');
@@ -1665,6 +1669,11 @@ console.log('# 用户空间 · 核心与运行时');
   eq(rt.spaceSaveEntity(sid, 'currency', { kind: '灵石', amount: '9' }, '').reason, 'kindClash', '重命名撞已有种类拒绝');
   eq(rt.spaceSaveEntity(sid, 'order', { name: '符纸', side: 'sell' }, '').ok, true, '创建订单成功');
   eq(p().market.orders[0].side, 'sell', '卖出方向归一');
+  eq(rt.spaceSaveEntity(sid, 'tablet-field', { group: 'basic', key: '名字', value: '李逍遥' }, '').ok, true, '新增玉牌属性成功');
+  eq(rt.spaceSaveEntity(sid, 'tablet-field', { group: 'basic', key: '名字', value: '李大侠' }, '名字').ok, true, '编辑玉牌属性成功');
+  const tfDel = rt.spaceDeleteEntity(sid, 'tablet-field', '名字', 'basic');
+  ok(tfDel.ok && tfDel.snapshot.entity.value === '李大侠', '删除玉牌属性成功');
+  eq(rt.spaceRestoreEntity(tfDel.snapshot).ok, true, '撤销删除玉牌属性成功');
   eq(rt.spaceSaveEntity(sid, 'badkind', {}, '').reason, 'kind', '未知 kind 拒绝');
 
   // 删除（带快照）+ 撤销；级联
@@ -2545,6 +2554,13 @@ console.log('# UI 视图渲染与交互系统');
   const tabletHtml = M.VIEWS_TABLET.render(mockCtx);
   ok(tabletHtml.includes('本命玉牌') && tabletHtml.includes('基本') && tabletHtml.includes('仪容') && tabletHtml.includes('修为'), '本命玉牌渲染分组字段');
   ok(tabletHtml.includes('功法') && tabletHtml.includes('羁绊') && tabletHtml.includes('隐秘'), '本命玉牌包含功法/羁绊/隐秘分组');
+  const activeSpaceTab = rt.activeSpace();
+  activeSpaceTab.tablet.groups = [
+    { id: 'basic', fields: [{ key: '名字', value: '白茯苓' }, { key: '性别', value: '女' }] },
+    { id: 'cult', fields: [{ key: '境界', value: '练气一层' }] }
+  ];
+  const populatedTabletHtml = M.VIEWS_TABLET.render(mockCtx);
+  ok(populatedTabletHtml.includes('白茯苓') && populatedTabletHtml.includes('练气一层'), '本命玉牌正常渲染 groups 数组中的字段');
 
   // 4. 兑 · 交流讯息
   const msgHtml = M.VIEWS_MESSAGES.render(mockCtx);
@@ -2601,6 +2617,8 @@ console.log('# UI 视图渲染与交互系统');
   // 11. 同步诊断面板
   const syncHtml = M.VIEWS_SYNC.render(mockCtx);
   ok(syncHtml.includes('同步诊断') && syncHtml.includes('同步状态'), '同步诊断页渲染状态指标');
+  ok(syncHtml.includes('id="yz-btn-clear"') && syncHtml.includes('white-space: nowrap') && syncHtml.includes('width: auto'), '同步诊断清空重置按钮防止折行');
+  ok(syncHtml.includes('color: var(--yz-danger)'), '清空重置按钮渲染危险警示色');
 
   // 12. PAGE 视图路由器调度分发
   const viewsToTest = ['wheel', 'tablet', 'msg', 'notes', 'market', 'forum', 'space', 'map', 'manage', 'sync'];

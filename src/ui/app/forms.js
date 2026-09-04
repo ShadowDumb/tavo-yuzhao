@@ -119,7 +119,7 @@
     }
 
     function openTabletFieldForm(initial) {
-      var isEdit = !!(initial && initial.id);
+      var isEdit = !!(initial && (initial.key || initial.id));
       openEntityForm({
         kind: 'tablet-field',
         title: isEdit ? '编辑玉牌属性' : '新增玉牌属性',
@@ -140,7 +140,8 @@
           { name: 'value', label: '属性值', type: 'text', required: true }
         ],
         onSubmit: function (data) {
-          dataActions.saveEntity('tablet-field', Object.assign({}, initial, data));
+          var payload = Object.assign({}, initial, data);
+          dataActions.saveEntity('tablet-field', payload, null, initial && (initial.key || initial.id));
         }
       });
     }
